@@ -150,14 +150,17 @@ impl ProxyHttp for FluxoProxy {
             .expect("upstream_peer called without matched route (request_filter bug)");
 
         let upstream_group = state.upstreams.get(&route.upstream).ok_or_else(|| {
-            Error::new_str(&format!("upstream '{}' not found in state", route.upstream))
+            Error::explain(
+                pingora_core::ErrorType::InternalError,
+                format!("upstream '{}' not found in state", route.upstream),
+            )
         })?;
 
         let peer = upstream_group.select_peer().map_err(|e| {
-            Error::new_str(&format!(
-                "failed to select peer from '{}': {}",
-                route.upstream, e
-            ))
+            Error::explain(
+                pingora_core::ErrorType::ConnectError,
+                format!("failed to select peer from '{}': {}", route.upstream, e),
+            )
         })?;
 
         // Record which peer was selected (for logging)
@@ -189,8 +192,10 @@ impl ProxyHttp for FluxoProxy {
         upstream_request
             .insert_header("X-Request-ID", &request_id)
             .map_err(|e| {
-                let msg = format!("failed to set X-Request-ID: {}", e);
-                Error::new_str(&msg)
+                Error::explain(
+                    pingora_core::ErrorType::InternalError,
+                    format!("failed to set X-Request-ID: {}", e),
+                )
             })?;
 
         Ok(())
