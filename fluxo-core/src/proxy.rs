@@ -201,6 +201,42 @@ impl ProxyHttp for FluxoProxy {
         Ok(())
     }
 
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        e: &Error,
+        ctx: &mut Self::CTX,
+    ) -> pingora_proxy::FailToProxy
+    where
+        Self::CTX: Send + Sync,
+    {
+        use pingora_core::ErrorType::*;
+
+        let code = match e.etype() {
+            HTTPStatus(code) => *code,
+            ConnectTimedout | ConnectRefused | ConnectNoRoute | ConnectError => 502,
+            ReadTimedout | WriteTimedout => 504,
+            ConnectionClosed => 502,
+            _ => 502,
+        };
+
+        warn!(
+            request_id = %ctx.request_id,
+            error_type = ?e.etype(),
+            status = code,
+            error = %e,
+            "proxy error"
+        );
+
+        // Send a simple error response
+        let _ = session.respond_error(code).await;
+
+        pingora_proxy::FailToProxy {
+            error_code: code,
+            can_reuse_downstream: false,
+        }
+    }
+
     async fn logging(
         &self,
         session: &mut Session,

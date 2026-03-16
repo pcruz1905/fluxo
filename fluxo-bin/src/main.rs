@@ -38,13 +38,28 @@ fn main() -> anyhow::Result<()> {
         let mut svc = http_proxy_service(&server.configuration, app.proxy());
 
         for listener in &service_config.listeners {
-            // TLS will be wired in Step 5
-            svc.add_tcp(&listener.address);
-            tracing::info!(
-                service = service_name,
-                address = &listener.address,
-                "listening"
-            );
+            match &service_config.tls {
+                Some(tls) if tls.cert_path.is_some() && tls.key_path.is_some() => {
+                    let cert = tls.cert_path.as_ref().unwrap();
+                    let key = tls.key_path.as_ref().unwrap();
+                    svc.add_tls(&listener.address, cert, key)?;
+                    tracing::info!(
+                        service = service_name,
+                        address = &listener.address,
+                        tls = true,
+                        "listening"
+                    );
+                }
+                _ => {
+                    svc.add_tcp(&listener.address);
+                    tracing::info!(
+                        service = service_name,
+                        address = &listener.address,
+                        tls = false,
+                        "listening"
+                    );
+                }
+            }
         }
 
         server.add_service(svc);
