@@ -6,7 +6,7 @@
 
 pub mod matcher;
 
-use matcher::{HostMatcher, MethodMatcher, PathMatcher, RouteMatcher};
+use matcher::{HeaderMatcher, HostMatcher, MethodMatcher, PathMatcher, RequestHeaders, RouteMatcher};
 use thiserror::Error;
 
 use crate::config::{FluxoConfig, RouteConfig};
@@ -63,6 +63,19 @@ impl CompiledRoute {
         // Empty matchers = catch-all route (matches everything)
         self.matchers.iter().all(|m| m.matches(host, path, method))
     }
+
+    /// Test whether all matchers match, including header matchers.
+    pub fn matches_with_headers(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &dyn RequestHeaders,
+    ) -> bool {
+        self.matchers
+            .iter()
+            .all(|m| m.matches_with_headers(host, path, method, headers))
+    }
 }
 
 impl RouteTable {
@@ -110,6 +123,11 @@ impl RouteTable {
             )));
         }
 
+        // Compile header matchers
+        for (name, value) in &config.match_header {
+            matchers.push(RouteMatcher::Header(HeaderMatcher::compile(name, value)?));
+        }
+
         Ok(CompiledRoute {
             matchers,
             upstream: UpstreamName::from(config.upstream.as_str()),
@@ -129,6 +147,19 @@ impl RouteTable {
         method: &str,
     ) -> Option<&CompiledRoute> {
         self.routes.iter().find(|r| r.matches(host, path, method))
+    }
+
+    /// Match an incoming request against all routes, including header matchers.
+    pub fn match_route_with_headers(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &dyn RequestHeaders,
+    ) -> Option<&CompiledRoute> {
+        self.routes
+            .iter()
+            .find(|r| r.matches_with_headers(host, path, method, headers))
     }
 
     /// Return the number of compiled routes.

@@ -16,6 +16,7 @@ use tracing::{info, warn};
 use crate::config::FluxoConfig;
 use crate::context::{MatchedRoute, RequestContext, SelectedPeer};
 use crate::error::FluxoError;
+use crate::routing::matcher::RequestHeaders;
 use crate::routing::RouteTable;
 use crate::upstream::peer::UpstreamGroup;
 use crate::upstream::UpstreamName;
@@ -70,6 +71,15 @@ fn build_upstream_groups(
     Ok(groups)
 }
 
+/// Adapter to let Pingora request headers implement our `RequestHeaders` trait.
+struct PingoraHeaders<'a>(&'a pingora_http::RequestHeader);
+
+impl<'a> RequestHeaders for PingoraHeaders<'a> {
+    fn get_header(&self, name: &str) -> Option<&str> {
+        self.0.headers.get(name).and_then(|v| v.to_str().ok())
+    }
+}
+
 /// The central proxy type that implements Pingora's `ProxyHttp` trait.
 ///
 /// Holds an `ArcSwap<FluxoState>` for lock-free config reads on the hot path.
@@ -119,8 +129,9 @@ impl ProxyHttp for FluxoProxy {
         let path = req_header.uri.path();
         let method = req_header.method.as_str();
 
-        // Route matching
-        match state.router.match_route(host, path, method) {
+        // Route matching (with header support)
+        let pingora_hdrs = PingoraHeaders(req_header);
+        match state.router.match_route_with_headers(host, path, method, &pingora_hdrs) {
             Some(route) => {
                 ctx.matched_route = Some(MatchedRoute {
                     index: route.index,

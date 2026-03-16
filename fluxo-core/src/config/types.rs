@@ -116,6 +116,11 @@ pub struct RouteConfig {
     #[serde(default)]
     pub match_method: Vec<String>,
 
+    /// Header conditions to match (e.g., {"X-Debug": "true", "X-Version": "~^v[0-9]+"}).
+    /// Values starting with `~` are treated as regex patterns.
+    #[serde(default)]
+    pub match_header: std::collections::HashMap<String, String>,
+
     /// Name of the upstream group to forward to.
     pub upstream: String,
 }

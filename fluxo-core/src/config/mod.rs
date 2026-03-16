@@ -94,6 +94,7 @@ pub fn config_from_upstream(upstream: &str) -> FluxoConfig {
                 match_host: vec![],
                 match_path: vec![],
                 match_method: vec![],
+                match_header: Default::default(),
                 upstream: "default".to_string(),
             }],
         },

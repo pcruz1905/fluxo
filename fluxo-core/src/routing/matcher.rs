@@ -17,10 +17,23 @@ pub enum RouteMatcher {
     Path(PathMatcher),
     /// Match on the HTTP method.
     Method(MethodMatcher),
+    /// Match on a request header value.
+    Header(HeaderMatcher),
+}
+
+/// Request headers abstraction for matching.
+///
+/// Used by `RouteMatcher::matches_with_headers` to look up arbitrary headers.
+pub trait RequestHeaders {
+    /// Get the value of a header by name, or `None` if not present.
+    fn get_header(&self, name: &str) -> Option<&str>;
 }
 
 impl RouteMatcher {
-    /// Test whether this matcher matches the given request headers.
+    /// Test whether this matcher matches the given request.
+    ///
+    /// For non-header matchers, this uses the pre-extracted host/path/method.
+    /// Header matchers always return true here — use `matches_with_headers` for full matching.
     pub fn matches(&self, host: Option<&str>, path: &str, method: &str) -> bool {
         match self {
             Self::Host(m) => match host {
@@ -29,6 +42,26 @@ impl RouteMatcher {
             },
             Self::Path(m) => m.matches(path),
             Self::Method(m) => m.matches(method),
+            Self::Header(_) => true, // header matching requires headers; see matches_with_headers
+        }
+    }
+
+    /// Test whether this matcher matches, with access to request headers.
+    pub fn matches_with_headers(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &dyn RequestHeaders,
+    ) -> bool {
+        match self {
+            Self::Host(m) => match host {
+                Some(h) => m.matches(h),
+                None => false,
+            },
+            Self::Path(m) => m.matches(path),
+            Self::Method(m) => m.matches(method),
+            Self::Header(m) => m.matches(headers),
         }
     }
 }
@@ -143,6 +176,62 @@ impl MethodMatcher {
     /// Test whether this matcher matches the given method.
     pub fn matches(&self, method: &str) -> bool {
         self.methods.iter().any(|m| m == method)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Header matching
+// ---------------------------------------------------------------------------
+
+/// Matches a request header value.
+#[derive(Debug)]
+pub struct HeaderMatcher {
+    /// The header name to look up (lowercased for case-insensitive matching).
+    pub name: String,
+    /// How to match the header value.
+    pub value_matcher: HeaderValueMatcher,
+}
+
+/// How to match a header value.
+#[derive(Debug)]
+pub enum HeaderValueMatcher {
+    /// Exact string match.
+    Exact(String),
+    /// Regex match (pattern prefixed with `~` in config).
+    Regex(regex::Regex),
+}
+
+impl HeaderMatcher {
+    /// Compile a header matcher from a config name-value pair.
+    ///
+    /// If the value starts with `~`, the remainder is compiled as a regex.
+    /// Otherwise, it's an exact match.
+    pub fn compile(name: &str, value: &str) -> Result<Self, RoutingError> {
+        let value_matcher = if let Some(pattern) = value.strip_prefix('~') {
+            let re = regex::Regex::new(pattern).map_err(|e| RoutingError::InvalidRegex {
+                pattern: pattern.to_string(),
+                source: e,
+            })?;
+            HeaderValueMatcher::Regex(re)
+        } else {
+            HeaderValueMatcher::Exact(value.to_string())
+        };
+
+        Ok(Self {
+            name: name.to_lowercase(),
+            value_matcher,
+        })
+    }
+
+    /// Test whether this matcher matches the given request headers.
+    pub fn matches(&self, headers: &dyn RequestHeaders) -> bool {
+        match headers.get_header(&self.name) {
+            Some(val) => match &self.value_matcher {
+                HeaderValueMatcher::Exact(expected) => val == expected,
+                HeaderValueMatcher::Regex(re) => re.is_match(val),
+            },
+            None => false,
+        }
     }
 }
 
