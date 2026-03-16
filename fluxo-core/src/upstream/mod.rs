@@ -25,7 +25,9 @@ pub enum UpstreamError {
     },
 
     /// An unknown load balancing strategy was specified.
-    #[error("unknown load balancing strategy '{0}'. Valid: round_robin, random, fnv_hash, consistent_hash")]
+    #[error(
+        "unknown load balancing strategy '{0}'. Valid: round_robin, random, fnv_hash, consistent_hash"
+    )]
     InvalidStrategy(String),
 }
 

@@ -202,8 +202,8 @@ fn parse_cert_info(cert_pem: &str, key_pem: &str) -> Result<CertInfo, CertStoreE
 
     // Extract expiry
     let not_after = cert.validity().not_after.to_datetime();
-    let not_after = SystemTime::UNIX_EPOCH
-        + std::time::Duration::from_secs(not_after.unix_timestamp() as u64);
+    let not_after =
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(not_after.unix_timestamp() as u64);
 
     // Extract domains from Subject Alternative Names
     let mut domains = Vec::new();
@@ -294,9 +294,7 @@ mod tests {
         let store = CertStore::new("/var/fluxo/certs");
         assert_eq!(
             store.account_path("acme-v02.api.letsencrypt.org"),
-            PathBuf::from(
-                "/var/fluxo/certs/accounts/acme-v02.api.letsencrypt.org/account.json"
-            )
+            PathBuf::from("/var/fluxo/certs/accounts/acme-v02.api.letsencrypt.org/account.json")
         );
     }
 

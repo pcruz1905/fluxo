@@ -8,7 +8,9 @@ pub mod matcher;
 
 use std::sync::Arc;
 
-use matcher::{HeaderMatcher, HostMatcher, MethodMatcher, PathMatcher, RequestHeaders, RouteMatcher};
+use matcher::{
+    HeaderMatcher, HostMatcher, MethodMatcher, PathMatcher, RequestHeaders, RouteMatcher,
+};
 use thiserror::Error;
 
 use crate::config::{FluxoConfig, RouteConfig};

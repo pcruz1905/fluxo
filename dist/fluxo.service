@@ -10,6 +10,8 @@ ExecStart=/usr/bin/fluxo --config /etc/fluxo/fluxo.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
+TimeoutStartSec=10s
+TimeoutStopSec=30s
 
 # Security hardening
 User=fluxo
@@ -22,6 +24,17 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Writable paths: cert storage + logs
 ReadWritePaths=/var/lib/fluxo /var/log/fluxo
 
 # Allow binding to privileged ports (80, 443) without root

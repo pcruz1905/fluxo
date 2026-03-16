@@ -97,7 +97,10 @@ impl CertRenewalService {
         };
 
         if !needs_renewal {
-            info!(domain = primary_domain, "certificate is still valid, no renewal needed");
+            info!(
+                domain = primary_domain,
+                "certificate is still valid, no renewal needed"
+            );
             return;
         }
 

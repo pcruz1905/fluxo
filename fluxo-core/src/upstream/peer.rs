@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use pingora_core::upstreams::peer::HttpPeer;
-use pingora_load_balancing::selection::{Consistent, Random, RoundRobin};
 use pingora_load_balancing::LoadBalancer;
+use pingora_load_balancing::selection::{Consistent, Random, RoundRobin};
 
-use pingora_core::services::background::GenBackgroundService;
 use pingora_core::services::ServiceWithDependents;
+use pingora_core::services::background::GenBackgroundService;
 
 use crate::upstream::UpstreamError;
 use crate::upstream::UpstreamName;
@@ -85,10 +85,7 @@ enum AnyLoadBalancer {
 
 impl AnyLoadBalancer {
     /// Build a load balancer from targets with the given strategy.
-    fn build(
-        targets: &[String],
-        strategy: LbStrategy,
-    ) -> Result<Self, UpstreamError> {
+    fn build(targets: &[String], strategy: LbStrategy) -> Result<Self, UpstreamError> {
         let map_err = |e: std::io::Error| UpstreamError::InvalidAddress {
             address: targets.join(", "),
             reason: e.to_string(),
@@ -96,13 +93,12 @@ impl AnyLoadBalancer {
 
         match strategy {
             LbStrategy::RoundRobin => {
-                let lb = LoadBalancer::<RoundRobin>::try_from_iter(targets.iter())
-                    .map_err(map_err)?;
+                let lb =
+                    LoadBalancer::<RoundRobin>::try_from_iter(targets.iter()).map_err(map_err)?;
                 Ok(Self::RoundRobin(Arc::new(lb)))
             }
             LbStrategy::Random => {
-                let lb = LoadBalancer::<Random>::try_from_iter(targets.iter())
-                    .map_err(map_err)?;
+                let lb = LoadBalancer::<Random>::try_from_iter(targets.iter()).map_err(map_err)?;
                 Ok(Self::Random(Arc::new(lb)))
             }
             LbStrategy::FnvHash => {
@@ -113,8 +109,8 @@ impl AnyLoadBalancer {
                 Ok(Self::FnvHash(Arc::new(lb)))
             }
             LbStrategy::ConsistentHash => {
-                let lb = LoadBalancer::<Consistent>::try_from_iter(targets.iter())
-                    .map_err(map_err)?;
+                let lb =
+                    LoadBalancer::<Consistent>::try_from_iter(targets.iter()).map_err(map_err)?;
                 Ok(Self::ConsistentHash(Arc::new(lb)))
             }
         }
@@ -297,10 +293,22 @@ mod tests {
 
     #[test]
     fn lb_strategy_from_config() {
-        assert_eq!(LbStrategy::from_config("round_robin").unwrap(), LbStrategy::RoundRobin);
-        assert_eq!(LbStrategy::from_config("random").unwrap(), LbStrategy::Random);
-        assert_eq!(LbStrategy::from_config("fnv_hash").unwrap(), LbStrategy::FnvHash);
-        assert_eq!(LbStrategy::from_config("consistent_hash").unwrap(), LbStrategy::ConsistentHash);
+        assert_eq!(
+            LbStrategy::from_config("round_robin").unwrap(),
+            LbStrategy::RoundRobin
+        );
+        assert_eq!(
+            LbStrategy::from_config("random").unwrap(),
+            LbStrategy::Random
+        );
+        assert_eq!(
+            LbStrategy::from_config("fnv_hash").unwrap(),
+            LbStrategy::FnvHash
+        );
+        assert_eq!(
+            LbStrategy::from_config("consistent_hash").unwrap(),
+            LbStrategy::ConsistentHash
+        );
         assert!(LbStrategy::from_config("invalid").is_err());
     }
 

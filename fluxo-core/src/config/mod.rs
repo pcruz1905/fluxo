@@ -317,10 +317,7 @@ targets = ["127.0.0.1:3000"]
         let config = load_from_str(toml).expect("should parse");
         assert_eq!(config.services.len(), 1);
         assert_eq!(config.upstreams.len(), 1);
-        assert_eq!(
-            config.upstreams["backend"].targets,
-            vec!["127.0.0.1:3000"]
-        );
+        assert_eq!(config.upstreams["backend"].targets, vec!["127.0.0.1:3000"]);
     }
 
     #[test]
@@ -477,7 +474,10 @@ targets = ["127.0.0.1:3000"]
 targets = ["127.0.0.1:3000"]
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err.to_string().contains("cannot use both acme and cert_path"));
+        assert!(
+            err.to_string()
+                .contains("cannot use both acme and cert_path")
+        );
     }
 
     #[test]
@@ -517,7 +517,8 @@ targets = ["127.0.0.1:3000"]
 load_balancing = "{strategy}"
 "#
             );
-            load_from_str(&toml).unwrap_or_else(|e| panic!("strategy '{strategy}' should be valid: {e}"));
+            load_from_str(&toml)
+                .unwrap_or_else(|e| panic!("strategy '{strategy}' should be valid: {e}"));
         }
     }
 

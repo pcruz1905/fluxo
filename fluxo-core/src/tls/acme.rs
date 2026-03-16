@@ -60,9 +60,7 @@ impl AcmeManager {
         // Try to load existing account
         if let Some(json) = store.load_account(&server_host)? {
             let credentials: AccountCredentials = serde_json::from_str(&json)?;
-            let account = Account::builder()?
-                .from_credentials(credentials)
-                .await?;
+            let account = Account::builder()?.from_credentials(credentials).await?;
             info!(server = %server_host, "restored ACME account");
             return Ok(Self {
                 account,
@@ -108,18 +106,13 @@ impl AcmeManager {
         domains: &[String],
         challenge_state: &Arc<ChallengeState>,
     ) -> Result<(String, String), AcmeError> {
-        let identifiers: Vec<Identifier> = domains
-            .iter()
-            .map(|d| Identifier::Dns(d.clone()))
-            .collect();
+        let identifiers: Vec<Identifier> =
+            domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
 
         info!(domains = ?domains, "starting ACME order");
 
         // Create order
-        let mut order = self
-            .account
-            .new_order(&NewOrder::new(&identifiers))
-            .await?;
+        let mut order = self.account.new_order(&NewOrder::new(&identifiers)).await?;
 
         // Process authorizations
         let mut authorizations = order.authorizations();

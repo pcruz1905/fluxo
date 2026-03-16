@@ -8,19 +8,19 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_core::Error;
+use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_proxy::{ProxyHttp, Session};
 use tracing::{info, warn};
 
 use crate::config::FluxoConfig;
 use crate::context::{MatchedRoute, RequestContext, SelectedPeer};
 use crate::error::FluxoError;
-use crate::routing::matcher::RequestHeaders;
 use crate::routing::RouteTable;
+use crate::routing::matcher::RequestHeaders;
 use crate::tls::ChallengeState;
-use crate::upstream::peer::UpstreamGroup;
 use crate::upstream::UpstreamName;
+use crate::upstream::peer::UpstreamGroup;
 
 /// The pre-computed, immutable state derived from a `FluxoConfig`.
 ///
@@ -150,9 +150,9 @@ fn build_upstream_groups(
 /// Check if any service in the config has TLS (manual or ACME) configured.
 fn has_tls_configured(config: &FluxoConfig) -> bool {
     config.services.values().any(|svc| {
-        svc.tls.as_ref().is_some_and(|tls| {
-            tls.acme || (tls.cert_path.is_some() && tls.key_path.is_some())
-        })
+        svc.tls
+            .as_ref()
+            .is_some_and(|tls| tls.acme || (tls.cert_path.is_some() && tls.key_path.is_some()))
     })
 }
 
@@ -219,10 +219,7 @@ impl ProxyHttp for FluxoProxy {
 
         // Extract request info for matching
         let req_header = session.req_header();
-        let host = req_header
-            .headers
-            .get("host")
-            .and_then(|v| v.to_str().ok());
+        let host = req_header.headers.get("host").and_then(|v| v.to_str().ok());
         let path = req_header.uri.path();
         let method = req_header.method.as_str();
 
@@ -233,32 +230,31 @@ impl ProxyHttp for FluxoProxy {
             .strip_prefix("/.well-known/acme-challenge/")
             .and_then(|token| state.challenge_state.get(token))
         {
-                let header = pingora_http::ResponseHeader::build(200, None)
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::InternalError,
-                            format!("failed to build ACME challenge response: {e}"),
-                        )
-                    })?;
-                session
-                    .write_response_header(Box::new(header), false)
-                    .await
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::WriteError,
-                            format!("failed to write ACME challenge header: {e}"),
-                        )
-                    })?;
-                session
-                    .write_response_body(Some(key_auth.into()), true)
-                    .await
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::WriteError,
-                            format!("failed to write ACME challenge body: {e}"),
-                        )
-                    })?;
-                return Ok(true); // short-circuit, handled
+            let header = pingora_http::ResponseHeader::build(200, None).map_err(|e| {
+                Error::explain(
+                    pingora_core::ErrorType::InternalError,
+                    format!("failed to build ACME challenge response: {e}"),
+                )
+            })?;
+            session
+                .write_response_header(Box::new(header), false)
+                .await
+                .map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::WriteError,
+                        format!("failed to write ACME challenge header: {e}"),
+                    )
+                })?;
+            session
+                .write_response_body(Some(key_auth.into()), true)
+                .await
+                .map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::WriteError,
+                        format!("failed to write ACME challenge body: {e}"),
+                    )
+                })?;
+            return Ok(true); // short-circuit, handled
         }
 
         // --- HTTP→HTTPS redirect ---
@@ -269,38 +265,38 @@ impl ProxyHttp for FluxoProxy {
             .digest()
             .and_then(|d| d.ssl_digest.as_ref())
             .is_some();
-        if let (false, true, Some(host_val)) =
-            (is_tls, has_tls_configured(&state.config), host)
-        {
-                let location = format!("https://{host_val}{path}");
-                let mut header = pingora_http::ResponseHeader::build(301, None)
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::InternalError,
-                            format!("failed to build redirect response: {e}"),
-                        )
-                    })?;
-                header.insert_header("Location", &location).map_err(|e| {
+        if let (false, true, Some(host_val)) = (is_tls, has_tls_configured(&state.config), host) {
+            let location = format!("https://{host_val}{path}");
+            let mut header = pingora_http::ResponseHeader::build(301, None).map_err(|e| {
+                Error::explain(
+                    pingora_core::ErrorType::InternalError,
+                    format!("failed to build redirect response: {e}"),
+                )
+            })?;
+            header.insert_header("Location", &location).map_err(|e| {
+                Error::explain(
+                    pingora_core::ErrorType::InternalError,
+                    format!("failed to set Location header: {e}"),
+                )
+            })?;
+            session
+                .write_response_header(Box::new(header), true)
+                .await
+                .map_err(|e| {
                     Error::explain(
-                        pingora_core::ErrorType::InternalError,
-                        format!("failed to set Location header: {e}"),
+                        pingora_core::ErrorType::WriteError,
+                        format!("failed to write redirect response: {e}"),
                     )
                 })?;
-                session
-                    .write_response_header(Box::new(header), true)
-                    .await
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::WriteError,
-                            format!("failed to write redirect response: {e}"),
-                        )
-                    })?;
-                return Ok(true); // short-circuit, handled
+            return Ok(true); // short-circuit, handled
         }
 
         // --- Route matching (with header support) ---
         let pingora_hdrs = PingoraHeaders(req_header);
-        match state.router.match_route_with_headers(host, path, method, &pingora_hdrs) {
+        match state
+            .router
+            .match_route_with_headers(host, path, method, &pingora_hdrs)
+        {
             Some(route) => {
                 ctx.matched_route = Some(MatchedRoute {
                     index: route.index,
@@ -417,12 +413,7 @@ impl ProxyHttp for FluxoProxy {
         }
     }
 
-    async fn logging(
-        &self,
-        session: &mut Session,
-        error: Option<&Error>,
-        ctx: &mut Self::CTX,
-    ) {
+    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
         let duration = ctx.elapsed();
         let status = session
             .response_written()

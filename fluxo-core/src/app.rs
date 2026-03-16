@@ -100,9 +100,10 @@ impl FluxoApp {
             let primary_domain = &domains[0];
 
             // Check if we already have a valid cert
-            if !cert_store.needs_renewal(primary_domain, 30).map_err(|e| {
-                FluxoError::Acme(crate::tls::acme::AcmeError::Store(e))
-            })? {
+            if !cert_store
+                .needs_renewal(primary_domain, 30)
+                .map_err(|e| FluxoError::Acme(crate::tls::acme::AcmeError::Store(e)))?
+            {
                 info!(
                     service = service_name,
                     domain = primary_domain,
@@ -111,8 +112,14 @@ impl FluxoApp {
                 self.resolved_tls.insert(
                     service_name.clone(),
                     ResolvedTls {
-                        cert_path: cert_store.cert_path(primary_domain).to_string_lossy().to_string(),
-                        key_path: cert_store.key_path(primary_domain).to_string_lossy().to_string(),
+                        cert_path: cert_store
+                            .cert_path(primary_domain)
+                            .to_string_lossy()
+                            .to_string(),
+                        key_path: cert_store
+                            .key_path(primary_domain)
+                            .to_string_lossy()
+                            .to_string(),
                     },
                 );
                 continue;
@@ -125,16 +132,13 @@ impl FluxoApp {
                 "acquiring ACME certificate"
             );
 
-            let directory_url = tls
-                .acme_directory
-                .as_deref()
-                .unwrap_or_else(|| {
-                    if tls.acme_staging {
-                        AcmeManager::lets_encrypt_staging()
-                    } else {
-                        AcmeManager::lets_encrypt_production()
-                    }
-                });
+            let directory_url = tls.acme_directory.as_deref().unwrap_or_else(|| {
+                if tls.acme_staging {
+                    AcmeManager::lets_encrypt_staging()
+                } else {
+                    AcmeManager::lets_encrypt_production()
+                }
+            });
 
             let email = tls.acme_email.as_deref().unwrap_or_default();
             let challenge_state = self.proxy.challenge_state();
@@ -145,8 +149,14 @@ impl FluxoApp {
             self.resolved_tls.insert(
                 service_name.clone(),
                 ResolvedTls {
-                    cert_path: cert_store.cert_path(primary_domain).to_string_lossy().to_string(),
-                    key_path: cert_store.key_path(primary_domain).to_string_lossy().to_string(),
+                    cert_path: cert_store
+                        .cert_path(primary_domain)
+                        .to_string_lossy()
+                        .to_string(),
+                    key_path: cert_store
+                        .key_path(primary_domain)
+                        .to_string_lossy()
+                        .to_string(),
                 },
             );
 
@@ -198,9 +208,7 @@ impl FluxoApp {
     /// Create background renewal services for all ACME-managed domains.
     ///
     /// Returns boxed services ready to register with the Pingora Server.
-    pub fn renewal_services(
-        &self,
-    ) -> Vec<Box<dyn pingora_core::services::ServiceWithDependents>> {
+    pub fn renewal_services(&self) -> Vec<Box<dyn pingora_core::services::ServiceWithDependents>> {
         use pingora_core::services::background::GenBackgroundService;
 
         let cert_store = self.cert_store();
@@ -227,16 +235,13 @@ impl FluxoApp {
                 continue;
             }
 
-            let directory_url = tls
-                .acme_directory
-                .clone()
-                .unwrap_or_else(|| {
-                    if tls.acme_staging {
-                        AcmeManager::lets_encrypt_staging().to_string()
-                    } else {
-                        AcmeManager::lets_encrypt_production().to_string()
-                    }
-                });
+            let directory_url = tls.acme_directory.clone().unwrap_or_else(|| {
+                if tls.acme_staging {
+                    AcmeManager::lets_encrypt_staging().to_string()
+                } else {
+                    AcmeManager::lets_encrypt_production().to_string()
+                }
+            });
 
             let renewal_config = RenewalConfig {
                 check_interval: std::time::Duration::from_secs(12 * 3600), // 12 hours

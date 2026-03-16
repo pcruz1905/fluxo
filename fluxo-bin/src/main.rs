@@ -9,8 +9,8 @@ use pingora::proxy::http_proxy_service;
 use pingora::server::Server;
 use tracing_subscriber::EnvFilter;
 
-use fluxo_core::config;
 use fluxo_core::FluxoApp;
+use fluxo_core::config;
 
 /// The fast, simple, memory-safe reverse proxy.
 #[derive(Parser, Debug)]
@@ -51,16 +51,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Determine log level: CLI flag > env var > config default
-    let log_level = cli
-        .log_level
-        .as_deref()
-        .unwrap_or("info");
+    let log_level = cli.log_level.as_deref().unwrap_or("info");
 
     // Initialize tracing (structured logging)
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(log_level)),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
         )
         .init();
 
