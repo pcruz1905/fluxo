@@ -131,7 +131,7 @@ impl ProxyHttp for FluxoProxy {
             }
             None => {
                 // No route matched — return 404
-                session.respond_error(404).await;
+                let _ = session.respond_error(404).await;
                 Ok(true) // short-circuit, handled
             }
         }
