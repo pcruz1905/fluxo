@@ -6,6 +6,8 @@
 
 pub mod matcher;
 
+use std::sync::Arc;
+
 use matcher::{HeaderMatcher, HostMatcher, MethodMatcher, PathMatcher, RequestHeaders, RouteMatcher};
 use thiserror::Error;
 
@@ -52,7 +54,7 @@ pub struct CompiledRoute {
     /// Which upstream group to forward matching requests to.
     pub upstream: UpstreamName,
     /// Display name for logging.
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     /// Index of this route in the table (for `MatchedRoute` references).
     pub index: usize,
 }
@@ -131,7 +133,7 @@ impl RouteTable {
         Ok(CompiledRoute {
             matchers,
             upstream: UpstreamName::from(config.upstream.as_str()),
-            name: config.name.clone(),
+            name: config.name.as_deref().map(Arc::from),
             index,
         })
     }

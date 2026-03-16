@@ -1,6 +1,7 @@
 //! Per-request context passed through all Pingora `ProxyHttp` callbacks.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::upstream::UpstreamName;
@@ -31,7 +32,7 @@ pub struct MatchedRoute {
     /// Name of the upstream group this route targets.
     pub upstream: UpstreamName,
     /// The route's display name (for logging).
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
 }
 
 /// Info about which upstream peer was actually selected.

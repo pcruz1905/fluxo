@@ -17,12 +17,14 @@ use crate::upstream::UpstreamError;
 use crate::upstream::UpstreamName;
 
 /// TLS configuration for connections to an upstream group.
+///
+/// Uses `Arc<str>` for SNI so cloning the config is a refcount bump.
 #[derive(Debug, Clone, Default)]
 pub struct UpstreamTlsConfig {
     /// Whether to use TLS for upstream connections.
     pub enabled: bool,
     /// SNI hostname to send.
-    pub sni: Option<String>,
+    pub sni: Option<Arc<str>>,
 }
 
 /// Timeout configuration for connections to an upstream group.
@@ -255,7 +257,7 @@ impl UpstreamGroup {
         let mut peer = HttpPeer::new(
             backend.addr,
             self.tls.enabled,
-            self.tls.sni.clone().unwrap_or_default(),
+            self.tls.sni.as_deref().unwrap_or_default().to_string(),
         );
 
         // Apply timeouts
@@ -276,7 +278,7 @@ impl UpstreamGroup {
         let mut peer = HttpPeer::new(
             backend.addr,
             self.tls.enabled,
-            self.tls.sni.clone().unwrap_or_default(),
+            self.tls.sni.as_deref().unwrap_or_default().to_string(),
         );
 
         peer.options.connection_timeout = Some(self.timeouts.connect);
