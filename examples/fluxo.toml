@@ -11,6 +11,7 @@
 admin = "127.0.0.1:2019"   # Admin API address (future)
 threads = 0                 # Worker threads (0 = auto-detect CPU count)
 log_level = "info"          # trace | debug | info | warn | error
+# cert_dir = "/var/fluxo/certs"  # ACME certificate storage directory
 
 # ─── Services ───────────────────────────────────────────────────────
 # A service groups listeners (addresses to bind) with routes (traffic rules).
@@ -21,16 +22,28 @@ log_level = "info"          # trace | debug | info | warn | error
   [[services.web.listeners]]
   address = "0.0.0.0:80"
 
-  # Uncomment for HTTPS with manual certificates:
-  # [[services.web.listeners]]
-  # address = "0.0.0.0:443"
-  # offer_h2 = true
-  #
+  [[services.web.listeners]]
+  address = "0.0.0.0:443"
+  offer_h2 = true
+
+  # ─── TLS: Automatic HTTPS (ACME / Let's Encrypt) ─────────────────
+  # Fluxo automatically obtains and renews TLS certificates.
+  # Domains are collected from match_host patterns in routes below.
+  # HTTP requests on port 80 are redirected to HTTPS automatically.
+  [services.web.tls]
+  acme = true
+  acme_email = "ops@example.com"
+  # acme_staging = true           # Use LE staging for testing
+  # acme_directory = "https://..."  # Custom ACME directory URL
+
+  # ─── TLS: Manual certificates (alternative to ACME) ──────────────
+  # Uncomment these instead of acme = true for manual cert management:
   # [services.web.tls]
   # cert_path = "/etc/fluxo/cert.pem"
   # key_path = "/etc/fluxo/key.pem"
 
-  # Routes — evaluated in order, first match wins.
+  # ─── Routes ───────────────────────────────────────────────────────
+  # Evaluated in order, first match wins.
   # Empty match fields = catch-all (matches everything).
 
   [[services.web.routes]]

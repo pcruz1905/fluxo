@@ -216,15 +216,14 @@ fn parse_cert_info(cert_pem: &str, key_pem: &str) -> Result<CertInfo, CertStoreE
     }
 
     // Fallback: extract CN from subject if no SANs
-    if domains.is_empty() {
-        if let Some(cn) = cert
+    if domains.is_empty()
+        && let Some(cn) = cert
             .subject()
             .iter_common_name()
             .next()
             .and_then(|cn| cn.as_str().ok())
-        {
-            domains.push(cn.to_string());
-        }
+    {
+        domains.push(cn.to_string());
     }
 
     Ok(CertInfo {

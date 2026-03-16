@@ -41,6 +41,7 @@ pub enum AcmeError {
 pub struct AcmeManager {
     account: Account,
     store: CertStore,
+    #[allow(dead_code)] // used for account path resolution
     server_host: String,
 }
 

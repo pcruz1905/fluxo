@@ -162,6 +162,11 @@ fn main() -> anyhow::Result<()> {
         server.add_boxed_service(hc_svc);
     }
 
+    // Register cert renewal background services (for ACME-managed domains)
+    for renewal_svc in app.renewal_services() {
+        server.add_boxed_service(renewal_svc);
+    }
+
     tracing::info!("fluxo is ready");
     server.run_forever();
 }

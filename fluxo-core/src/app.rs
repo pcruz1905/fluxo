@@ -10,8 +10,8 @@ use crate::config::FluxoConfig;
 use crate::error::FluxoError;
 use crate::proxy::{FluxoBuild, FluxoProxy, FluxoState};
 use crate::tls::acme::AcmeManager;
+use crate::tls::renewal::{CertRenewalService, RenewalConfig};
 use crate::tls::store::CertStore;
-use crate::tls::ChallengeState;
 
 /// Resolved TLS paths for a service — either from manual config or ACME.
 #[derive(Debug, Clone)]
@@ -193,6 +193,73 @@ impl FluxoApp {
         &mut self,
     ) -> Vec<Box<dyn pingora_core::services::ServiceWithDependents>> {
         std::mem::take(&mut self.health_check_services)
+    }
+
+    /// Create background renewal services for all ACME-managed domains.
+    ///
+    /// Returns boxed services ready to register with the Pingora Server.
+    pub fn renewal_services(
+        &self,
+    ) -> Vec<Box<dyn pingora_core::services::ServiceWithDependents>> {
+        use pingora_core::services::background::GenBackgroundService;
+
+        let cert_store = self.cert_store();
+        let challenge_state = self.proxy.challenge_state();
+        let mut services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>> = Vec::new();
+
+        for (service_name, service) in &self.config.services {
+            let tls = match &service.tls {
+                Some(tls) if tls.acme => tls,
+                _ => continue,
+            };
+
+            let domains: Vec<String> = service
+                .routes
+                .iter()
+                .flat_map(|r| r.match_host.iter())
+                .filter(|h| !h.starts_with('*'))
+                .cloned()
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            if domains.is_empty() {
+                continue;
+            }
+
+            let directory_url = tls
+                .acme_directory
+                .clone()
+                .unwrap_or_else(|| {
+                    if tls.acme_staging {
+                        AcmeManager::lets_encrypt_staging().to_string()
+                    } else {
+                        AcmeManager::lets_encrypt_production().to_string()
+                    }
+                });
+
+            let renewal_config = RenewalConfig {
+                check_interval: std::time::Duration::from_secs(12 * 3600), // 12 hours
+                renew_before_days: 30,
+                directory_url,
+                email: tls.acme_email.clone().unwrap_or_default(),
+                domains,
+            };
+
+            let renewal_svc = CertRenewalService::new(
+                renewal_config,
+                cert_store.clone(),
+                challenge_state.clone(),
+            );
+
+            let bg_name = format!("BG cert-renewal {service_name}");
+            services.push(Box::new(GenBackgroundService::new(
+                bg_name,
+                Arc::new(renewal_svc),
+            )));
+        }
+
+        services
     }
 
     /// Reload the proxy with a new config.

@@ -229,8 +229,10 @@ impl ProxyHttp for FluxoProxy {
         // --- ACME HTTP-01 challenge interception ---
         // Serve challenge tokens before any other processing.
         // One prefix check per request — negligible overhead.
-        if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/") {
-            if let Some(key_auth) = state.challenge_state.get(token) {
+        if let Some(key_auth) = path
+            .strip_prefix("/.well-known/acme-challenge/")
+            .and_then(|token| state.challenge_state.get(token))
+        {
                 let header = pingora_http::ResponseHeader::build(200, None)
                     .map_err(|e| {
                         Error::explain(
@@ -257,7 +259,6 @@ impl ProxyHttp for FluxoProxy {
                         )
                     })?;
                 return Ok(true); // short-circuit, handled
-            }
         }
 
         // --- HTTP→HTTPS redirect ---
@@ -268,8 +269,9 @@ impl ProxyHttp for FluxoProxy {
             .digest()
             .and_then(|d| d.ssl_digest.as_ref())
             .is_some();
-        if !is_tls && has_tls_configured(&state.config) {
-            if let Some(host_val) = host {
+        if let (false, true, Some(host_val)) =
+            (is_tls, has_tls_configured(&state.config), host)
+        {
                 let location = format!("https://{host_val}{path}");
                 let mut header = pingora_http::ResponseHeader::build(301, None)
                     .map_err(|e| {
@@ -294,7 +296,6 @@ impl ProxyHttp for FluxoProxy {
                         )
                     })?;
                 return Ok(true); // short-circuit, handled
-            }
         }
 
         // --- Route matching (with header support) ---
