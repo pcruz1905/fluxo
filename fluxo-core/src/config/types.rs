@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::defaults;
 
 /// Top-level Fluxo configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FluxoConfig {
     /// Global server settings.
     #[serde(default)]
