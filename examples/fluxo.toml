@@ -1,0 +1,68 @@
+# Fluxo — Example Configuration
+#
+# This file demonstrates Fluxo's TOML configuration format.
+# Copy it to ./fluxo.toml and customize for your setup.
+#
+# For full documentation, see: https://github.com/fluxo-dev/fluxo
+
+# ─── Global Settings ────────────────────────────────────────────────
+
+[global]
+admin = "127.0.0.1:2019"   # Admin API address (future)
+threads = 0                 # Worker threads (0 = auto-detect CPU count)
+log_level = "info"          # trace | debug | info | warn | error
+
+# ─── Services ───────────────────────────────────────────────────────
+# A service groups listeners (addresses to bind) with routes (traffic rules).
+
+[services.web]
+
+  # Listeners — where Fluxo accepts connections.
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  # Uncomment for HTTPS with manual certificates:
+  # [[services.web.listeners]]
+  # address = "0.0.0.0:443"
+  # offer_h2 = true
+  #
+  # [services.web.tls]
+  # cert_path = "/etc/fluxo/cert.pem"
+  # key_path = "/etc/fluxo/key.pem"
+
+  # Routes — evaluated in order, first match wins.
+  # Empty match fields = catch-all (matches everything).
+
+  [[services.web.routes]]
+  name = "api"
+  match_host = ["api.example.com"]
+  match_path = ["/v1/*"]
+  upstream = "api-servers"
+
+  [[services.web.routes]]
+  name = "static"
+  match_host = ["example.com", "www.example.com"]
+  upstream = "web-servers"
+
+  [[services.web.routes]]
+  name = "catch-all"
+  upstream = "web-servers"
+
+# ─── Upstreams ──────────────────────────────────────────────────────
+# Named groups of backend servers.
+
+[upstreams.api-servers]
+discovery = "static"
+targets = ["10.0.1.1:8080", "10.0.1.2:8080", "10.0.1.3:8080"]
+load_balancing = "round_robin"
+# [upstreams.api-servers.health_check]
+# path = "/healthz"
+# interval = "10s"
+# timeout = "3s"
+# unhealthy_threshold = 3
+# healthy_threshold = 2
+
+[upstreams.web-servers]
+discovery = "static"
+targets = ["10.0.2.1:3000", "10.0.2.2:3000"]
+load_balancing = "round_robin"
