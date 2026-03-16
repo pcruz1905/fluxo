@@ -285,6 +285,52 @@ targets = ["127.0.0.1:3000"]
     }
 
     #[test]
+    fn header_matching_route() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "debug"
+  upstream = "backend"
+  [services.web.routes.match_header]
+  "X-Debug" = "true"
+
+  [[services.web.routes]]
+  name = "catch-all"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+
+        // Helper implementing RequestHeaders
+        struct H(std::collections::HashMap<String, String>);
+        impl matcher::RequestHeaders for H {
+            fn get_header(&self, name: &str) -> Option<&str> {
+                self.0.get(name).map(|s| s.as_str())
+            }
+        }
+
+        // With X-Debug header → should match "debug" route
+        let hdrs = H([("x-debug".to_string(), "true".to_string())]
+            .into_iter()
+            .collect());
+        let matched = table.match_route_with_headers(None, "/", "GET", &hdrs);
+        assert_eq!(matched.unwrap().name.as_deref(), Some("debug"));
+
+        // Without header → falls through to catch-all
+        let hdrs = H(std::collections::HashMap::new());
+        let matched = table.match_route_with_headers(None, "/", "GET", &hdrs);
+        assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
+    }
+
+    #[test]
     fn method_filtering() {
         let cfg = make_config(
             r#"

@@ -321,4 +321,67 @@ mod tests {
         let m = MethodMatcher::compile(&["get".to_string()]);
         assert!(m.matches("GET"));
     }
+
+    // --- Header matching ---
+
+    /// Simple test helper for header matching.
+    struct TestHeaders(std::collections::HashMap<String, String>);
+
+    impl RequestHeaders for TestHeaders {
+        fn get_header(&self, name: &str) -> Option<&str> {
+            self.0.get(name).map(|s| s.as_str())
+        }
+    }
+
+    fn test_headers(pairs: &[(&str, &str)]) -> TestHeaders {
+        TestHeaders(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn header_exact_match() {
+        let m = HeaderMatcher::compile("X-Debug", "true").unwrap();
+        let h = test_headers(&[("x-debug", "true")]);
+        assert!(m.matches(&h));
+
+        let h = test_headers(&[("x-debug", "false")]);
+        assert!(!m.matches(&h));
+    }
+
+    #[test]
+    fn header_missing_returns_false() {
+        let m = HeaderMatcher::compile("X-Debug", "true").unwrap();
+        let h = test_headers(&[]);
+        assert!(!m.matches(&h));
+    }
+
+    #[test]
+    fn header_regex_match() {
+        let m = HeaderMatcher::compile("X-Version", "~^v[0-9]+").unwrap();
+        let h = test_headers(&[("x-version", "v2")]);
+        assert!(m.matches(&h));
+
+        let h = test_headers(&[("x-version", "v123")]);
+        assert!(m.matches(&h));
+
+        let h = test_headers(&[("x-version", "latest")]);
+        assert!(!m.matches(&h));
+    }
+
+    #[test]
+    fn header_regex_invalid_pattern() {
+        let result = HeaderMatcher::compile("X-Test", "~[invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn header_name_case_insensitive() {
+        let m = HeaderMatcher::compile("Content-Type", "application/json").unwrap();
+        let h = test_headers(&[("content-type", "application/json")]);
+        assert!(m.matches(&h));
+    }
 }

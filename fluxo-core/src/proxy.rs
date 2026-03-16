@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use pingora_core::services::background::BackgroundService;
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_core::Error;
 use pingora_proxy::{ProxyHttp, Session};
@@ -34,8 +33,15 @@ pub struct FluxoState {
     pub router: RouteTable,
     /// Pre-built upstream groups, each holding a Pingora LoadBalancer.
     pub upstreams: HashMap<UpstreamName, UpstreamGroup>,
-    /// Background services for health checking (one per upstream with health_check configured).
-    pub health_check_services: Vec<Arc<dyn BackgroundService + Send + Sync>>,
+}
+
+/// Result of building a FluxoState, including services that need to be registered
+/// with the Pingora Server (but aren't part of the hot-path state).
+pub struct FluxoBuild {
+    /// The compiled state for the hot path.
+    pub state: FluxoState,
+    /// Background services for health checking. Register these with the Server.
+    pub health_check_services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>>,
 }
 
 impl FluxoState {
@@ -43,20 +49,37 @@ impl FluxoState {
     ///
     /// This is the single validation + compilation boundary. It can fail if
     /// route patterns are invalid or upstream addresses can't be resolved.
+    /// Build a new `FluxoState` from a validated config.
+    ///
+    /// This is the single validation + compilation boundary. It can fail if
+    /// route patterns are invalid or upstream addresses can't be resolved.
     pub fn try_from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
-
-        // Collect background services for health checking
-        let health_check_services: Vec<_> = upstreams
-            .values()
-            .filter_map(|g| g.background_service())
-            .collect();
-
         Ok(Self {
             config,
             router,
             upstreams,
+        })
+    }
+
+    /// Build a FluxoState plus background services for health checking.
+    pub fn build(config: FluxoConfig) -> Result<FluxoBuild, FluxoError> {
+        let router = RouteTable::build(&config)?;
+        let upstreams = build_upstream_groups(&config)?;
+
+        let health_check_services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>> =
+            upstreams
+                .values()
+                .filter_map(|g| g.background_service())
+                .collect();
+
+        Ok(FluxoBuild {
+            state: Self {
+                config,
+                router,
+                upstreams,
+            },
             health_check_services,
         })
     }
@@ -142,6 +165,13 @@ impl FluxoProxy {
     pub fn new(state: FluxoState) -> Self {
         Self {
             state: Arc::new(ArcSwap::from(Arc::new(state))),
+        }
+    }
+
+    /// Create a new proxy from an already-Arc'd state.
+    pub fn from_state(state: Arc<FluxoState>) -> Self {
+        Self {
+            state: Arc::new(ArcSwap::from(state)),
         }
     }
 

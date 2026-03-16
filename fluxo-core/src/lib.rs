@@ -14,4 +14,4 @@ pub mod upstream;
 pub use app::FluxoApp;
 pub use context::RequestContext;
 pub use error::FluxoError;
-pub use proxy::{FluxoProxy, FluxoState};
+pub use proxy::{FluxoBuild, FluxoProxy, FluxoState};

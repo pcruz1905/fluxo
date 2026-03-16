@@ -10,7 +10,8 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_load_balancing::selection::{Consistent, Random, RoundRobin};
 use pingora_load_balancing::LoadBalancer;
 
-use pingora_core::services::background::BackgroundService;
+use pingora_core::services::background::GenBackgroundService;
+use pingora_core::services::ServiceWithDependents;
 
 use crate::upstream::UpstreamError;
 use crate::upstream::UpstreamName;
@@ -142,36 +143,22 @@ impl AnyLoadBalancer {
 
     /// Get as a background service for health check scheduling.
     /// Returns `None` if no health check is configured (no frequency set).
-    fn as_background_service(&self) -> Option<Arc<dyn BackgroundService + Send + Sync>> {
+    fn as_background_service(&self, name: &str) -> Option<Box<dyn ServiceWithDependents>> {
+        let svc_name = format!("BG health-check {name}");
         match self {
-            Self::RoundRobin(lb) => {
-                if lb.health_check_frequency.is_some() {
-                    Some(lb.clone() as Arc<dyn BackgroundService + Send + Sync>)
-                } else {
-                    None
-                }
+            Self::RoundRobin(lb) if lb.health_check_frequency.is_some() => {
+                Some(Box::new(GenBackgroundService::new(svc_name, lb.clone())))
             }
-            Self::Random(lb) => {
-                if lb.health_check_frequency.is_some() {
-                    Some(lb.clone() as Arc<dyn BackgroundService + Send + Sync>)
-                } else {
-                    None
-                }
+            Self::Random(lb) if lb.health_check_frequency.is_some() => {
+                Some(Box::new(GenBackgroundService::new(svc_name, lb.clone())))
             }
-            Self::FnvHash(lb) => {
-                if lb.health_check_frequency.is_some() {
-                    Some(lb.clone() as Arc<dyn BackgroundService + Send + Sync>)
-                } else {
-                    None
-                }
+            Self::FnvHash(lb) if lb.health_check_frequency.is_some() => {
+                Some(Box::new(GenBackgroundService::new(svc_name, lb.clone())))
             }
-            Self::ConsistentHash(lb) => {
-                if lb.health_check_frequency.is_some() {
-                    Some(lb.clone() as Arc<dyn BackgroundService + Send + Sync>)
-                } else {
-                    None
-                }
+            Self::ConsistentHash(lb) if lb.health_check_frequency.is_some() => {
+                Some(Box::new(GenBackgroundService::new(svc_name, lb.clone())))
             }
+            _ => None,
         }
     }
 
@@ -253,8 +240,8 @@ impl UpstreamGroup {
 
     /// Get the underlying load balancer as a background service for health check scheduling.
     /// Returns `None` if no health check is configured.
-    pub fn background_service(&self) -> Option<Arc<dyn BackgroundService + Send + Sync>> {
-        self.lb.as_background_service()
+    pub fn background_service(&self) -> Option<Box<dyn ServiceWithDependents>> {
+        self.lb.as_background_service(&self.name.0)
     }
 
     /// Select a peer using the configured strategy, then wrap it as an `HttpPeer`
@@ -279,7 +266,7 @@ impl UpstreamGroup {
         Ok(Box::new(peer))
     }
 
-    /// Select a peer using a hash key (for hash-based strategies).
+    /// Select a peer using a hash key (for hash-based strategies like fnv_hash, consistent_hash).
     pub fn select_peer_with_key(&self, key: &[u8]) -> Result<Box<HttpPeer>, UpstreamError> {
         let backend = self
             .lb
@@ -297,5 +284,100 @@ impl UpstreamGroup {
         peer.options.write_timeout = Some(self.timeouts.write);
 
         Ok(Box::new(peer))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::upstream::UpstreamName;
+
+    #[test]
+    fn lb_strategy_from_config() {
+        assert_eq!(LbStrategy::from_config("round_robin").unwrap(), LbStrategy::RoundRobin);
+        assert_eq!(LbStrategy::from_config("random").unwrap(), LbStrategy::Random);
+        assert_eq!(LbStrategy::from_config("fnv_hash").unwrap(), LbStrategy::FnvHash);
+        assert_eq!(LbStrategy::from_config("consistent_hash").unwrap(), LbStrategy::ConsistentHash);
+        assert!(LbStrategy::from_config("invalid").is_err());
+    }
+
+    #[test]
+    fn upstream_group_round_robin() {
+        let targets = vec!["127.0.0.1:3000".to_string(), "127.0.0.1:3001".to_string()];
+        let group = UpstreamGroup::new(
+            UpstreamName::from("test"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        // Should be able to select peers
+        let peer1 = group.select_peer().unwrap();
+        let peer2 = group.select_peer().unwrap();
+        // Both should succeed (round robin across 2 backends)
+        assert!(peer1.address().as_inet().is_some());
+        assert!(peer2.address().as_inet().is_some());
+    }
+
+    #[test]
+    fn upstream_group_all_strategies() {
+        let targets = vec!["127.0.0.1:3000".to_string(), "127.0.0.1:3001".to_string()];
+        for strategy in &[
+            LbStrategy::RoundRobin,
+            LbStrategy::Random,
+            LbStrategy::FnvHash,
+            LbStrategy::ConsistentHash,
+        ] {
+            let group = UpstreamGroup::new(
+                UpstreamName::from("test"),
+                &targets,
+                *strategy,
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap_or_else(|e| panic!("strategy {:?} should work: {}", strategy, e));
+            let peer = group.select_peer().unwrap();
+            assert!(peer.address().as_inet().is_some());
+        }
+    }
+
+    #[test]
+    fn upstream_group_consistent_hash_same_key() {
+        let targets = vec![
+            "127.0.0.1:3000".to_string(),
+            "127.0.0.1:3001".to_string(),
+            "127.0.0.1:3002".to_string(),
+        ];
+        let group = UpstreamGroup::new(
+            UpstreamName::from("test"),
+            &targets,
+            LbStrategy::ConsistentHash,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        // Same key should consistently select the same peer
+        let peer1 = group.select_peer_with_key(b"user-123").unwrap();
+        let peer2 = group.select_peer_with_key(b"user-123").unwrap();
+        assert_eq!(
+            peer1.address().as_inet().unwrap(),
+            peer2.address().as_inet().unwrap()
+        );
+    }
+
+    #[test]
+    fn upstream_group_no_health_check_no_bg_service() {
+        let targets = vec!["127.0.0.1:3000".to_string()];
+        let group = UpstreamGroup::new(
+            UpstreamName::from("test"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(group.background_service().is_none());
     }
 }

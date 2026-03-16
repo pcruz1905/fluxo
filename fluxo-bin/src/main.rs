@@ -7,7 +7,6 @@ use std::path::Path;
 use clap::Parser;
 use pingora::proxy::http_proxy_service;
 use pingora::server::Server;
-use pingora::services::background::background_service;
 use tracing_subscriber::EnvFilter;
 
 use fluxo_core::config;
@@ -95,7 +94,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Build the app (compiles routes, initializes load balancers)
-    let app = FluxoApp::from_config(fluxo_config.clone())?;
+    let mut app = FluxoApp::from_config(fluxo_config.clone())?;
 
     // Create Pingora server
     let mut server = Server::new(None)?;
@@ -131,6 +130,11 @@ fn main() -> anyhow::Result<()> {
         }
 
         server.add_service(svc);
+    }
+
+    // Register health check background services
+    for hc_svc in app.take_health_check_services() {
+        server.add_boxed_service(hc_svc);
     }
 
     tracing::info!("fluxo is ready");

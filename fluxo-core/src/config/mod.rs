@@ -178,12 +178,45 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             )));
         }
 
-        // Only "static" discovery is supported in v0.1
+        // Only "static" discovery is supported currently
         if upstream.discovery != "static" {
             return Err(ConfigError::Validation(format!(
-                "upstream '{}': discovery '{}' is not yet supported. Only 'static' is available in v0.1.",
+                "upstream '{}': discovery '{}' is not yet supported. Only 'static' is available.",
                 name, upstream.discovery
             )));
+        }
+
+        // Validate load balancing strategy
+        let valid_strategies = ["round_robin", "random", "fnv_hash", "consistent_hash"];
+        if !valid_strategies.contains(&upstream.load_balancing.as_str()) {
+            return Err(ConfigError::Validation(format!(
+                "upstream '{}': unknown load_balancing '{}'. Valid: {}",
+                name,
+                upstream.load_balancing,
+                valid_strategies.join(", ")
+            )));
+        }
+
+        // Validate health check config if present
+        if let Some(hc) = &upstream.health_check {
+            if hc.path.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': health_check.path must not be empty",
+                    name
+                )));
+            }
+            parse_duration(&hc.interval).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid health_check.interval '{}'",
+                    name, hc.interval
+                ))
+            })?;
+            parse_duration(&hc.timeout).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid health_check.timeout '{}'",
+                    name, hc.timeout
+                ))
+            })?;
         }
     }
 
@@ -409,6 +442,135 @@ targets = ["127.0.0.1:3000"]
 "#;
         let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("no listeners"));
+    }
+
+    #[test]
+    fn parse_lb_strategies() {
+        for strategy in &["round_robin", "random", "fnv_hash", "consistent_hash"] {
+            let toml = format!(
+                r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+load_balancing = "{strategy}"
+"#
+            );
+            load_from_str(&toml).unwrap_or_else(|e| panic!("strategy '{strategy}' should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn reject_invalid_lb_strategy() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+load_balancing = "least_connections"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("least_connections"));
+    }
+
+    #[test]
+    fn parse_health_check_config() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+interval = "10s"
+timeout = "3s"
+unhealthy_threshold = 3
+healthy_threshold = 2
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let hc = config.upstreams["backend"].health_check.as_ref().unwrap();
+        assert_eq!(hc.path, "/healthz");
+        assert_eq!(hc.unhealthy_threshold, 3);
+    }
+
+    #[test]
+    fn reject_empty_health_check_path() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = ""
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("path must not be empty"));
+    }
+
+    #[test]
+    fn reject_invalid_health_check_interval() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/health"
+interval = "not_a_duration"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("interval"));
+    }
+
+    #[test]
+    fn parse_duration_values() {
+        assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
+        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+        assert_eq!(parse_duration("2m").unwrap(), Duration::from_secs(120));
+        assert!(parse_duration("bad").is_err());
+    }
+
+    #[test]
+    fn parse_header_matcher_config() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  upstream = "backend"
+  [services.web.routes.match_header]
+  "X-Debug" = "true"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let route = &config.services["web"].routes[0];
+        assert_eq!(route.match_header.get("X-Debug").unwrap(), "true");
     }
 
     #[test]
