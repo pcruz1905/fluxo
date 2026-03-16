@@ -291,6 +291,7 @@ impl UpstreamGroup {
 mod tests {
     use super::*;
     use crate::upstream::UpstreamName;
+    use pingora_core::upstreams::peer::Peer;
 
     #[test]
     fn lb_strategy_from_config() {
