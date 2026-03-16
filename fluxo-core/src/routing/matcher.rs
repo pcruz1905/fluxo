@@ -101,9 +101,8 @@ impl PathMatcher {
                 source: e,
             })?;
             Ok(PathMatcher::Glob(glob_pat))
-        } else if pattern.ends_with('*') {
+        } else if let Some(prefix) = pattern.strip_suffix('*') {
             // "/v1/*" → prefix "/v1/"
-            let prefix = &pattern[..pattern.len() - 1];
             Ok(PathMatcher::Prefix(prefix.to_string()))
         } else if pattern.ends_with('/') && pattern != "/" {
             // "/v1/" → prefix "/v1/"

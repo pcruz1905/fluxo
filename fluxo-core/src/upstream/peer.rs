@@ -13,7 +13,7 @@ use crate::upstream::UpstreamError;
 use crate::upstream::UpstreamName;
 
 /// TLS configuration for connections to an upstream group.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UpstreamTlsConfig {
     /// Whether to use TLS for upstream connections.
     pub enabled: bool,
@@ -21,14 +21,6 @@ pub struct UpstreamTlsConfig {
     pub sni: Option<String>,
 }
 
-impl Default for UpstreamTlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            sni: None,
-        }
-    }
-}
 
 /// Timeout configuration for connections to an upstream group.
 #[derive(Debug, Clone)]

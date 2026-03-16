@@ -74,7 +74,7 @@ impl RouteTable {
         let mut routes = Vec::new();
         let mut index = 0;
 
-        for (_service_name, service) in &config.services {
+        for service in config.services.values() {
             for route_config in &service.routes {
                 let compiled = Self::compile_route(route_config, index)?;
                 routes.push(compiled);
