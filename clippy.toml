@@ -1,0 +1,17 @@
+# clippy.toml — project-wide clippy configuration
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# MSRV — enables lints that suggest newer Rust features
+msrv = "1.85"
+
+# Cognitive complexity threshold before warning
+cognitive-complexity-threshold = 30
+
+# Max lines in a function before triggering too_many_lines
+too-many-lines-threshold = 150
+
+# Allowed wildcard imports (Pingora re-exports)
+allowed-wildcard-imports = ["pingora_core::ErrorType"]
+
+# Type complexity threshold
+type-complexity-threshold = 300

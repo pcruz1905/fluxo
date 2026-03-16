@@ -1,0 +1,41 @@
+[Unit]
+Description=Fluxo — fast, simple, memory-safe reverse proxy
+Documentation=https://github.com/fluxo-dev/fluxo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/fluxo --config /etc/fluxo/fluxo.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+User=fluxo
+Group=fluxo
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/fluxo /var/log/fluxo
+
+# Allow binding to privileged ports (80, 443) without root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fluxo
+
+[Install]
+WantedBy=multi-user.target
