@@ -2,6 +2,9 @@
 //!
 //! This is the thin CLI binary that bootstraps the Pingora server.
 
+use std::path::Path;
+
+use clap::Parser;
 use pingora::proxy::http_proxy_service;
 use pingora::server::Server;
 use tracing_subscriber::EnvFilter;
@@ -9,22 +12,86 @@ use tracing_subscriber::EnvFilter;
 use fluxo_core::config;
 use fluxo_core::FluxoApp;
 
+/// The fast, simple, memory-safe reverse proxy.
+#[derive(Parser, Debug)]
+#[command(name = "fluxo", version, about)]
+struct Cli {
+    /// Path to config file
+    #[arg(short, long, default_value = "fluxo.toml")]
+    config: String,
+
+    /// Quick-start: proxy all traffic to this upstream address
+    #[arg(long, value_name = "ADDR")]
+    upstream: Option<String>,
+
+    /// Log level override (trace, debug, info, warn, error)
+    #[arg(long, value_name = "LEVEL")]
+    log_level: Option<String>,
+
+    /// Number of worker threads (0 = auto-detect)
+    #[arg(long)]
+    threads: Option<usize>,
+
+    /// Validate config and exit
+    #[arg(long)]
+    test: bool,
+
+    /// Print default config to stdout and exit
+    #[arg(long)]
+    init: bool,
+}
+
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // --init: print default config and exit
+    if cli.init {
+        print!("{}", config::default_config_toml());
+        return Ok(());
+    }
+
+    // Determine log level: CLI flag > env var > config default
+    let log_level = cli
+        .log_level
+        .as_deref()
+        .unwrap_or("info");
+
     // Initialize tracing (structured logging)
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(log_level)),
         )
         .init();
 
     tracing::info!("starting fluxo v{}", env!("CARGO_PKG_VERSION"));
 
-    // Load config from default paths (./fluxo.toml or /etc/fluxo/fluxo.toml)
-    // Falls back to a hardcoded upstream for now
-    let fluxo_config = config::load_from_default_paths().unwrap_or_else(|e| {
-        tracing::warn!("failed to load config: {}, using default", e);
-        config::config_from_upstream("1.1.1.1:80")
-    });
+    // Load configuration
+    let fluxo_config = if let Some(ref upstream) = cli.upstream {
+        // --upstream shorthand: create minimal config
+        tracing::info!(upstream = upstream.as_str(), "using --upstream shorthand");
+        config::config_from_upstream(upstream)
+    } else {
+        let config_path = Path::new(&cli.config);
+        if config_path.exists() {
+            config::load_from_file(config_path)?
+        } else if cli.config == "fluxo.toml" {
+            // Default path doesn't exist — try other defaults or use fallback
+            config::load_from_default_paths()?
+        } else {
+            // User specified a non-default path that doesn't exist
+            anyhow::bail!("config file not found: {}", cli.config);
+        }
+    };
+
+    // --test: validate and exit
+    if cli.test {
+        tracing::info!("configuration is valid");
+        // Also try to build the state to catch compilation errors
+        let _state = fluxo_core::FluxoState::try_from_config(fluxo_config)?;
+        tracing::info!("state compiled successfully");
+        return Ok(());
+    }
 
     // Build the app (compiles routes, initializes load balancers)
     let app = FluxoApp::from_config(fluxo_config.clone())?;
