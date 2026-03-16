@@ -41,6 +41,10 @@ pub struct GlobalConfig {
     /// Log level (trace, debug, info, warn, error).
     #[serde(default = "defaults::log_level")]
     pub log_level: String,
+
+    /// Base directory for certificate storage (ACME certs, account keys).
+    /// Defaults to platform-specific data dir (~/.local/share/fluxo/certs).
+    pub cert_dir: Option<String>,
 }
 
 impl Default for GlobalConfig {
@@ -51,6 +55,7 @@ impl Default for GlobalConfig {
             pid_file: None,
             upgrade_socket: None,
             log_level: defaults::log_level(),
+            cert_dir: None,
         }
     }
 }
@@ -90,12 +95,19 @@ pub struct TlsConfig {
     /// Path to the TLS private key file.
     pub key_path: Option<String>,
 
-    /// Enable ACME (Let's Encrypt). Not supported in v0.1.
+    /// Enable ACME (Let's Encrypt) automatic certificate management.
     #[serde(default)]
     pub acme: bool,
 
-    /// ACME account email. Not supported in v0.1.
+    /// ACME account email (required when acme = true).
     pub acme_email: Option<String>,
+
+    /// Custom ACME directory URL. Defaults to Let's Encrypt production.
+    pub acme_directory: Option<String>,
+
+    /// Use Let's Encrypt staging environment for testing.
+    #[serde(default)]
+    pub acme_staging: bool,
 }
 
 /// A single route definition.

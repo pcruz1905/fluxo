@@ -18,6 +18,7 @@ use crate::context::{MatchedRoute, RequestContext, SelectedPeer};
 use crate::error::FluxoError;
 use crate::routing::matcher::RequestHeaders;
 use crate::routing::RouteTable;
+use crate::tls::ChallengeState;
 use crate::upstream::peer::UpstreamGroup;
 use crate::upstream::UpstreamName;
 
@@ -33,6 +34,8 @@ pub struct FluxoState {
     pub router: RouteTable,
     /// Pre-built upstream groups, each holding a Pingora LoadBalancer.
     pub upstreams: HashMap<UpstreamName, UpstreamGroup>,
+    /// ACME HTTP-01 challenge tokens (shared with the ACME client).
+    pub challenge_state: Arc<ChallengeState>,
 }
 
 /// Result of building a FluxoState, including services that need to be registered
@@ -60,6 +63,7 @@ impl FluxoState {
             config,
             router,
             upstreams,
+            challenge_state: Arc::new(ChallengeState::new()),
         })
     }
 
@@ -79,6 +83,7 @@ impl FluxoState {
                 config,
                 router,
                 upstreams,
+                challenge_state: Arc::new(ChallengeState::new()),
             },
             health_check_services,
         })
@@ -142,6 +147,15 @@ fn build_upstream_groups(
     Ok(groups)
 }
 
+/// Check if any service in the config has TLS (manual or ACME) configured.
+fn has_tls_configured(config: &FluxoConfig) -> bool {
+    config.services.values().any(|svc| {
+        svc.tls.as_ref().is_some_and(|tls| {
+            tls.acme || (tls.cert_path.is_some() && tls.key_path.is_some())
+        })
+    })
+}
+
 /// Adapter to let Pingora request headers implement our `RequestHeaders` trait.
 struct PingoraHeaders<'a>(&'a pingora_http::RequestHeader);
 
@@ -173,6 +187,11 @@ impl FluxoProxy {
         Self {
             state: Arc::new(ArcSwap::from(state)),
         }
+    }
+
+    /// Get the challenge state for sharing with the ACME client.
+    pub fn challenge_state(&self) -> Arc<ChallengeState> {
+        self.state.load().challenge_state.clone()
     }
 
     /// Atomically replace the running config with a new one.
@@ -207,7 +226,78 @@ impl ProxyHttp for FluxoProxy {
         let path = req_header.uri.path();
         let method = req_header.method.as_str();
 
-        // Route matching (with header support)
+        // --- ACME HTTP-01 challenge interception ---
+        // Serve challenge tokens before any other processing.
+        // One prefix check per request — negligible overhead.
+        if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/") {
+            if let Some(key_auth) = state.challenge_state.get(token) {
+                let header = pingora_http::ResponseHeader::build(200, None)
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build ACME challenge response: {e}"),
+                        )
+                    })?;
+                session
+                    .write_response_header(Box::new(header), false)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write ACME challenge header: {e}"),
+                        )
+                    })?;
+                session
+                    .write_response_body(Some(key_auth.into()), true)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write ACME challenge body: {e}"),
+                        )
+                    })?;
+                return Ok(true); // short-circuit, handled
+            }
+        }
+
+        // --- HTTP→HTTPS redirect ---
+        // If TLS is configured for any service and the request came on plaintext,
+        // redirect to HTTPS. Skip for ACME challenge paths (handled above).
+        let is_tls = session
+            .as_downstream()
+            .digest()
+            .and_then(|d| d.ssl_digest.as_ref())
+            .is_some();
+        if !is_tls && has_tls_configured(&state.config) {
+            if let Some(host_val) = host {
+                let location = format!("https://{host_val}{path}");
+                let mut header = pingora_http::ResponseHeader::build(301, None)
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build redirect response: {e}"),
+                        )
+                    })?;
+                header.insert_header("Location", &location).map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::InternalError,
+                        format!("failed to set Location header: {e}"),
+                    )
+                })?;
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write redirect response: {e}"),
+                        )
+                    })?;
+                return Ok(true); // short-circuit, handled
+            }
+        }
+
+        // --- Route matching (with header support) ---
         let pingora_hdrs = PingoraHeaders(req_header);
         match state.router.match_route_with_headers(host, path, method, &pingora_hdrs) {
             Some(route) => {

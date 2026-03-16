@@ -142,15 +142,27 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         }
     }
 
-    // Validate TLS: if cert_path is set, key_path must also be set
+    // Validate TLS configuration
     for (service_name, service) in &config.services {
         if let Some(tls) = &service.tls {
+            // ACME validation
             if tls.acme {
-                return Err(ConfigError::Validation(
-                    "ACME is not yet supported in v0.1. Use cert_path/key_path for manual TLS."
-                        .to_string(),
-                ));
+                if tls.acme_email.is_none() {
+                    return Err(ConfigError::Validation(format!(
+                        "service '{}': acme = true requires acme_email to be set",
+                        service_name
+                    )));
+                }
+                // ACME and manual cert_path/key_path are mutually exclusive
+                if tls.cert_path.is_some() || tls.key_path.is_some() {
+                    return Err(ConfigError::Validation(format!(
+                        "service '{}': cannot use both acme and cert_path/key_path",
+                        service_name
+                    )));
+                }
             }
+
+            // Manual TLS: if cert_path is set, key_path must also be set
             match (&tls.cert_path, &tls.key_path) {
                 (Some(_), None) => {
                     return Err(ConfigError::Validation(format!(
@@ -403,7 +415,27 @@ targets = ["127.0.0.1:3000"]
     }
 
     #[test]
-    fn reject_acme_in_v01() {
+    fn acme_requires_email() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:443"
+
+  [services.web.tls]
+  acme = true
+
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("acme_email"));
+    }
+
+    #[test]
+    fn acme_valid_config() {
         let toml = r#"
 [services.web]
   [[services.web.listeners]]
@@ -419,8 +451,33 @@ targets = ["127.0.0.1:3000"]
 [upstreams.backend]
 targets = ["127.0.0.1:3000"]
 "#;
+        let config = load_from_str(toml).expect("should parse");
+        let tls = config.services["web"].tls.as_ref().unwrap();
+        assert!(tls.acme);
+        assert_eq!(tls.acme_email.as_deref(), Some("ops@example.com"));
+    }
+
+    #[test]
+    fn acme_and_cert_path_mutually_exclusive() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:443"
+
+  [services.web.tls]
+  acme = true
+  acme_email = "ops@example.com"
+  cert_path = "/etc/cert.pem"
+  key_path = "/etc/key.pem"
+
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err.to_string().contains("ACME is not yet supported"));
+        assert!(err.to_string().contains("cannot use both acme and cert_path"));
     }
 
     #[test]

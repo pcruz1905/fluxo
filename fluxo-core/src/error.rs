@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::config::ConfigError;
 use crate::routing::RoutingError;
+use crate::tls::acme::AcmeError;
 use crate::upstream::UpstreamError;
 
 /// Top-level error type for fluxo-core operations.
@@ -23,6 +24,10 @@ pub enum FluxoError {
     /// Upstream error (no backends, invalid addresses).
     #[error("upstream error: {0}")]
     Upstream(#[from] UpstreamError),
+
+    /// ACME / TLS certificate error.
+    #[error("ACME error: {0}")]
+    Acme(#[from] AcmeError),
 
     /// Error from Pingora internals.
     #[error("pingora error: {0}")]

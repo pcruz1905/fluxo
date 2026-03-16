@@ -3,7 +3,7 @@ resolver = "2"
 members = ["fluxo-bin", "fluxo-core", "fluxo-plugins", "fluxo-plugin-sdk"]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 version = "0.1.0"
 license = "Apache-2.0"
 
@@ -27,3 +27,9 @@ glob = "0.3"
 fastrand = "2"
 async-trait = "0.1"
 http = "1"
+instant-acme = "0.8"
+rcgen = "0.14"
+x509-parser = "0.18"
+pem = "3"
+tokio = { version = "1", features = ["fs", "time", "sync", "rt-multi-thread"] }
+tempfile = "3"

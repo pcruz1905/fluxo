@@ -9,9 +9,11 @@ pub mod context;
 pub mod error;
 pub mod proxy;
 pub mod routing;
+pub mod tls;
 pub mod upstream;
 
 pub use app::FluxoApp;
 pub use context::RequestContext;
 pub use error::FluxoError;
 pub use proxy::{FluxoBuild, FluxoProxy, FluxoState};
+pub use tls::{CertStore, ChallengeState};

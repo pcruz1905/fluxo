@@ -21,3 +21,11 @@ glob = { workspace = true }
 fastrand = { workspace = true }
 async-trait = { workspace = true }
 http = { workspace = true }
+instant-acme = { workspace = true }
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
+pem = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
