@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["fluxo-bin", "fluxo-core", "fluxo-plugins", "fluxo-plugin-sdk"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+pingora = { version = "0.8", features = ["proxy", "lb", "rustls"] }
+pingora-proxy = "0.8"
+pingora-core = "0.8"
+pingora-load-balancing = "0.8"
+pingora-http = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+arc-swap = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+glob = "0.3"
+fastrand = "2"
+async-trait = "0.1"
+http = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "fluxo"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fluxo"
+path = "src/main.rs"
+
+[dependencies]
+fluxo-core = { path = "../fluxo-core" }
+pingora = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }

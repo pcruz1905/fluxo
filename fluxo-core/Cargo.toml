@@ -1,0 +1,23 @@
+[package]
+name = "fluxo-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+pingora = { workspace = true }
+pingora-proxy = { workspace = true }
+pingora-core = { workspace = true }
+pingora-load-balancing = { workspace = true }
+pingora-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+arc-swap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+glob = { workspace = true }
+fastrand = { workspace = true }
+async-trait = { workspace = true }
+http = { workspace = true }

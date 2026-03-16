@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rust-docs-mcp": {
+      "command": "rust-docs-mcp",
+      "args": []
+    }
+  }
+}

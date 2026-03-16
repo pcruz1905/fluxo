@@ -1,0 +1,5 @@
+[package]
+name = "fluxo-plugin-sdk"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
