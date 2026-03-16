@@ -8,8 +8,13 @@ license.workspace = true
 name = "fluxo"
 path = "src/main.rs"
 
+[features]
+default = ["boringssl"]
+boringssl = ["fluxo-core/boringssl", "pingora/boringssl"]
+rustls = ["fluxo-core/rustls", "pingora/rustls"]
+
 [dependencies]
-fluxo-core = { path = "../fluxo-core" }
+fluxo-core = { path = "../fluxo-core", default-features = false }
 pingora = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

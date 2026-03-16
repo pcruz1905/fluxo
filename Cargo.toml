@@ -8,7 +8,7 @@ version = "0.1.0"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-pingora = { version = "0.8", features = ["proxy", "lb", "rustls"] }
+pingora = { version = "0.8", features = ["proxy", "lb"] }
 pingora-proxy = "0.8"
 pingora-core = "0.8"
 pingora-load-balancing = "0.8"

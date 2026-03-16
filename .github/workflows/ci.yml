@@ -2,21 +2,135 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  build:
+  # ── Check formatting ──────────────────────────────────────────────
+  fmt:
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: cargo +nightly fmt --all --check
+
+  # ── Clippy lints (both TLS backends) ──────────────────────────────
+  clippy:
+    name: clippy (${{ matrix.tls }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tls: [boringssl, rustls]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
-      - name: Build
-        run: cargo build --verbose
-      - name: Run tests
-        run: cargo test --verbose
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.tls }}
+
+      # BoringSSL build deps
+      - name: Install BoringSSL build deps
+        if: matrix.tls == 'boringssl'
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+
+      - name: Clippy (rustls)
+        if: matrix.tls == 'rustls'
+        run: cargo clippy --all-targets --no-default-features --features rustls
+
+      - name: Clippy (boringssl)
+        if: matrix.tls == 'boringssl'
+        run: cargo clippy --all-targets
+
+  # ── Tests (both TLS backends) ─────────────────────────────────────
+  test:
+    name: test (${{ matrix.tls }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tls: [boringssl, rustls]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.tls }}
+
+      - name: Install BoringSSL build deps
+        if: matrix.tls == 'boringssl'
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+
+      - name: Test (rustls)
+        if: matrix.tls == 'rustls'
+        run: cargo test --no-default-features --features rustls
+
+      - name: Test (boringssl)
+        if: matrix.tls == 'boringssl'
+        run: cargo test
+
+  # ── Build release binaries (both backends, Linux x86_64) ──────────
+  build:
+    name: build (${{ matrix.tls }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tls: [boringssl, rustls]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-${{ matrix.tls }}
+
+      - name: Install BoringSSL build deps
+        if: matrix.tls == 'boringssl'
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+
+      - name: Build release (rustls)
+        if: matrix.tls == 'rustls'
+        run: cargo build --release --no-default-features --features rustls
+
+      - name: Build release (boringssl)
+        if: matrix.tls == 'boringssl'
+        run: cargo build --release
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluxo-x86_64-linux-${{ matrix.tls }}
+          path: target/release/fluxo
+
+  # ── Config validation test ────────────────────────────────────────
+  config-test:
+    name: validate example config
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fluxo-x86_64-linux-rustls
+      - run: chmod +x fluxo
+      - name: Validate example config
+        run: ./fluxo --config examples/fluxo.toml --test
+
+  # ── Docs build ────────────────────────────────────────────────────
+  doc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: doc
+      - run: cargo doc --no-deps --no-default-features --features rustls
+        env:
+          RUSTDOCFLAGS: "-Dwarnings"

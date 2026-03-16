@@ -4,5 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["boringssl"]
+boringssl = ["fluxo-core/boringssl"]
+rustls = ["fluxo-core/rustls"]
+
 [dependencies]
-fluxo-core = { path = "../fluxo-core" }
+fluxo-core = { path = "../fluxo-core", default-features = false }

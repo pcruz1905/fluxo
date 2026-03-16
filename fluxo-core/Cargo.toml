@@ -4,6 +4,11 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["boringssl"]
+boringssl = ["pingora/boringssl"]
+rustls = ["pingora/rustls"]
+
 [dependencies]
 pingora = { workspace = true }
 pingora-proxy = { workspace = true }
