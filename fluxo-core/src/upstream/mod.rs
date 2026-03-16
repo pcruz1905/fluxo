@@ -22,6 +22,10 @@ pub enum UpstreamError {
         /// Why the address is invalid.
         reason: String,
     },
+
+    /// An unknown load balancing strategy was specified.
+    #[error("unknown load balancing strategy '{0}'. Valid: round_robin, random, fnv_hash, consistent_hash")]
+    InvalidStrategy(String),
 }
 
 /// A named upstream group (e.g., "api-servers").

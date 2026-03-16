@@ -6,6 +6,7 @@ mod types;
 pub use types::*;
 
 use std::path::Path;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -224,6 +225,31 @@ load_balancing = "round_robin"
 # interval = "10s"
 "#
     .to_string()
+}
+
+/// Parse a duration string like "10s", "500ms", "1m" into a `Duration`.
+pub fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
+    let s = s.trim();
+    if let Some(val) = s.strip_suffix("ms") {
+        let ms: u64 = val
+            .parse()
+            .map_err(|_| ConfigError::Validation(format!("invalid duration: '{s}'")))?;
+        Ok(Duration::from_millis(ms))
+    } else if let Some(val) = s.strip_suffix('s') {
+        let secs: u64 = val
+            .parse()
+            .map_err(|_| ConfigError::Validation(format!("invalid duration: '{s}'")))?;
+        Ok(Duration::from_secs(secs))
+    } else if let Some(val) = s.strip_suffix('m') {
+        let mins: u64 = val
+            .parse()
+            .map_err(|_| ConfigError::Validation(format!("invalid duration: '{s}'")))?;
+        Ok(Duration::from_secs(mins * 60))
+    } else {
+        Err(ConfigError::Validation(format!(
+            "invalid duration '{s}': expected suffix 's', 'ms', or 'm'"
+        )))
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::path::Path;
 use clap::Parser;
 use pingora::proxy::http_proxy_service;
 use pingora::server::Server;
+use pingora::services::background::background_service;
 use tracing_subscriber::EnvFilter;
 
 use fluxo_core::config;

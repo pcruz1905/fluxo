@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use pingora_core::services::background::BackgroundService;
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_core::Error;
 use pingora_proxy::{ProxyHttp, Session};
@@ -33,6 +34,8 @@ pub struct FluxoState {
     pub router: RouteTable,
     /// Pre-built upstream groups, each holding a Pingora LoadBalancer.
     pub upstreams: HashMap<UpstreamName, UpstreamGroup>,
+    /// Background services for health checking (one per upstream with health_check configured).
+    pub health_check_services: Vec<Arc<dyn BackgroundService + Send + Sync>>,
 }
 
 impl FluxoState {
@@ -43,28 +46,73 @@ impl FluxoState {
     pub fn try_from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
+
+        // Collect background services for health checking
+        let health_check_services: Vec<_> = upstreams
+            .values()
+            .filter_map(|g| g.background_service())
+            .collect();
+
         Ok(Self {
             config,
             router,
             upstreams,
+            health_check_services,
         })
     }
 }
 
-/// Build upstream groups from the config.
+/// Build upstream groups from the config, including health checks.
 fn build_upstream_groups(
     config: &FluxoConfig,
 ) -> Result<HashMap<UpstreamName, UpstreamGroup>, FluxoError> {
+    use crate::upstream::peer::LbStrategy;
+    use pingora_load_balancing::health_check::HttpHealthCheck;
+
     let mut groups = HashMap::new();
 
     for (name, upstream_config) in &config.upstreams {
         let upstream_name = UpstreamName::from(name.as_str());
-        let group = UpstreamGroup::new(
+        let strategy = LbStrategy::from_config(&upstream_config.load_balancing)?;
+        let mut group = UpstreamGroup::new(
             upstream_name.clone(),
             &upstream_config.targets,
-            Default::default(), // TLS config — will be wired from config in Step 5
+            strategy,
+            Default::default(), // TLS config — will be wired from config later
             Default::default(), // Timeouts — will be wired from config later
         )?;
+
+        // Wire health check if configured
+        if let Some(hc_config) = &upstream_config.health_check {
+            let interval = crate::config::parse_duration(&hc_config.interval)?;
+            let timeout = crate::config::parse_duration(&hc_config.timeout)?;
+
+            let mut hc = HttpHealthCheck::new(name, false);
+            hc.consecutive_success = hc_config.healthy_threshold as usize;
+            hc.consecutive_failure = hc_config.unhealthy_threshold as usize;
+            hc.peer_template.options.connection_timeout = Some(timeout);
+            hc.peer_template.options.read_timeout = Some(timeout);
+
+            // Set health check path
+            let mut req =
+                pingora_http::RequestHeader::build("GET", hc_config.path.as_bytes(), None)
+                    .map_err(|e| {
+                        crate::config::ConfigError::Validation(format!(
+                            "invalid health check path '{}': {}",
+                            hc_config.path, e
+                        ))
+                    })?;
+            req.append_header("Host", name).map_err(|e| {
+                crate::config::ConfigError::Validation(format!(
+                    "failed to set health check Host header: {}",
+                    e
+                ))
+            })?;
+            hc.req = req;
+
+            group.set_health_check(Box::new(hc), interval);
+        }
+
         groups.insert(upstream_name, group);
     }
 
