@@ -194,6 +194,7 @@ Working proxy with Pingora integration — TOML config, static upstreams, manual
 Feature-complete for self-hosters: auto HTTPS, health checks, load balancing, admin API, core built-in plugins. Publish benchmark comparisons.
 
 **Year 1 targets:**
+
 - 5,000+ GitHub stars
 - Published benchmarks showing measurable P99 and memory advantage over Caddy
 - 100+ production deployments (self-reported)
@@ -201,6 +202,7 @@ Feature-complete for self-hosters: auto HTTPS, health checks, load balancing, ad
 - First paying Fluxo Cloud customer
 
 **Year 2 targets:**
+
 - 15,000+ GitHub stars
 - Mentioned in proxy comparison posts alongside Caddy and Traefik
 - $100K ARR from Cloud + Enterprise

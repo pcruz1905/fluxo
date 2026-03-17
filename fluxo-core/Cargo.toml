@@ -31,6 +31,7 @@ rcgen = { workspace = true }
 x509-parser = { workspace = true }
 pem = { workspace = true }
 tokio = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

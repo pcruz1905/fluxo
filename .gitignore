@@ -31,3 +31,7 @@ Cargo.lock
 # MCP server cache (if used)
 .rust-docs-mcp/
 ~/.rust-docs-mcp/
+
+#other
+aralez
+pingapp

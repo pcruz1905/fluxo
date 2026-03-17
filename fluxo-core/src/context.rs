@@ -19,6 +19,21 @@ pub struct RequestContext {
 
     /// Which upstream peer was selected (set during `upstream_peer`).
     pub selected_peer: Option<SelectedPeer>,
+
+    // --- Wide event fields (populated throughout request lifecycle) ---
+    pub method: Option<String>,
+    pub host: Option<String>,
+    pub path: Option<String>,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub tls_version: Option<String>,
+    pub http_version: Option<String>,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub upstream_connect_ms: Option<u64>,
+    pub upstream_response_ms: Option<u64>,
+    pub error_message: Option<String>,
+    pub retry_count: u32,
 }
 
 /// A snapshot of the matched route, cheaply cloneable.
@@ -74,6 +89,19 @@ impl RequestContext {
             request_id: RequestId::generate(),
             matched_route: None,
             selected_peer: None,
+            method: None,
+            host: None,
+            path: None,
+            client_ip: None,
+            user_agent: None,
+            tls_version: None,
+            http_version: None,
+            bytes_sent: 0,
+            bytes_received: 0,
+            upstream_connect_ms: None,
+            upstream_response_ms: None,
+            error_message: None,
+            retry_count: 0,
         }
     }
 
@@ -86,5 +114,35 @@ impl RequestContext {
 impl Default for RequestContext {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_event_fields_default_to_none() {
+        let ctx = RequestContext::new();
+        assert!(ctx.method.is_none());
+        assert!(ctx.host.is_none());
+        assert!(ctx.path.is_none());
+        assert!(ctx.client_ip.is_none());
+        assert!(ctx.user_agent.is_none());
+        assert!(ctx.tls_version.is_none());
+        assert!(ctx.http_version.is_none());
+        assert_eq!(ctx.bytes_sent, 0);
+        assert_eq!(ctx.bytes_received, 0);
+        assert!(ctx.upstream_connect_ms.is_none());
+        assert!(ctx.upstream_response_ms.is_none());
+        assert!(ctx.error_message.is_none());
+        assert_eq!(ctx.retry_count, 0);
+    }
+
+    #[test]
+    fn elapsed_returns_positive_duration() {
+        let ctx = RequestContext::new();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        assert!(ctx.elapsed().as_micros() > 0);
     }
 }

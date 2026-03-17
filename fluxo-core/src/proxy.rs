@@ -223,6 +223,12 @@ impl ProxyHttp for FluxoProxy {
         let path = req_header.uri.path();
         let method = req_header.method.as_str();
 
+        // Populate core wide-event fields early so short-circuited requests
+        // (ACME challenges, HTTP→HTTPS redirects) still have them.
+        ctx.method = Some(method.to_string());
+        ctx.host = host.map(|h| h.to_string());
+        ctx.path = Some(path.to_string());
+
         // --- ACME HTTP-01 challenge interception ---
         // Serve challenge tokens before any other processing.
         // One prefix check per request — negligible overhead.
@@ -289,6 +295,32 @@ impl ProxyHttp for FluxoProxy {
                     )
                 })?;
             return Ok(true); // short-circuit, handled
+        }
+
+        // Populate remaining wide-event fields that need the session/digest
+        let req_header = session.req_header();
+        ctx.http_version = Some(format!("{:?}", req_header.version));
+        ctx.user_agent = req_header
+            .headers
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        // Client IP: check X-Forwarded-For first, fall back to peer address
+        ctx.client_ip = req_header
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+            .or_else(|| session.as_downstream().client_addr().map(|a| a.to_string()));
+
+        // TLS version
+        if let Some(ssl) = session
+            .as_downstream()
+            .digest()
+            .and_then(|d| d.ssl_digest.as_ref())
+        {
+            ctx.tls_version = Some(ssl.version.to_string());
         }
 
         // --- Route matching (with header support) ---
@@ -377,6 +409,19 @@ impl ProxyHttp for FluxoProxy {
         Ok(())
     }
 
+    fn response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<bytes::Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<std::time::Duration>, Box<Error>> {
+        if let Some(b) = body {
+            ctx.bytes_sent += b.len() as u64;
+        }
+        Ok(None)
+    }
+
     async fn fail_to_proxy(
         &self,
         session: &mut Session,
@@ -386,6 +431,9 @@ impl ProxyHttp for FluxoProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Capture error for wide event
+        ctx.error_message = Some(format!("{e}"));
+
         use pingora_core::ErrorType::*;
 
         let code = match e.etype() {
@@ -414,37 +462,15 @@ impl ProxyHttp for FluxoProxy {
     }
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
-        let duration = ctx.elapsed();
+        if let Some(e) = error {
+            ctx.error_message = Some(format!("{e}"));
+        }
+
         let status = session
             .response_written()
             .map(|resp| resp.status.as_u16())
             .unwrap_or(0);
-        let route_name = ctx
-            .matched_route
-            .as_ref()
-            .and_then(|r| r.name.as_deref())
-            .unwrap_or("-");
 
-        match error {
-            Some(e) => {
-                warn!(
-                    request_id = %ctx.request_id,
-                    status,
-                    route = route_name,
-                    duration_ms = duration.as_millis() as u64,
-                    error = %e,
-                    "request completed with error"
-                );
-            }
-            None => {
-                info!(
-                    request_id = %ctx.request_id,
-                    status,
-                    route = route_name,
-                    duration_ms = duration.as_millis() as u64,
-                    "request completed"
-                );
-            }
-        }
+        crate::observability::access_log::emit_access_log(ctx, status);
     }
 }
