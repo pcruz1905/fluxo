@@ -4,6 +4,7 @@
 //! Each route compiles its configured plugins into a `PluginPipeline` at config
 //! load time. During request processing, proxy.rs calls the pipeline at each phase.
 
+pub mod config;
 pub mod cors;
 pub mod headers;
 pub mod ip_restrict;

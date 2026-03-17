@@ -53,6 +53,10 @@ pub struct GlobalConfig {
     /// Whether to expose Prometheus metrics at /metrics on the admin API.
     #[serde(default = "defaults::metrics_enabled")]
     pub metrics_enabled: bool,
+
+    /// Global plugin configuration (applies to all routes, can be overridden per-route).
+    #[serde(default)]
+    pub plugins: HashMap<String, serde_json::Value>,
 }
 
 impl Default for GlobalConfig {
@@ -66,6 +70,7 @@ impl Default for GlobalConfig {
             cert_dir: None,
             access_log_format: defaults::access_log_format(),
             metrics_enabled: defaults::metrics_enabled(),
+            plugins: HashMap::new(),
         }
     }
 }
@@ -145,6 +150,11 @@ pub struct RouteConfig {
 
     /// Name of the upstream group to forward to.
     pub upstream: String,
+
+    /// Plugin configuration for this route.
+    /// Keys are plugin names, values are plugin-specific config.
+    #[serde(default)]
+    pub plugins: HashMap<String, serde_json::Value>,
 }
 
 /// Configuration for an upstream group.

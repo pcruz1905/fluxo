@@ -44,7 +44,8 @@ mod tests {
 
     #[test]
     fn pipeline_from_single_plugin() {
-        let plugin = BuiltinPlugin::RequestId(super::super::request_id::RequestIdPlugin);
+        let plugin =
+            BuiltinPlugin::RequestId(super::super::request_id::RequestIdPlugin::default());
         let pipeline = PluginPipeline::new(vec![plugin]);
         assert_eq!(pipeline.len(), 1);
     }
