@@ -39,3 +39,5 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 ipnet = "2"
+governor = "0.10"
+dashmap = "6"

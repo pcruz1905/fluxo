@@ -145,6 +145,19 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             }
         }
 
+        // Validate plugin configuration
+        for (i, route) in service.routes.iter().enumerate() {
+            if let Err(e) = crate::plugins::config::compile_plugins(
+                &route.plugins,
+                &config.global.plugins,
+            ) {
+                return Err(ConfigError::Validation(format!(
+                    "service '{}' route {}: {}",
+                    service_name, i, e
+                )));
+            }
+        }
+
         // Must have at least one listener
         if service.listeners.is_empty() {
             return Err(ConfigError::Validation(format!(
@@ -621,6 +634,41 @@ interval = "not_a_duration"
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_duration("2m").unwrap(), Duration::from_secs(120));
         assert!(parse_duration("bad").is_err());
+    }
+
+    #[test]
+    fn reject_unknown_plugin_name() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+  [services.web.routes.plugins.nonexistent]
+  foo = "bar"
+[upstreams.backend]
+targets = ["127.0.0.1:8080"]
+"#;
+        let result = load_from_str(toml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn accept_valid_plugin_config() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+  [services.web.routes.plugins.headers]
+  response_set = { "X-Foo" = "bar" }
+[upstreams.backend]
+targets = ["127.0.0.1:8080"]
+"#;
+        let result = load_from_str(toml);
+        assert!(result.is_ok());
     }
 
     #[test]

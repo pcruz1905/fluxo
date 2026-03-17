@@ -15,6 +15,15 @@ access_log_format = "json"     # "json" (machine-readable) or "compact" (human-r
 metrics_enabled = true         # Expose Prometheus metrics at /metrics
 # cert_dir = "/var/fluxo/certs"  # ACME certificate storage directory
 
+# ─── Global Plugins (apply to all routes) ─────────────────────────
+[global.plugins.security_headers]
+hsts_max_age = 31536000
+x_content_type_options = true
+x_frame_options = "DENY"
+
+[global.plugins.request_id]
+header = "X-Request-ID"
+
 # ─── Services ───────────────────────────────────────────────────────
 # A service groups listeners (addresses to bind) with routes (traffic rules).
 
@@ -53,6 +62,20 @@ metrics_enabled = true         # Expose Prometheus metrics at /metrics
   match_host = ["api.example.com"]
   match_path = ["/v1/*"]
   upstream = "api-servers"
+
+  [services.web.routes.plugins.rate_limit]
+  requests_per_second = 100
+  burst = 50
+
+  [services.web.routes.plugins.cors]
+  allowed_origins = ["https://app.example.com"]
+  allowed_methods = ["GET", "POST", "PUT", "DELETE"]
+  allowed_headers = ["Content-Type", "Authorization"]
+  max_age = 3600
+
+  [services.web.routes.plugins.headers]
+  response_set = { "X-Powered-By" = "fluxo" }
+  response_remove = ["Server"]
 
   # Header matching: exact values or regex (prefix with ~)
   [[services.web.routes]]
