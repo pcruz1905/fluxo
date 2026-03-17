@@ -44,7 +44,7 @@ impl CorsPlugin {
         if !self.config.allowed_methods.is_empty() {
             let _ = resp.insert_header(
                 "Access-Control-Allow-Methods",
-                &self.config.allowed_methods.join(", "),
+                self.config.allowed_methods.join(", "),
             );
         }
 
@@ -52,13 +52,13 @@ impl CorsPlugin {
         if !self.config.allowed_headers.is_empty() {
             let _ = resp.insert_header(
                 "Access-Control-Allow-Headers",
-                &self.config.allowed_headers.join(", "),
+                self.config.allowed_headers.join(", "),
             );
         }
 
         // Max-Age
         if let Some(max_age) = self.config.max_age {
-            let _ = resp.insert_header("Access-Control-Max-Age", &max_age.to_string());
+            let _ = resp.insert_header("Access-Control-Max-Age", max_age.to_string());
         }
 
         // Credentials
@@ -70,7 +70,7 @@ impl CorsPlugin {
         if !self.config.expose_headers.is_empty() {
             let _ = resp.insert_header(
                 "Access-Control-Expose-Headers",
-                &self.config.expose_headers.join(", "),
+                self.config.expose_headers.join(", "),
             );
         }
     }
