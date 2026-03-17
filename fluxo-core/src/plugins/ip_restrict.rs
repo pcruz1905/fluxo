@@ -14,19 +14,138 @@ pub struct IpRestrictConfig {
 
 #[derive(Debug)]
 pub struct IpRestrictPlugin {
-    pub config: IpRestrictConfig,
+    deny: Vec<ipnet::IpNet>,
+    allow: Vec<ipnet::IpNet>,
 }
 
 impl IpRestrictPlugin {
     pub fn new(config: IpRestrictConfig) -> Self {
-        Self { config }
+        let deny = config
+            .deny
+            .iter()
+            .filter_map(|s| s.parse::<ipnet::IpNet>().ok())
+            .collect();
+        let allow = config
+            .allow
+            .iter()
+            .filter_map(|s| s.parse::<ipnet::IpNet>().ok())
+            .collect();
+        Self { deny, allow }
     }
 
     pub fn on_request(
         &self,
         _req: &pingora_http::RequestHeader,
-        _ctx: &mut crate::context::RequestContext,
+        ctx: &mut crate::context::RequestContext,
     ) -> super::PluginAction {
-        super::PluginAction::Continue // TODO: implement in Task 7
+        let ip = match ctx
+            .client_ip
+            .as_deref()
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+        {
+            Some(ip) => ip,
+            None => {
+                if !self.allow.is_empty() {
+                    return super::PluginAction::Handled(403);
+                }
+                return super::PluginAction::Continue;
+            }
+        };
+
+        // Check deny list first
+        if self.deny.iter().any(|net| net.contains(&ip)) {
+            return super::PluginAction::Handled(403);
+        }
+
+        // If allow list is present, only matching IPs pass
+        if !self.allow.is_empty() && !self.allow.iter().any(|net| net.contains(&ip)) {
+            return super::PluginAction::Handled(403);
+        }
+
+        super::PluginAction::Continue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deny_list_blocks_matching_ip() {
+        let config = IpRestrictConfig {
+            deny: vec!["192.168.1.0/24".into()],
+            allow: vec![],
+        };
+        let plugin = IpRestrictPlugin::new(config);
+        let mut ctx = crate::context::RequestContext::new();
+        ctx.client_ip = Some("192.168.1.50".into());
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            super::super::PluginAction::Handled(403)
+        );
+    }
+
+    #[test]
+    fn deny_list_allows_non_matching_ip() {
+        let config = IpRestrictConfig {
+            deny: vec!["192.168.1.0/24".into()],
+            allow: vec![],
+        };
+        let plugin = IpRestrictPlugin::new(config);
+        let mut ctx = crate::context::RequestContext::new();
+        ctx.client_ip = Some("10.0.0.1".into());
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            super::super::PluginAction::Continue
+        );
+    }
+
+    #[test]
+    fn allow_list_blocks_non_matching_ip() {
+        let config = IpRestrictConfig {
+            deny: vec![],
+            allow: vec!["10.0.0.0/8".into()],
+        };
+        let plugin = IpRestrictPlugin::new(config);
+        let mut ctx = crate::context::RequestContext::new();
+        ctx.client_ip = Some("192.168.1.1".into());
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            super::super::PluginAction::Handled(403)
+        );
+    }
+
+    #[test]
+    fn allow_list_permits_matching_ip() {
+        let config = IpRestrictConfig {
+            deny: vec![],
+            allow: vec!["10.0.0.0/8".into()],
+        };
+        let plugin = IpRestrictPlugin::new(config);
+        let mut ctx = crate::context::RequestContext::new();
+        ctx.client_ip = Some("10.1.2.3".into());
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            super::super::PluginAction::Continue
+        );
+    }
+
+    #[test]
+    fn missing_client_ip_is_denied_when_allow_list_present() {
+        let config = IpRestrictConfig {
+            deny: vec![],
+            allow: vec!["10.0.0.0/8".into()],
+        };
+        let plugin = IpRestrictPlugin::new(config);
+        let mut ctx = crate::context::RequestContext::new();
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            super::super::PluginAction::Handled(403)
+        );
     }
 }

@@ -39,9 +39,38 @@ impl RequestIdPlugin {
 
     pub fn on_upstream_request(
         &self,
-        _req: &mut pingora_http::RequestHeader,
-        _ctx: &crate::context::RequestContext,
+        req: &mut pingora_http::RequestHeader,
+        ctx: &crate::context::RequestContext,
     ) {
-        // TODO: implement in Task 8
+        let _ = req.insert_header(self.config.header.clone(), ctx.request_id.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn injects_request_id_with_default_header() {
+        let config = RequestIdConfig::default();
+        let plugin = RequestIdPlugin::new(config);
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        let value = req.headers.get("X-Request-ID").unwrap().to_str().unwrap();
+        assert_eq!(value, ctx.request_id.to_string());
+    }
+
+    #[test]
+    fn uses_custom_header_name() {
+        let config = RequestIdConfig {
+            header: "X-Trace-ID".into(),
+        };
+        let plugin = RequestIdPlugin::new(config);
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert!(req.headers.get("X-Trace-ID").is_some());
+        assert!(req.headers.get("X-Request-ID").is_none());
     }
 }

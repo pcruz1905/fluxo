@@ -36,6 +36,7 @@ prometheus = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
+ipnet = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
