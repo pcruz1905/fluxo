@@ -45,6 +45,14 @@ pub struct GlobalConfig {
     /// Base directory for certificate storage (ACME certs, account keys).
     /// Defaults to platform-specific data dir (~/.local/share/fluxo/certs).
     pub cert_dir: Option<String>,
+
+    /// Access log format: "json" (default) or "compact".
+    #[serde(default = "defaults::access_log_format")]
+    pub access_log_format: String,
+
+    /// Whether to expose Prometheus metrics at /metrics on the admin API.
+    #[serde(default = "defaults::metrics_enabled")]
+    pub metrics_enabled: bool,
 }
 
 impl Default for GlobalConfig {
@@ -56,6 +64,8 @@ impl Default for GlobalConfig {
             upgrade_socket: None,
             log_level: defaults::log_level(),
             cert_dir: None,
+            access_log_format: defaults::access_log_format(),
+            metrics_enabled: defaults::metrics_enabled(),
         }
     }
 }

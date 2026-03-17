@@ -110,6 +110,17 @@ pub fn config_from_upstream(upstream: &str) -> FluxoConfig {
 
 /// Validate cross-references and semantic constraints in the config.
 pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
+    // Validate access_log_format
+    match config.global.access_log_format.as_str() {
+        "json" | "compact" => {}
+        other => {
+            return Err(ConfigError::Validation(format!(
+                "invalid access_log_format '{}': must be 'json' or 'compact'",
+                other
+            )));
+        }
+    }
+
     // Every route's upstream must reference a key in config.upstreams
     for (service_name, service) in &config.services {
         for (i, route) in service.routes.iter().enumerate() {
@@ -637,5 +648,42 @@ targets = ["127.0.0.1:3000"]
         assert_eq!(config.global.admin, "127.0.0.1:2019");
         assert_eq!(config.global.log_level, "info");
         assert_eq!(config.global.threads, 0);
+        assert_eq!(config.global.access_log_format, "json");
+        assert!(config.global.metrics_enabled);
+    }
+
+    #[test]
+    fn access_log_format_defaults_to_json() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+match_path = ["/*"]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).unwrap();
+        assert_eq!(config.global.access_log_format, "json");
+        assert!(config.global.metrics_enabled);
+    }
+
+    #[test]
+    fn reject_invalid_access_log_format() {
+        let toml = r#"
+[global]
+access_log_format = "xml"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+match_path = ["/*"]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("access_log_format"));
     }
 }

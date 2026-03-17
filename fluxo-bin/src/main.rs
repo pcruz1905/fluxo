@@ -50,35 +50,44 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Determine log level: CLI flag > env var > config default
-    let log_level = cli.log_level.as_deref().unwrap_or("info");
-
-    // Initialize tracing (structured logging)
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
-        )
-        .init();
-
-    tracing::info!("starting fluxo v{}", env!("CARGO_PKG_VERSION"));
-
-    // Load configuration
+    // Load configuration first (before tracing init so we can respect access_log_format)
     let fluxo_config = if let Some(ref upstream) = cli.upstream {
-        // --upstream shorthand: create minimal config
-        tracing::info!(upstream = upstream.as_str(), "using --upstream shorthand");
         config::config_from_upstream(upstream)
     } else {
         let config_path = Path::new(&cli.config);
         if config_path.exists() {
             config::load_from_file(config_path)?
         } else if cli.config == "fluxo.toml" {
-            // Default path doesn't exist — try other defaults or use fallback
             config::load_from_default_paths()?
         } else {
-            // User specified a non-default path that doesn't exist
             anyhow::bail!("config file not found: {}", cli.config);
         }
     };
+
+    // Determine log level: CLI flag > env var > config default
+    let log_level = cli
+        .log_level
+        .as_deref()
+        .unwrap_or(&fluxo_config.global.log_level);
+
+    // Initialize tracing (structured logging) — format from config
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+    match fluxo_config.global.access_log_format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(env_filter)
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
+
+    tracing::info!("starting fluxo v{}", env!("CARGO_PKG_VERSION"));
 
     // --test: validate and exit
     if cli.test {

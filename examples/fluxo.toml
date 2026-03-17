@@ -8,9 +8,11 @@
 # ─── Global Settings ────────────────────────────────────────────────
 
 [global]
-admin = "127.0.0.1:2019"   # Admin API address (future)
-threads = 0                 # Worker threads (0 = auto-detect CPU count)
-log_level = "info"          # trace | debug | info | warn | error
+admin = "127.0.0.1:2019"      # Admin API address (/health, /metrics, /config)
+threads = 0                    # Worker threads (0 = auto-detect CPU count)
+log_level = "info"             # trace | debug | info | warn | error
+access_log_format = "json"     # "json" (machine-readable) or "compact" (human-readable)
+metrics_enabled = true         # Expose Prometheus metrics at /metrics
 # cert_dir = "/var/fluxo/certs"  # ACME certificate storage directory
 
 # ─── Services ───────────────────────────────────────────────────────

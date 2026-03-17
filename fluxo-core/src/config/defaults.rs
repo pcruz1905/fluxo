@@ -31,3 +31,11 @@ pub fn unhealthy_threshold() -> u32 {
 pub fn healthy_threshold() -> u32 {
     2
 }
+
+pub fn access_log_format() -> String {
+    "json".to_string()
+}
+
+pub fn metrics_enabled() -> bool {
+    true
+}
