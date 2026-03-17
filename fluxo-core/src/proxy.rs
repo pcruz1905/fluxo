@@ -354,33 +354,25 @@ impl ProxyHttp for FluxoProxy {
 
                 // Run request-phase plugins
                 let req_header = session.req_header();
-                if let PluginAction::Handled(status) =
-                    route.pipeline.run_request(req_header, ctx)
-                {
+                if let PluginAction::Handled(status) = route.pipeline.run_request(req_header, ctx) {
                     // Check for redirect or static response
                     if let Some(ref msg) = ctx.error_message {
                         if let Some(location) = msg.strip_prefix("redirect:") {
-                            let mut header =
-                                pingora_http::ResponseHeader::build(status, None)
-                                    .map_err(|e| {
-                                        Error::explain(
-                                            pingora_core::ErrorType::InternalError,
-                                            format!(
-                                                "failed to build redirect response: {e}"
-                                            ),
-                                        )
-                                    })?;
-                            let _ =
-                                header.insert_header("Location", location);
+                            let mut header = pingora_http::ResponseHeader::build(status, None)
+                                .map_err(|e| {
+                                    Error::explain(
+                                        pingora_core::ErrorType::InternalError,
+                                        format!("failed to build redirect response: {e}"),
+                                    )
+                                })?;
+                            let _ = header.insert_header("Location", location);
                             session
                                 .write_response_header(Box::new(header), true)
                                 .await
                                 .map_err(|e| {
                                     Error::explain(
                                         pingora_core::ErrorType::WriteError,
-                                        format!(
-                                            "failed to write redirect response: {e}"
-                                        ),
+                                        format!("failed to write redirect response: {e}"),
                                     )
                                 })?;
                             return Ok(true);

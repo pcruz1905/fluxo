@@ -147,10 +147,9 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
 
         // Validate plugin configuration
         for (i, route) in service.routes.iter().enumerate() {
-            if let Err(e) = crate::plugins::config::compile_plugins(
-                &route.plugins,
-                &config.global.plugins,
-            ) {
+            if let Err(e) =
+                crate::plugins::config::compile_plugins(&route.plugins, &config.global.plugins)
+            {
                 return Err(ConfigError::Validation(format!(
                     "service '{}' route {}: {}",
                     service_name, i, e

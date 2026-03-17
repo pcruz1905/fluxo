@@ -100,8 +100,7 @@ impl RouteTable {
 
         for service in config.services.values() {
             for route_config in &service.routes {
-                let compiled =
-                    Self::compile_route(route_config, index, &config.global.plugins)?;
+                let compiled = Self::compile_route(route_config, index, &config.global.plugins)?;
                 routes.push(compiled);
                 index += 1;
             }
@@ -150,8 +149,7 @@ impl RouteTable {
         }
 
         // Compile plugin pipeline
-        let plugin_list =
-            crate::plugins::config::compile_plugins(&config.plugins, global_plugins)?;
+        let plugin_list = crate::plugins::config::compile_plugins(&config.plugins, global_plugins)?;
         let pipeline = PluginPipeline::new(plugin_list);
 
         Ok(CompiledRoute {

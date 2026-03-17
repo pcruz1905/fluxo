@@ -7,7 +7,9 @@ use super::BuiltinPlugin;
 /// Error type for plugin configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
-    #[error("unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response)")]
+    #[error(
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response)"
+    )]
     UnknownPlugin(String),
 
     #[error("invalid config for plugin '{name}': {reason}")]
@@ -58,10 +60,7 @@ pub fn compile_plugins(
 }
 
 /// Build a single plugin instance from its name and config value.
-fn build_plugin(
-    name: &str,
-    config: serde_json::Value,
-) -> Result<BuiltinPlugin, PluginConfigError> {
+fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, PluginConfigError> {
     match name {
         "headers" => {
             let cfg: super::headers::HeadersConfig =
@@ -92,8 +91,8 @@ fn build_plugin(
             Ok(BuiltinPlugin::Cors(super::cors::CorsPlugin::new(cfg)))
         }
         "ip_restrict" => {
-            let cfg: super::ip_restrict::IpRestrictConfig =
-                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+            let cfg: super::ip_restrict::IpRestrictConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
@@ -132,8 +131,8 @@ fn build_plugin(
             ))
         }
         "static_response" => {
-            let cfg: super::static_response::StaticResponseConfig =
-                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+            let cfg: super::static_response::StaticResponseConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
