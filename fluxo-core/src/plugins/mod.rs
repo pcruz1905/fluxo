@@ -39,3 +39,47 @@ pub enum BuiltinPlugin {
     Redirect(redirect::RedirectPlugin),
     StaticResponse(static_response::StaticResponsePlugin),
 }
+
+impl BuiltinPlugin {
+    /// Run the request phase. Returns Handled(status) to short-circuit.
+    pub fn on_request(
+        &self,
+        req: &pingora_http::RequestHeader,
+        ctx: &mut crate::context::RequestContext,
+    ) -> PluginAction {
+        match self {
+            Self::IpRestrict(p) => p.on_request(req, ctx),
+            Self::RateLimit(p) => p.on_request(req, ctx),
+            Self::Redirect(p) => p.on_request(req, ctx),
+            Self::StaticResponse(p) => p.on_request(req, ctx),
+            _ => PluginAction::Continue,
+        }
+    }
+
+    /// Run the upstream request phase. Mutate headers before forwarding.
+    pub fn on_upstream_request(
+        &self,
+        upstream_req: &mut pingora_http::RequestHeader,
+        ctx: &crate::context::RequestContext,
+    ) {
+        match self {
+            Self::RequestId(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::Headers(p) => p.on_upstream_request(upstream_req, ctx),
+            _ => {}
+        }
+    }
+
+    /// Run the response phase. Mutate response headers.
+    pub fn on_response(
+        &self,
+        resp: &mut pingora_http::ResponseHeader,
+        ctx: &crate::context::RequestContext,
+    ) {
+        match self {
+            Self::Headers(p) => p.on_response(resp, ctx),
+            Self::Cors(p) => p.on_response(resp, ctx),
+            Self::SecurityHeaders(p) => p.on_response(resp, ctx),
+            _ => {}
+        }
+    }
+}

@@ -30,6 +30,43 @@ impl PluginPipeline {
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty()
     }
+
+    /// Execute all request-phase plugins. Returns Handled if any short-circuited.
+    pub fn run_request(
+        &self,
+        req: &pingora_http::RequestHeader,
+        ctx: &mut crate::context::RequestContext,
+    ) -> super::PluginAction {
+        for plugin in &self.plugins {
+            match plugin.on_request(req, ctx) {
+                super::PluginAction::Continue => {}
+                action => return action,
+            }
+        }
+        super::PluginAction::Continue
+    }
+
+    /// Execute all upstream-request-phase plugins.
+    pub fn run_upstream_request(
+        &self,
+        upstream_req: &mut pingora_http::RequestHeader,
+        ctx: &crate::context::RequestContext,
+    ) {
+        for plugin in &self.plugins {
+            plugin.on_upstream_request(upstream_req, ctx);
+        }
+    }
+
+    /// Execute all response-phase plugins.
+    pub fn run_response(
+        &self,
+        resp: &mut pingora_http::ResponseHeader,
+        ctx: &crate::context::RequestContext,
+    ) {
+        for plugin in &self.plugins {
+            plugin.on_response(resp, ctx);
+        }
+    }
 }
 
 #[cfg(test)]

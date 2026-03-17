@@ -16,6 +16,7 @@ use tracing::{info, warn};
 use crate::config::FluxoConfig;
 use crate::context::{MatchedRoute, RequestContext, SelectedPeer};
 use crate::error::FluxoError;
+use crate::plugins::PluginAction;
 use crate::routing::RouteTable;
 use crate::routing::matcher::RequestHeaders;
 use crate::tls::ChallengeState;
@@ -350,6 +351,45 @@ impl ProxyHttp for FluxoProxy {
                     upstream: route.upstream.clone(),
                     name: route.name.clone(),
                 });
+
+                // Run request-phase plugins
+                let req_header = session.req_header();
+                if let PluginAction::Handled(status) =
+                    route.pipeline.run_request(req_header, ctx)
+                {
+                    // Check for redirect or static response
+                    if let Some(ref msg) = ctx.error_message {
+                        if let Some(location) = msg.strip_prefix("redirect:") {
+                            let mut header =
+                                pingora_http::ResponseHeader::build(status, None)
+                                    .map_err(|e| {
+                                        Error::explain(
+                                            pingora_core::ErrorType::InternalError,
+                                            format!(
+                                                "failed to build redirect response: {e}"
+                                            ),
+                                        )
+                                    })?;
+                            let _ =
+                                header.insert_header("Location", location);
+                            session
+                                .write_response_header(Box::new(header), true)
+                                .await
+                                .map_err(|e| {
+                                    Error::explain(
+                                        pingora_core::ErrorType::WriteError,
+                                        format!(
+                                            "failed to write redirect response: {e}"
+                                        ),
+                                    )
+                                })?;
+                            return Ok(true);
+                        }
+                    }
+                    let _ = session.respond_error(status).await;
+                    return Ok(true);
+                }
+
                 Ok(false) // continue to upstream_peer
             }
             None => {
@@ -410,17 +450,30 @@ impl ProxyHttp for FluxoProxy {
         upstream_request: &mut pingora_http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<Error>> {
-        // Add X-Request-ID header
-        let request_id = ctx.request_id.to_string();
-        upstream_request
-            .insert_header("X-Request-ID", &request_id)
-            .map_err(|e| {
-                Error::explain(
-                    pingora_core::ErrorType::InternalError,
-                    format!("failed to set X-Request-ID: {}", e),
-                )
-            })?;
+        // Run upstream-request-phase plugins
+        let state = self.state.load();
+        if let Some(route) = &ctx.matched_route {
+            let pipeline = &state.router.routes()[route.index].pipeline;
+            pipeline.run_upstream_request(upstream_request, ctx);
+        }
 
+        Ok(())
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut pingora_http::ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let state = self.state.load();
+        if let Some(route) = &ctx.matched_route {
+            let pipeline = &state.router.routes()[route.index].pipeline;
+            pipeline.run_response(upstream_response, ctx);
+        }
         Ok(())
     }
 

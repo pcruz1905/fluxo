@@ -21,4 +21,12 @@ impl IpRestrictPlugin {
     pub fn new(config: IpRestrictConfig) -> Self {
         Self { config }
     }
+
+    pub fn on_request(
+        &self,
+        _req: &pingora_http::RequestHeader,
+        _ctx: &mut crate::context::RequestContext,
+    ) -> super::PluginAction {
+        super::PluginAction::Continue // TODO: implement in Task 7
+    }
 }

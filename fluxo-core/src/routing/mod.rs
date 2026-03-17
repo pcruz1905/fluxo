@@ -14,6 +14,7 @@ use matcher::{
 use thiserror::Error;
 
 use crate::config::{FluxoConfig, RouteConfig};
+use crate::plugins::PluginPipeline;
 use crate::upstream::UpstreamName;
 
 /// Errors that can occur during route compilation.
@@ -36,6 +37,10 @@ pub enum RoutingError {
         /// The underlying regex error.
         source: regex::Error,
     },
+
+    /// A plugin configuration error.
+    #[error("plugin config error: {0}")]
+    PluginConfig(#[from] crate::plugins::config::PluginConfigError),
 }
 
 /// A compiled route table, built from config at load time.
@@ -59,6 +64,8 @@ pub struct CompiledRoute {
     pub name: Option<Arc<str>>,
     /// Index of this route in the table (for `MatchedRoute` references).
     pub index: usize,
+    /// Plugin pipeline for this route (compiled at config load time).
+    pub pipeline: PluginPipeline,
 }
 
 impl CompiledRoute {
@@ -93,7 +100,8 @@ impl RouteTable {
 
         for service in config.services.values() {
             for route_config in &service.routes {
-                let compiled = Self::compile_route(route_config, index)?;
+                let compiled =
+                    Self::compile_route(route_config, index, &config.global.plugins)?;
                 routes.push(compiled);
                 index += 1;
             }
@@ -102,8 +110,17 @@ impl RouteTable {
         Ok(Self { routes })
     }
 
+    /// Access compiled routes by slice (for pipeline lookups by index).
+    pub fn routes(&self) -> &[CompiledRoute] {
+        &self.routes
+    }
+
     /// Compile a single route config into a `CompiledRoute`.
-    fn compile_route(config: &RouteConfig, index: usize) -> Result<CompiledRoute, RoutingError> {
+    fn compile_route(
+        config: &RouteConfig,
+        index: usize,
+        global_plugins: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<CompiledRoute, RoutingError> {
         let mut matchers = Vec::new();
 
         // Compile host matchers
@@ -132,11 +149,17 @@ impl RouteTable {
             matchers.push(RouteMatcher::Header(HeaderMatcher::compile(name, value)?));
         }
 
+        // Compile plugin pipeline
+        let plugin_list =
+            crate::plugins::config::compile_plugins(&config.plugins, global_plugins)?;
+        let pipeline = PluginPipeline::new(plugin_list);
+
         Ok(CompiledRoute {
             matchers,
             upstream: UpstreamName::from(config.upstream.as_str()),
             name: config.name.as_deref().map(Arc::from),
             index,
+            pipeline,
         })
     }
 
