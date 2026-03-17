@@ -36,6 +36,8 @@ pub struct FluxoState {
     pub upstreams: HashMap<UpstreamName, UpstreamGroup>,
     /// ACME HTTP-01 challenge tokens (shared with the ACME client).
     pub challenge_state: Arc<ChallengeState>,
+    /// Prometheus metrics (shared across all states, survives reloads).
+    pub metrics: Arc<crate::observability::MetricsRegistry>,
 }
 
 /// Result of building a FluxoState, including services that need to be registered
@@ -64,6 +66,7 @@ impl FluxoState {
             router,
             upstreams,
             challenge_state: Arc::new(ChallengeState::new()),
+            metrics: Arc::new(crate::observability::MetricsRegistry::new()),
         })
     }
 
@@ -84,6 +87,7 @@ impl FluxoState {
                 router,
                 upstreams,
                 challenge_state: Arc::new(ChallengeState::new()),
+                metrics: Arc::new(crate::observability::MetricsRegistry::new()),
             },
             health_check_services,
         })
@@ -194,6 +198,16 @@ impl FluxoProxy {
         self.state.load().challenge_state.clone()
     }
 
+    /// Get the current metrics registry.
+    pub fn metrics(&self) -> Arc<crate::observability::MetricsRegistry> {
+        self.state.load().metrics.clone()
+    }
+
+    /// Get a snapshot of the current state (for Admin API).
+    pub fn state_snapshot(&self) -> arc_swap::Guard<Arc<FluxoState>> {
+        self.state.load()
+    }
+
     /// Atomically replace the running config with a new one.
     ///
     /// Used by future config reload / Admin API.
@@ -216,6 +230,7 @@ impl ProxyHttp for FluxoProxy {
         ctx: &mut Self::CTX,
     ) -> Result<bool, Box<Error>> {
         let state = self.state.load();
+        state.metrics.inc_active();
 
         // Extract request info for matching
         let req_header = session.req_header();
@@ -462,15 +477,38 @@ impl ProxyHttp for FluxoProxy {
     }
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
+        let state = self.state.load();
+
         if let Some(e) = error {
             ctx.error_message = Some(format!("{e}"));
         }
-
         let status = session
             .response_written()
             .map(|resp| resp.status.as_u16())
             .unwrap_or(0);
 
+        // Wide event access log
         crate::observability::access_log::emit_access_log(ctx, status);
+
+        // Prometheus metrics
+        let route = ctx
+            .matched_route
+            .as_ref()
+            .and_then(|r| r.name.as_deref())
+            .unwrap_or("-");
+        let method = ctx.method.as_deref().unwrap_or("-");
+        let duration_secs = ctx.elapsed().as_secs_f64();
+
+        state.metrics.record_request(
+            "-", // TODO: add service name to MatchedRoute
+            route,
+            method,
+            status,
+            duration_secs,
+            ctx.bytes_sent,
+            ctx.bytes_received,
+        );
+
+        state.metrics.dec_active();
     }
 }

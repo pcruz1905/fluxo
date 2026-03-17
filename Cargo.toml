@@ -34,3 +34,4 @@ pem = "3"
 tokio = { version = "1", features = ["fs", "time", "sync", "rt-multi-thread"] }
 tempfile = "3"
 bytes = "1"
+prometheus = "0.13"
