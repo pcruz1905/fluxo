@@ -64,4 +64,31 @@ mod tests {
         assert!(body.contains("/config"));
         assert_eq!(content_type, "application/json");
     }
+
+    #[test]
+    fn metrics_endpoint_returns_prometheus_format() {
+        let metrics = MetricsRegistry::new();
+        metrics.record_request("web", "api", "GET", 200, 0.05, 1024, 256);
+
+        let (status, body, content_type) = handle_metrics(&metrics);
+        assert_eq!(status, 200);
+        assert_eq!(content_type, "text/plain; version=0.0.4; charset=utf-8");
+        assert!(body.contains("fluxo_requests_total"));
+        assert!(body.contains("fluxo_request_duration_seconds"));
+        assert!(body.contains(r#"method="GET""#));
+        assert!(body.contains(r#"status="200""#));
+    }
+
+    #[test]
+    fn metrics_endpoint_histogram_has_correct_buckets() {
+        let metrics = MetricsRegistry::new();
+        metrics.record_request("web", "api", "GET", 200, 0.042, 0, 0);
+
+        let (_, body, _) = handle_metrics(&metrics);
+        assert!(body.contains(r#"le="0.001""#));
+        assert!(body.contains(r#"le="0.01""#));
+        assert!(body.contains(r#"le="0.1""#));
+        assert!(body.contains(r#"le="1""#));
+        assert!(body.contains(r#"le="10""#));
+    }
 }
