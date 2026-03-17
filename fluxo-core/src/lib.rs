@@ -3,6 +3,7 @@
 //! This crate contains all proxy logic: configuration, routing, upstream
 //! management, the Pingora `ProxyHttp` implementation, and plugin infrastructure.
 
+pub mod admin;
 pub mod app;
 pub mod config;
 pub mod context;

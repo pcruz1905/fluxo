@@ -267,6 +267,27 @@ impl FluxoApp {
         services
     }
 
+    /// Create the Admin API background service.
+    pub fn admin_service(&self) -> Box<dyn pingora_core::services::ServiceWithDependents> {
+        use pingora_core::services::background::GenBackgroundService;
+
+        let address: std::net::SocketAddr = self
+            .config
+            .global
+            .admin
+            .parse()
+            .expect("admin address should be valid (validated at config load)");
+
+        let admin = crate::admin::AdminService {
+            address,
+            proxy: Arc::new(self.proxy.clone()),
+            metrics: self.proxy.metrics(),
+        };
+
+        let svc = GenBackgroundService::new("admin API".to_string(), Arc::new(admin));
+        Box::new(svc)
+    }
+
     /// Reload the proxy with a new config.
     ///
     /// Builds a new `FluxoState` and atomically swaps it into the proxy.

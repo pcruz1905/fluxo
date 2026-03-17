@@ -163,6 +163,11 @@ fn main() -> anyhow::Result<()> {
         server.add_boxed_service(renewal_svc);
     }
 
+    // Register Admin API
+    let admin_service = app.admin_service();
+    server.add_boxed_service(admin_service);
+    tracing::info!(admin = %app.config().global.admin, "admin API registered");
+
     tracing::info!("fluxo is ready");
     server.run_forever();
 }
