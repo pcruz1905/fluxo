@@ -9,6 +9,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod observability;
+pub mod plugins;
 pub mod proxy;
 pub mod routing;
 pub mod tls;
