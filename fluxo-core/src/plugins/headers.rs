@@ -32,17 +32,92 @@ impl HeadersPlugin {
 
     pub fn on_upstream_request(
         &self,
-        _req: &mut pingora_http::RequestHeader,
+        req: &mut pingora_http::RequestHeader,
         _ctx: &crate::context::RequestContext,
     ) {
-        // TODO: implement in Task 4
+        for (name, value) in &self.config.request_set {
+            let _ = req.insert_header(name.clone(), value.clone());
+        }
+        for name in &self.config.request_remove {
+            let _ = req.remove_header(name.as_str());
+        }
     }
 
     pub fn on_response(
         &self,
-        _resp: &mut pingora_http::ResponseHeader,
+        resp: &mut pingora_http::ResponseHeader,
         _ctx: &crate::context::RequestContext,
     ) {
-        // TODO: implement in Task 4
+        for (name, value) in &self.config.response_set {
+            let _ = resp.insert_header(name.clone(), value.clone());
+        }
+        for name in &self.config.response_remove {
+            let _ = resp.remove_header(name.as_str());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_response_header() {
+        let config = HeadersConfig {
+            response_set: HashMap::from([("X-Powered-By".into(), "fluxo".into())]),
+            ..Default::default()
+        };
+        let plugin = HeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &ctx);
+        assert_eq!(
+            resp.headers.get("X-Powered-By").unwrap().to_str().unwrap(),
+            "fluxo"
+        );
+    }
+
+    #[test]
+    fn remove_response_header() {
+        let config = HeadersConfig {
+            response_remove: vec!["Server".into()],
+            ..Default::default()
+        };
+        let plugin = HeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("Server", "nginx").unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &ctx);
+        assert!(resp.headers.get("Server").is_none());
+    }
+
+    #[test]
+    fn set_request_header() {
+        let config = HeadersConfig {
+            request_set: HashMap::from([("X-Proxy".into(), "fluxo".into())]),
+            ..Default::default()
+        };
+        let plugin = HeadersPlugin::new(config);
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(
+            req.headers.get("X-Proxy").unwrap().to_str().unwrap(),
+            "fluxo"
+        );
+    }
+
+    #[test]
+    fn remove_request_header() {
+        let config = HeadersConfig {
+            request_remove: vec!["Cookie".into()],
+            ..Default::default()
+        };
+        let plugin = HeadersPlugin::new(config);
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        req.insert_header("Cookie", "session=abc").unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert!(req.headers.get("Cookie").is_none());
     }
 }

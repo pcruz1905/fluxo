@@ -37,9 +37,114 @@ impl SecurityHeadersPlugin {
 
     pub fn on_response(
         &self,
-        _resp: &mut pingora_http::ResponseHeader,
+        resp: &mut pingora_http::ResponseHeader,
         _ctx: &crate::context::RequestContext,
     ) {
-        // TODO: implement in Task 6
+        if let Some(max_age) = self.config.hsts_max_age {
+            let value = if self.config.hsts_include_subdomains {
+                format!("max-age={max_age}; includeSubDomains")
+            } else {
+                format!("max-age={max_age}")
+            };
+            let _ = resp.insert_header("Strict-Transport-Security", &value);
+        }
+
+        if let Some(ref value) = self.config.x_frame_options {
+            let _ = resp.insert_header("X-Frame-Options", value.as_str());
+        }
+
+        if self.config.x_content_type_options {
+            let _ = resp.insert_header("X-Content-Type-Options", "nosniff");
+        }
+
+        if self.config.x_xss_protection {
+            let _ = resp.insert_header("X-XSS-Protection", "1; mode=block");
+        }
+
+        if let Some(ref csp) = self.config.content_security_policy {
+            let _ = resp.insert_header("Content-Security-Policy", csp.as_str());
+        }
+
+        if let Some(ref referrer) = self.config.referrer_policy {
+            let _ = resp.insert_header("Referrer-Policy", referrer.as_str());
+        }
+
+        if let Some(ref permissions) = self.config.permissions_policy {
+            let _ = resp.insert_header("Permissions-Policy", permissions.as_str());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adds_hsts_header() {
+        let config = SecurityHeadersConfig {
+            hsts_max_age: Some(31536000),
+            ..Default::default()
+        };
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &ctx);
+        let hsts = resp
+            .headers
+            .get("Strict-Transport-Security")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(hsts.contains("max-age=31536000"));
+    }
+
+    #[test]
+    fn adds_x_frame_options() {
+        let config = SecurityHeadersConfig {
+            x_frame_options: Some("DENY".into()),
+            ..Default::default()
+        };
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &ctx);
+        assert_eq!(
+            resp.headers
+                .get("X-Frame-Options")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "DENY"
+        );
+    }
+
+    #[test]
+    fn adds_content_type_options() {
+        let config = SecurityHeadersConfig {
+            x_content_type_options: true,
+            ..Default::default()
+        };
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &ctx);
+        assert_eq!(
+            resp.headers
+                .get("X-Content-Type-Options")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "nosniff"
+        );
+    }
+
+    #[test]
+    fn default_config_adds_nothing() {
+        let config = SecurityHeadersConfig::default();
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &ctx);
+        assert!(resp.headers.get("Strict-Transport-Security").is_none());
     }
 }
