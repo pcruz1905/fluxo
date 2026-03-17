@@ -34,4 +34,12 @@ impl SecurityHeadersPlugin {
     pub fn new(config: SecurityHeadersConfig) -> Self {
         Self { config }
     }
+
+    pub fn on_response(
+        &self,
+        _resp: &mut pingora_http::ResponseHeader,
+        _ctx: &crate::context::RequestContext,
+    ) {
+        // TODO: implement in Task 6
+    }
 }

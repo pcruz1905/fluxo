@@ -36,4 +36,12 @@ impl RequestIdPlugin {
     pub fn new(config: RequestIdConfig) -> Self {
         Self { config }
     }
+
+    pub fn on_upstream_request(
+        &self,
+        _req: &mut pingora_http::RequestHeader,
+        _ctx: &crate::context::RequestContext,
+    ) {
+        // TODO: implement in Task 8
+    }
 }

@@ -19,4 +19,12 @@ impl RateLimitPlugin {
     pub fn new(config: RateLimitConfig) -> Self {
         Self { config }
     }
+
+    pub fn on_request(
+        &self,
+        _req: &pingora_http::RequestHeader,
+        _ctx: &mut crate::context::RequestContext,
+    ) -> super::PluginAction {
+        super::PluginAction::Continue // TODO: implement in Task 11
+    }
 }

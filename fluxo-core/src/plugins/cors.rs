@@ -26,4 +26,12 @@ impl CorsPlugin {
     pub fn new(config: CorsConfig) -> Self {
         Self { config }
     }
+
+    pub fn on_response(
+        &self,
+        _resp: &mut pingora_http::ResponseHeader,
+        _ctx: &crate::context::RequestContext,
+    ) {
+        // TODO: implement in Task 5
+    }
 }

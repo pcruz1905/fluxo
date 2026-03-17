@@ -29,4 +29,20 @@ impl HeadersPlugin {
     pub fn new(config: HeadersConfig) -> Self {
         Self { config }
     }
+
+    pub fn on_upstream_request(
+        &self,
+        _req: &mut pingora_http::RequestHeader,
+        _ctx: &crate::context::RequestContext,
+    ) {
+        // TODO: implement in Task 4
+    }
+
+    pub fn on_response(
+        &self,
+        _resp: &mut pingora_http::ResponseHeader,
+        _ctx: &crate::context::RequestContext,
+    ) {
+        // TODO: implement in Task 4
+    }
 }
