@@ -34,4 +34,5 @@ Cargo.lock
 
 #other
 aralez
-pingapp
+pingap
+compare_repos
