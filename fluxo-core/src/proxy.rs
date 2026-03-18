@@ -215,6 +215,97 @@ impl FluxoProxy {
     pub fn reload(&self, new_state: FluxoState) {
         self.state.store(Arc::new(new_state));
     }
+
+    /// Send a response based on the `PluginResponse` stored in context.
+    async fn send_plugin_response(
+        &self,
+        session: &mut Session,
+        ctx: &RequestContext,
+        status: u16,
+    ) -> Result<(), Box<Error>> {
+        use crate::context::PluginResponse;
+
+        match &ctx.plugin_response {
+            Some(PluginResponse::Redirect { location, .. }) => {
+                let mut header =
+                    pingora_http::ResponseHeader::build(status, None).map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build redirect response: {e}"),
+                        )
+                    })?;
+                let _ = header.insert_header("Location", location.as_str());
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write redirect response: {e}"),
+                        )
+                    })?;
+            }
+            Some(PluginResponse::Static {
+                body, content_type, ..
+            }) => {
+                let mut header =
+                    pingora_http::ResponseHeader::build(status, None).map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build static response: {e}"),
+                        )
+                    })?;
+                if let Some(ct) = content_type {
+                    let _ = header.insert_header("Content-Type", ct.as_str());
+                }
+                let end_of_stream = body.is_none();
+                session
+                    .write_response_header(Box::new(header), end_of_stream)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write static response header: {e}"),
+                        )
+                    })?;
+                if let Some(body_str) = body {
+                    session
+                        .write_response_body(Some(body_str.clone().into()), true)
+                        .await
+                        .map_err(|e| {
+                            Error::explain(
+                                pingora_core::ErrorType::WriteError,
+                                format!("failed to write static response body: {e}"),
+                            )
+                        })?;
+                }
+            }
+            Some(PluginResponse::RateLimited { retry_after_secs }) => {
+                let mut header = pingora_http::ResponseHeader::build(429, None).map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::InternalError,
+                        format!("failed to build rate limit response: {e}"),
+                    )
+                })?;
+                if let Some(secs) = retry_after_secs {
+                    let _ = header.insert_header("Retry-After", secs.to_string());
+                }
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write rate limit response: {e}"),
+                        )
+                    })?;
+            }
+            Some(PluginResponse::Error { .. }) | None => {
+                let _ = session.respond_error(status).await;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -355,30 +446,7 @@ impl ProxyHttp for FluxoProxy {
                 // Run request-phase plugins
                 let req_header = session.req_header();
                 if let PluginAction::Handled(status) = route.pipeline.run_request(req_header, ctx) {
-                    // Check for redirect or static response
-                    if let Some(ref msg) = ctx.error_message {
-                        if let Some(location) = msg.strip_prefix("redirect:") {
-                            let mut header = pingora_http::ResponseHeader::build(status, None)
-                                .map_err(|e| {
-                                    Error::explain(
-                                        pingora_core::ErrorType::InternalError,
-                                        format!("failed to build redirect response: {e}"),
-                                    )
-                                })?;
-                            let _ = header.insert_header("Location", location);
-                            session
-                                .write_response_header(Box::new(header), true)
-                                .await
-                                .map_err(|e| {
-                                    Error::explain(
-                                        pingora_core::ErrorType::WriteError,
-                                        format!("failed to write redirect response: {e}"),
-                                    )
-                                })?;
-                            return Ok(true);
-                        }
-                    }
-                    let _ = session.respond_error(status).await;
+                    self.send_plugin_response(session, ctx, status).await?;
                     return Ok(true);
                 }
 

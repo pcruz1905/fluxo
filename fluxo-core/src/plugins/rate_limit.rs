@@ -1,10 +1,15 @@
-//! Rate limiting plugin — token bucket per route/IP.
+//! Rate limiting plugin — token bucket per route/IP with bounded memory.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
 
-use dashmap::DashMap;
-use governor::{Quota, RateLimiter, clock::DefaultClock, state::InMemoryState};
+use governor::{
+    Quota, RateLimiter,
+    clock::{Clock, DefaultClock},
+    state::InMemoryState,
+};
+use moka::sync::Cache;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -13,13 +18,20 @@ pub struct RateLimitConfig {
     pub requests_per_second: u32,
     /// Burst capacity (max requests allowed in a burst).
     pub burst: u32,
+    /// Maximum number of unique keys (IPs) to track. Default: 10_000.
+    #[serde(default = "default_max_keys")]
+    pub max_keys: u64,
+}
+
+fn default_max_keys() -> u64 {
+    10_000
 }
 
 type Limiter = RateLimiter<governor::state::NotKeyed, InMemoryState, DefaultClock>;
 
 pub struct RateLimitPlugin {
-    /// Per-IP rate limiters.
-    limiters: Arc<DashMap<String, Arc<Limiter>>>,
+    /// Per-IP rate limiters with TTL eviction and bounded size.
+    limiters: Cache<String, Arc<Limiter>>,
     quota: Quota,
 }
 
@@ -36,10 +48,14 @@ impl RateLimitPlugin {
         let burst = NonZeroU32::new(config.burst.max(1)).unwrap();
         let rps = NonZeroU32::new(config.requests_per_second.max(1)).unwrap();
         let quota = Quota::per_second(rps).allow_burst(burst);
-        Self {
-            limiters: Arc::new(DashMap::new()),
-            quota,
-        }
+
+        // Bounded cache: evicts LRU entries when full, auto-expires after 5 minutes idle.
+        let limiters = Cache::builder()
+            .max_capacity(config.max_keys)
+            .time_to_idle(Duration::from_secs(300))
+            .build();
+
+        Self { limiters, quota }
     }
 
     pub fn on_request(
@@ -49,15 +65,20 @@ impl RateLimitPlugin {
     ) -> super::PluginAction {
         let key = ctx.client_ip.as_deref().unwrap_or("unknown").to_string();
 
+        let quota = self.quota;
         let limiter = self
             .limiters
-            .entry(key)
-            .or_insert_with(|| Arc::new(RateLimiter::direct(self.quota)))
-            .clone();
+            .get_with(key, || Arc::new(RateLimiter::direct(quota)));
 
         match limiter.check() {
             Ok(_) => super::PluginAction::Continue,
-            Err(_) => super::PluginAction::Handled(429),
+            Err(not_until) => {
+                let wait = not_until.wait_time_from(governor::clock::DefaultClock::default().now());
+                ctx.plugin_response = Some(crate::context::PluginResponse::RateLimited {
+                    retry_after_secs: Some(wait.as_secs().max(1)),
+                });
+                super::PluginAction::Handled(429)
+            }
         }
     }
 }
@@ -71,6 +92,7 @@ mod tests {
         let config = RateLimitConfig {
             requests_per_second: 10,
             burst: 10,
+            max_keys: 100,
         };
         let plugin = RateLimitPlugin::new(config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -87,6 +109,7 @@ mod tests {
         let config = RateLimitConfig {
             requests_per_second: 1,
             burst: 1,
+            max_keys: 100,
         };
         let plugin = RateLimitPlugin::new(config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -106,6 +129,13 @@ mod tests {
             plugin.on_request(&req, &mut ctx2),
             super::super::PluginAction::Handled(429)
         );
+        // Should have retry_after set
+        match &ctx2.plugin_response {
+            Some(crate::context::PluginResponse::RateLimited {
+                retry_after_secs: Some(secs),
+            }) => assert!(*secs >= 1),
+            other => panic!("expected RateLimited with retry_after, got {other:?}"),
+        }
     }
 
     #[test]
@@ -113,6 +143,7 @@ mod tests {
         let config = RateLimitConfig {
             requests_per_second: 1,
             burst: 1,
+            max_keys: 100,
         };
         let plugin = RateLimitPlugin::new(config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -136,6 +167,7 @@ mod tests {
         let config = RateLimitConfig {
             requests_per_second: 1,
             burst: 1,
+            max_keys: 100,
         };
         let plugin = RateLimitPlugin::new(config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();

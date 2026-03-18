@@ -19,18 +19,23 @@ pub struct IpRestrictPlugin {
 }
 
 impl IpRestrictPlugin {
-    pub fn new(config: IpRestrictConfig) -> Self {
-        let deny = config
-            .deny
-            .iter()
-            .filter_map(|s| s.parse::<ipnet::IpNet>().ok())
-            .collect();
-        let allow = config
-            .allow
-            .iter()
-            .filter_map(|s| s.parse::<ipnet::IpNet>().ok())
-            .collect();
-        Self { deny, allow }
+    /// Create a new IP restrict plugin. Returns Err if any CIDR fails to parse.
+    pub fn try_new(config: IpRestrictConfig) -> Result<Self, String> {
+        let mut deny = Vec::with_capacity(config.deny.len());
+        for s in &config.deny {
+            deny.push(
+                s.parse::<ipnet::IpNet>()
+                    .map_err(|e| format!("invalid deny CIDR '{s}': {e}"))?,
+            );
+        }
+        let mut allow = Vec::with_capacity(config.allow.len());
+        for s in &config.allow {
+            allow.push(
+                s.parse::<ipnet::IpNet>()
+                    .map_err(|e| format!("invalid allow CIDR '{s}': {e}"))?,
+            );
+        }
+        Ok(Self { deny, allow })
     }
 
     pub fn on_request(
@@ -46,6 +51,8 @@ impl IpRestrictPlugin {
             Some(ip) => ip,
             None => {
                 if !self.allow.is_empty() {
+                    ctx.plugin_response =
+                        Some(crate::context::PluginResponse::Error { status: 403 });
                     return super::PluginAction::Handled(403);
                 }
                 return super::PluginAction::Continue;
@@ -54,11 +61,13 @@ impl IpRestrictPlugin {
 
         // Check deny list first
         if self.deny.iter().any(|net| net.contains(&ip)) {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 403 });
             return super::PluginAction::Handled(403);
         }
 
         // If allow list is present, only matching IPs pass
         if !self.allow.is_empty() && !self.allow.iter().any(|net| net.contains(&ip)) {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 403 });
             return super::PluginAction::Handled(403);
         }
 
@@ -76,7 +85,7 @@ mod tests {
             deny: vec!["192.168.1.0/24".into()],
             allow: vec![],
         };
-        let plugin = IpRestrictPlugin::new(config);
+        let plugin = IpRestrictPlugin::try_new(config).unwrap();
         let mut ctx = crate::context::RequestContext::new();
         ctx.client_ip = Some("192.168.1.50".into());
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -92,7 +101,7 @@ mod tests {
             deny: vec!["192.168.1.0/24".into()],
             allow: vec![],
         };
-        let plugin = IpRestrictPlugin::new(config);
+        let plugin = IpRestrictPlugin::try_new(config).unwrap();
         let mut ctx = crate::context::RequestContext::new();
         ctx.client_ip = Some("10.0.0.1".into());
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -108,7 +117,7 @@ mod tests {
             deny: vec![],
             allow: vec!["10.0.0.0/8".into()],
         };
-        let plugin = IpRestrictPlugin::new(config);
+        let plugin = IpRestrictPlugin::try_new(config).unwrap();
         let mut ctx = crate::context::RequestContext::new();
         ctx.client_ip = Some("192.168.1.1".into());
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -124,7 +133,7 @@ mod tests {
             deny: vec![],
             allow: vec!["10.0.0.0/8".into()],
         };
-        let plugin = IpRestrictPlugin::new(config);
+        let plugin = IpRestrictPlugin::try_new(config).unwrap();
         let mut ctx = crate::context::RequestContext::new();
         ctx.client_ip = Some("10.1.2.3".into());
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
@@ -140,12 +149,23 @@ mod tests {
             deny: vec![],
             allow: vec!["10.0.0.0/8".into()],
         };
-        let plugin = IpRestrictPlugin::new(config);
+        let plugin = IpRestrictPlugin::try_new(config).unwrap();
         let mut ctx = crate::context::RequestContext::new();
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         assert_eq!(
             plugin.on_request(&req, &mut ctx),
             super::super::PluginAction::Handled(403)
         );
+    }
+
+    #[test]
+    fn invalid_cidr_returns_error() {
+        let config = IpRestrictConfig {
+            deny: vec!["not-a-cidr".into()],
+            allow: vec![],
+        };
+        let result = IpRestrictPlugin::try_new(config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid deny CIDR"));
     }
 }

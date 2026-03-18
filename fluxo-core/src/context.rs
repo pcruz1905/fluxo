@@ -6,6 +6,23 @@ use std::time::Instant;
 
 use crate::upstream::UpstreamName;
 
+/// A typed response from a plugin that short-circuits the request.
+#[derive(Debug, Clone)]
+pub enum PluginResponse {
+    /// Send a redirect with Location header.
+    Redirect { status: u16, location: String },
+    /// Send a static response with optional body and content type.
+    Static {
+        status: u16,
+        body: Option<String>,
+        content_type: Option<String>,
+    },
+    /// Send a rate-limited response with Retry-After seconds.
+    RateLimited { retry_after_secs: Option<u64> },
+    /// Send a simple error status (403, etc).
+    Error { status: u16 },
+}
+
 /// Per-request state created by `new_ctx()` and threaded through all callbacks.
 pub struct RequestContext {
     /// When the request started processing.
@@ -19,6 +36,9 @@ pub struct RequestContext {
 
     /// Which upstream peer was selected (set during `upstream_peer`).
     pub selected_peer: Option<SelectedPeer>,
+
+    /// Plugin response to send when a plugin short-circuits (set by plugins).
+    pub plugin_response: Option<PluginResponse>,
 
     // --- Wide event fields (populated throughout request lifecycle) ---
     pub method: Option<String>,
@@ -89,6 +109,7 @@ impl RequestContext {
             request_id: RequestId::generate(),
             matched_route: None,
             selected_peer: None,
+            plugin_response: None,
             method: None,
             host: None,
             path: None,
@@ -124,6 +145,7 @@ mod tests {
     #[test]
     fn wide_event_fields_default_to_none() {
         let ctx = RequestContext::new();
+        assert!(ctx.plugin_response.is_none());
         assert!(ctx.method.is_none());
         assert!(ctx.host.is_none());
         assert!(ctx.path.is_none());

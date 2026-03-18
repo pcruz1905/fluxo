@@ -39,6 +39,7 @@ http-body-util = { workspace = true }
 ipnet = { workspace = true }
 governor = { workspace = true }
 dashmap = { workspace = true }
+moka = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -25,6 +25,11 @@ impl RedirectPlugin {
         Self { config }
     }
 
+    /// Validate the redirect status code during config compilation.
+    pub fn validate_status(status: u16) -> bool {
+        matches!(status, 301 | 302 | 307 | 308)
+    }
+
     pub fn on_request(
         &self,
         _req: &pingora_http::RequestHeader,
@@ -36,7 +41,10 @@ impl RedirectPlugin {
             .replace("{path}", ctx.path.as_deref().unwrap_or("/"))
             .replace("{host}", ctx.host.as_deref().unwrap_or(""));
 
-        ctx.error_message = Some(format!("redirect:{url}"));
+        ctx.plugin_response = Some(crate::context::PluginResponse::Redirect {
+            status: self.config.status,
+            location: url,
+        });
         super::PluginAction::Handled(self.config.status)
     }
 }
@@ -57,10 +65,12 @@ mod tests {
         ctx.path = Some("/old".into());
         let action = plugin.on_request(&req, &mut ctx);
         assert_eq!(action, super::super::PluginAction::Handled(301));
-        assert_eq!(
-            ctx.error_message.as_deref(),
-            Some("redirect:https://new.example.com/old")
-        );
+        match &ctx.plugin_response {
+            Some(crate::context::PluginResponse::Redirect { location, .. }) => {
+                assert_eq!(location, "https://new.example.com/old");
+            }
+            other => panic!("expected Redirect, got {other:?}"),
+        }
     }
 
     #[test]
@@ -75,5 +85,15 @@ mod tests {
         ctx.path = Some("/old".into());
         let action = plugin.on_request(&req, &mut ctx);
         assert_eq!(action, super::super::PluginAction::Handled(302));
+    }
+
+    #[test]
+    fn validates_redirect_status_codes() {
+        assert!(RedirectPlugin::validate_status(301));
+        assert!(RedirectPlugin::validate_status(302));
+        assert!(RedirectPlugin::validate_status(307));
+        assert!(RedirectPlugin::validate_status(308));
+        assert!(!RedirectPlugin::validate_status(200));
+        assert!(!RedirectPlugin::validate_status(500));
     }
 }

@@ -41,3 +41,4 @@ http-body-util = "0.1"
 ipnet = "2"
 governor = "0.10"
 dashmap = "6"
+moka = { version = "0.12", features = ["sync"] }

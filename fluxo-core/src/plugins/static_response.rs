@@ -27,14 +27,11 @@ impl StaticResponsePlugin {
         _req: &pingora_http::RequestHeader,
         ctx: &mut crate::context::RequestContext,
     ) -> super::PluginAction {
-        let mut info = format!("static:{}", self.config.status);
-        if let Some(ref ct) = self.config.content_type {
-            info.push_str(&format!("|ct:{ct}"));
-        }
-        if let Some(ref body) = self.config.body {
-            info.push_str(&format!("|body:{body}"));
-        }
-        ctx.error_message = Some(info);
+        ctx.plugin_response = Some(crate::context::PluginResponse::Static {
+            status: self.config.status,
+            body: self.config.body.clone(),
+            content_type: self.config.content_type.clone(),
+        });
         super::PluginAction::Handled(self.config.status)
     }
 }
@@ -57,6 +54,12 @@ mod tests {
             plugin.on_request(&req, &mut ctx),
             super::super::PluginAction::Handled(200)
         );
+        match &ctx.plugin_response {
+            Some(crate::context::PluginResponse::Static { body, .. }) => {
+                assert_eq!(body.as_deref(), Some("OK"));
+            }
+            other => panic!("expected Static, got {other:?}"),
+        }
     }
 
     #[test]
@@ -73,5 +76,17 @@ mod tests {
             plugin.on_request(&req, &mut ctx),
             super::super::PluginAction::Handled(503)
         );
+        match &ctx.plugin_response {
+            Some(crate::context::PluginResponse::Static {
+                status,
+                body,
+                content_type,
+            }) => {
+                assert_eq!(*status, 503);
+                assert_eq!(body.as_deref(), Some("Service temporarily unavailable"));
+                assert_eq!(content_type.as_deref(), Some("text/plain"));
+            }
+            other => panic!("expected Static, got {other:?}"),
+        }
     }
 }

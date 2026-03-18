@@ -88,6 +88,12 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
+            super::cors::CorsPlugin::validate(&cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
             Ok(BuiltinPlugin::Cors(super::cors::CorsPlugin::new(cfg)))
         }
         "ip_restrict" => {
@@ -96,9 +102,13 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
-            Ok(BuiltinPlugin::IpRestrict(
-                super::ip_restrict::IpRestrictPlugin::new(cfg),
-            ))
+            let plugin = super::ip_restrict::IpRestrictPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::IpRestrict(plugin))
         }
         "security_headers" => {
             let cfg: super::security_headers::SecurityHeadersConfig =
@@ -126,6 +136,15 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
+            if !super::redirect::RedirectPlugin::validate_status(cfg.status) {
+                return Err(PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: format!(
+                        "invalid redirect status {}: must be 301, 302, 307, or 308",
+                        cfg.status
+                    ),
+                });
+            }
             Ok(BuiltinPlugin::Redirect(
                 super::redirect::RedirectPlugin::new(cfg),
             ))
@@ -190,6 +209,45 @@ mod tests {
         );
         let plugins = compile_plugins(&route, &global).unwrap();
         assert_eq!(plugins.len(), 2);
+    }
+
+    #[test]
+    fn invalid_cidr_in_ip_restrict_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "ip_restrict".to_string(),
+            serde_json::json!({ "deny": ["not-a-cidr"] }),
+        );
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid deny CIDR"));
+    }
+
+    #[test]
+    fn invalid_redirect_status_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "redirect".to_string(),
+            serde_json::json!({ "url": "/new", "status": 500 }),
+        );
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid redirect status"));
+    }
+
+    #[test]
+    fn cors_credentials_with_wildcard_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "cors".to_string(),
+            serde_json::json!({ "allowed_origins": ["*"], "allow_credentials": true }),
+        );
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("incompatible with wildcard"));
     }
 
     #[test]

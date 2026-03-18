@@ -52,6 +52,7 @@ impl BuiltinPlugin {
             Self::RateLimit(p) => p.on_request(req, ctx),
             Self::Redirect(p) => p.on_request(req, ctx),
             Self::StaticResponse(p) => p.on_request(req, ctx),
+            Self::Cors(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
