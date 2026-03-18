@@ -66,6 +66,9 @@ pub struct CompiledRoute {
     pub index: usize,
     /// Plugin pipeline for this route (compiled at config load time).
     pub pipeline: PluginPipeline,
+    /// Maximum request body size in bytes. `None` = unlimited.
+    /// Parsed at compile time from `RouteConfig::max_request_body`.
+    pub max_body_bytes: Option<u64>,
 }
 
 impl CompiledRoute {
@@ -164,6 +167,10 @@ impl RouteTable {
             name: config.name.as_deref().map(Arc::from),
             index,
             pipeline,
+            max_body_bytes: config
+                .max_request_body
+                .as_deref()
+                .and_then(|s| crate::config::parse_size(s).ok()),
         })
     }
 

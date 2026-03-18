@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth)"
     )]
     UnknownPlugin(String),
 
@@ -34,6 +34,7 @@ pub fn compile_plugins(
 
     // Build plugins in phase order
     let ordered_names = [
+        "basic_auth",    // Auth first — reject unauthorized before doing any work
         "ip_restrict",
         "rate_limit",
         "redirect",
@@ -42,6 +43,7 @@ pub fn compile_plugins(
         "headers",
         "cors",
         "security_headers",
+        "compression",   // Compression last in request phase (captures Accept-Encoding)
     ];
 
     for name in ordered_names {
@@ -157,6 +159,32 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                 })?;
             Ok(BuiltinPlugin::StaticResponse(
                 super::static_response::StaticResponsePlugin::new(cfg),
+            ))
+        }
+        "compression" => {
+            let cfg: super::compression::CompressionConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(BuiltinPlugin::Compression(
+                super::compression::CompressionPlugin::new(cfg),
+            ))
+        }
+        "basic_auth" => {
+            let cfg: super::basic_auth::BasicAuthConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            if cfg.users.is_empty() {
+                return Err(PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: "basic_auth.users must not be empty".to_string(),
+                });
+            }
+            Ok(BuiltinPlugin::BasicAuth(
+                super::basic_auth::BasicAuthPlugin::new(cfg),
             ))
         }
         _ => Err(PluginConfigError::UnknownPlugin(name.to_string())),

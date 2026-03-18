@@ -38,7 +38,7 @@ impl SecurityHeadersPlugin {
     pub fn on_response(
         &self,
         resp: &mut pingora_http::ResponseHeader,
-        _ctx: &crate::context::RequestContext,
+        _ctx: &mut crate::context::RequestContext,
     ) {
         if let Some(max_age) = self.config.hsts_max_age {
             let value = if self.config.hsts_include_subdomains {
@@ -87,8 +87,8 @@ mod tests {
         };
         let plugin = SecurityHeadersPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         let hsts = resp
             .headers
             .get("Strict-Transport-Security")
@@ -106,8 +106,8 @@ mod tests {
         };
         let plugin = SecurityHeadersPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
                 .get("X-Frame-Options")
@@ -126,8 +126,8 @@ mod tests {
         };
         let plugin = SecurityHeadersPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
                 .get("X-Content-Type-Options")
@@ -143,8 +143,8 @@ mod tests {
         let config = SecurityHeadersConfig::default();
         let plugin = SecurityHeadersPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert!(resp.headers.get("Strict-Transport-Security").is_none());
     }
 }

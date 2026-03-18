@@ -1,9 +1,10 @@
 //! The Pingora `ProxyHttp` implementation — the heart of Fluxo.
 //!
 //! `FluxoProxy` implements `ProxyHttp` and dispatches to the routing engine,
-//! upstream manager, and (future) plugin pipeline from within each callback.
+//! upstream manager, and plugin pipeline from within each callback.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -14,7 +15,7 @@ use pingora_proxy::{ProxyHttp, Session};
 use tracing::{info, warn};
 
 use crate::config::FluxoConfig;
-use crate::context::{MatchedRoute, RequestContext, SelectedPeer};
+use crate::context::{CompressionEncoding, MatchedRoute, RequestContext, SelectedPeer};
 use crate::error::FluxoError;
 use crate::plugins::PluginAction;
 use crate::routing::RouteTable;
@@ -26,39 +27,31 @@ use crate::upstream::peer::UpstreamGroup;
 /// The pre-computed, immutable state derived from a `FluxoConfig`.
 ///
 /// Stored in `ArcSwap` and shared across all worker threads.
-/// Every field is read-only after construction. On config reload,
-/// a new `FluxoState` is built and atomically swapped in.
 pub struct FluxoState {
-    /// The raw config that produced this state (kept for Admin API export / debugging).
+    /// The raw config (kept for Admin API export / debugging).
     pub config: FluxoConfig,
-    /// Pre-built route table, ready for matching.
+    /// Pre-built route table.
     pub router: RouteTable,
-    /// Pre-built upstream groups, each holding a Pingora LoadBalancer.
+    /// Pre-built upstream groups.
     pub upstreams: HashMap<UpstreamName, UpstreamGroup>,
-    /// ACME HTTP-01 challenge tokens (shared with the ACME client).
+    /// ACME HTTP-01 challenge tokens.
     pub challenge_state: Arc<ChallengeState>,
-    /// Prometheus metrics (shared across all states, survives reloads).
+    /// Prometheus metrics.
     pub metrics: Arc<crate::observability::MetricsRegistry>,
-    /// Whether any service has TLS configured (precomputed to avoid per-request scan).
+    /// Whether any service has TLS configured (precomputed).
     pub has_tls: bool,
-    /// Trusted proxy CIDRs — XFF is only trusted when the peer matches one of these.
+    /// Trusted proxy CIDRs — XFF is only trusted when peer matches one of these.
     pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
-/// Result of building a FluxoState, including services that need to be registered
-/// with the Pingora Server (but aren't part of the hot-path state).
+/// Result of building a FluxoState, including background health-check services.
 pub struct FluxoBuild {
-    /// The compiled state for the hot path.
     pub state: FluxoState,
-    /// Background services for health checking. Register these with the Server.
     pub health_check_services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>>,
 }
 
 impl FluxoState {
     /// Build a new `FluxoState` from a validated config.
-    ///
-    /// This is the single validation + compilation boundary. It can fail if
-    /// route patterns are invalid or upstream addresses can't be resolved.
     pub fn try_from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
@@ -81,10 +74,7 @@ impl FluxoState {
         let upstreams = build_upstream_groups(&config)?;
 
         let health_check_services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>> =
-            upstreams
-                .values()
-                .filter_map(|g| g.background_service())
-                .collect();
+            upstreams.values().filter_map(|g| g.background_service()).collect();
 
         let has_tls = has_tls_configured(&config);
         let trusted_proxies = parse_trusted_proxies(&config);
@@ -103,11 +93,11 @@ impl FluxoState {
     }
 }
 
-/// Build upstream groups from the config, including health checks.
+/// Build upstream groups from config, wiring timeouts from config.
 fn build_upstream_groups(
     config: &FluxoConfig,
 ) -> Result<HashMap<UpstreamName, UpstreamGroup>, FluxoError> {
-    use crate::upstream::peer::LbStrategy;
+    use crate::upstream::peer::{LbStrategy, UpstreamTimeouts};
     use pingora_load_balancing::health_check::HttpHealthCheck;
 
     let mut groups = HashMap::new();
@@ -115,15 +105,18 @@ fn build_upstream_groups(
     for (name, upstream_config) in &config.upstreams {
         let upstream_name = UpstreamName::from(name.as_str());
         let strategy = LbStrategy::from_config(&upstream_config.load_balancing)?;
+
+        // Wire timeouts from config (not defaults)
+        let timeouts = UpstreamTimeouts::from_config(upstream_config);
+
         let mut group = UpstreamGroup::new(
             upstream_name.clone(),
             &upstream_config.targets,
             strategy,
-            Default::default(), // TLS config — will be wired from config later
-            Default::default(), // Timeouts — will be wired from config later
+            Default::default(), // TLS — wired from config later
+            timeouts,
         )?;
 
-        // Wire health check if configured
         if let Some(hc_config) = &upstream_config.health_check {
             let interval = crate::config::parse_duration(&hc_config.interval)?;
             let timeout = crate::config::parse_duration(&hc_config.timeout)?;
@@ -134,7 +127,6 @@ fn build_upstream_groups(
             hc.peer_template.options.connection_timeout = Some(timeout);
             hc.peer_template.options.read_timeout = Some(timeout);
 
-            // Set health check path
             let mut req =
                 pingora_http::RequestHeader::build("GET", hc_config.path.as_bytes(), None)
                     .map_err(|e| {
@@ -150,7 +142,6 @@ fn build_upstream_groups(
                 ))
             })?;
             hc.req = req;
-
             group.set_health_check(Box::new(hc), interval);
         }
 
@@ -160,8 +151,6 @@ fn build_upstream_groups(
     Ok(groups)
 }
 
-/// Check if any service in the config has TLS (manual or ACME) configured.
-/// Called once at state construction time; the result is cached in `FluxoState::has_tls`.
 fn has_tls_configured(config: &FluxoConfig) -> bool {
     config.services.values().any(|svc| {
         svc.tls
@@ -170,8 +159,6 @@ fn has_tls_configured(config: &FluxoConfig) -> bool {
     })
 }
 
-/// Parse trusted proxy CIDRs from config. Called once at state construction time.
-/// Validation already happened in config::validate(), so unwrap is safe.
 fn parse_trusted_proxies(config: &FluxoConfig) -> Vec<ipnet::IpNet> {
     config
         .global
@@ -181,13 +168,32 @@ fn parse_trusted_proxies(config: &FluxoConfig) -> Vec<ipnet::IpNet> {
         .collect()
 }
 
-/// Check if a peer address is from a trusted proxy.
 fn is_trusted_proxy(
     peer_addr: &pingora_core::protocols::l4::socket::SocketAddr,
     trusted: &[ipnet::IpNet],
 ) -> bool {
     let pingora_core::protocols::l4::socket::SocketAddr::Inet(addr) = peer_addr;
     trusted.iter().any(|net| net.contains(&addr.ip()))
+}
+
+/// Compress `data` with the given algorithm.
+fn compress_body(data: &[u8], encoding: CompressionEncoding) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    match encoding {
+        CompressionEncoding::Gzip => {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(data)?;
+            Ok(enc.finish()?)
+        }
+        CompressionEncoding::Brotli => {
+            let mut out = Vec::new();
+            {
+                let mut w = brotli::CompressorWriter::new(&mut out, 4096, 6, 22);
+                w.write_all(data)?;
+            }
+            Ok(out)
+        }
+        CompressionEncoding::Zstd => Ok(zstd::encode_all(data, 3)?),
+    }
 }
 
 /// Adapter to let Pingora request headers implement our `RequestHeaders` trait.
@@ -202,50 +208,37 @@ impl<'a> RequestHeaders for PingoraHeaders<'a> {
 /// The central proxy type that implements Pingora's `ProxyHttp` trait.
 ///
 /// Holds an `ArcSwap<FluxoState>` for lock-free config reads on the hot path.
-/// All Pingora service instances share the same `FluxoProxy` (it's cheap to clone).
 #[derive(Clone)]
 pub struct FluxoProxy {
     state: Arc<ArcSwap<FluxoState>>,
 }
 
 impl FluxoProxy {
-    /// Create a new proxy from a pre-computed state.
     pub fn new(state: FluxoState) -> Self {
-        Self {
-            state: Arc::new(ArcSwap::from(Arc::new(state))),
-        }
+        Self { state: Arc::new(ArcSwap::from(Arc::new(state))) }
     }
 
-    /// Create a new proxy from an already-Arc'd state.
     pub fn from_state(state: Arc<FluxoState>) -> Self {
-        Self {
-            state: Arc::new(ArcSwap::from(state)),
-        }
+        Self { state: Arc::new(ArcSwap::from(state)) }
     }
 
-    /// Get the challenge state for sharing with the ACME client.
     pub fn challenge_state(&self) -> Arc<ChallengeState> {
         self.state.load().challenge_state.clone()
     }
 
-    /// Get the current metrics registry.
     pub fn metrics(&self) -> Arc<crate::observability::MetricsRegistry> {
         self.state.load().metrics.clone()
     }
 
-    /// Get a snapshot of the current state (for Admin API).
     pub fn state_snapshot(&self) -> arc_swap::Guard<Arc<FluxoState>> {
         self.state.load()
     }
 
-    /// Atomically replace the running config with a new one.
-    ///
-    /// Used by future config reload / Admin API.
+    /// Atomically replace the running config with a new one (zero-downtime reload).
     pub fn reload(&self, new_state: FluxoState) {
         self.state.store(Arc::new(new_state));
     }
 
-    /// Send a response based on the `PluginResponse` stored in context.
     async fn send_plugin_response(
         &self,
         session: &mut Session,
@@ -263,27 +256,20 @@ impl FluxoProxy {
                             format!("failed to build redirect response: {e}"),
                         )
                     })?;
-                header
-                    .insert_header("Location", location.as_str())
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::InternalError,
-                            format!("failed to set Location header: {e}"),
-                        )
-                    })?;
-                session
-                    .write_response_header(Box::new(header), true)
-                    .await
-                    .map_err(|e| {
-                        Error::explain(
-                            pingora_core::ErrorType::WriteError,
-                            format!("failed to write redirect response: {e}"),
-                        )
-                    })?;
+                header.insert_header("Location", location.as_str()).map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::InternalError,
+                        format!("failed to set Location header: {e}"),
+                    )
+                })?;
+                session.write_response_header(Box::new(header), true).await.map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::WriteError,
+                        format!("failed to write redirect response: {e}"),
+                    )
+                })?;
             }
-            Some(PluginResponse::Static {
-                body, content_type, ..
-            }) => {
+            Some(PluginResponse::Static { body, content_type, .. }) => {
                 let mut header =
                     pingora_http::ResponseHeader::build(status, None).map_err(|e| {
                         Error::explain(
@@ -292,14 +278,12 @@ impl FluxoProxy {
                         )
                     })?;
                 if let Some(ct) = content_type {
-                    header
-                        .insert_header("Content-Type", ct.as_str())
-                        .map_err(|e| {
-                            Error::explain(
-                                pingora_core::ErrorType::InternalError,
-                                format!("failed to set Content-Type header: {e}"),
-                            )
-                        })?;
+                    header.insert_header("Content-Type", ct.as_str()).map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to set Content-Type header: {e}"),
+                        )
+                    })?;
                 }
                 let end_of_stream = body.is_none();
                 session
@@ -324,31 +308,50 @@ impl FluxoProxy {
                 }
             }
             Some(PluginResponse::RateLimited { retry_after_secs }) => {
-                let mut header = pingora_http::ResponseHeader::build(429, None).map_err(|e| {
-                    Error::explain(
-                        pingora_core::ErrorType::InternalError,
-                        format!("failed to build rate limit response: {e}"),
-                    )
-                })?;
-                if let Some(secs) = retry_after_secs {
-                    header
-                        .insert_header("Retry-After", secs.to_string())
-                        .map_err(|e| {
-                            Error::explain(
-                                pingora_core::ErrorType::InternalError,
-                                format!("failed to set Retry-After header: {e}"),
-                            )
-                        })?;
-                }
-                session
-                    .write_response_header(Box::new(header), true)
-                    .await
-                    .map_err(|e| {
+                let mut header =
+                    pingora_http::ResponseHeader::build(429, None).map_err(|e| {
                         Error::explain(
-                            pingora_core::ErrorType::WriteError,
-                            format!("failed to write rate limit response: {e}"),
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build rate limit response: {e}"),
                         )
                     })?;
+                if let Some(secs) = retry_after_secs {
+                    header.insert_header("Retry-After", secs.to_string()).map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to set Retry-After header: {e}"),
+                        )
+                    })?;
+                }
+                session.write_response_header(Box::new(header), true).await.map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::WriteError,
+                        format!("failed to write rate limit response: {e}"),
+                    )
+                })?;
+            }
+            Some(PluginResponse::BasicAuthChallenge { realm }) => {
+                let mut header =
+                    pingora_http::ResponseHeader::build(401, None).map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build auth challenge: {e}"),
+                        )
+                    })?;
+                header
+                    .insert_header("WWW-Authenticate", format!("Basic realm=\"{realm}\""))
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to set WWW-Authenticate: {e}"),
+                        )
+                    })?;
+                session.write_response_header(Box::new(header), true).await.map_err(|e| {
+                    Error::explain(
+                        pingora_core::ErrorType::WriteError,
+                        format!("failed to write auth challenge response: {e}"),
+                    )
+                })?;
             }
             Some(PluginResponse::Error { .. }) | None => {
                 let _ = session.respond_error(status).await;
@@ -374,21 +377,16 @@ impl ProxyHttp for FluxoProxy {
         let state = self.state.load();
         state.metrics.inc_active();
 
-        // Extract request info for matching
         let req_header = session.req_header();
         let host = req_header.headers.get("host").and_then(|v| v.to_str().ok());
         let path = req_header.uri.path();
         let method = req_header.method.as_str();
 
-        // Populate core wide-event fields early so short-circuited requests
-        // (ACME challenges, HTTP→HTTPS redirects) still have them.
         ctx.method = Some(method.to_string());
         ctx.host = host.map(|h| h.to_string());
         ctx.path = Some(path.to_string());
 
-        // --- ACME HTTP-01 challenge interception ---
-        // Serve challenge tokens before any other processing.
-        // One prefix check per request — negligible overhead.
+        // --- ACME HTTP-01 challenge ---
         if let Some(key_auth) = path
             .strip_prefix("/.well-known/acme-challenge/")
             .and_then(|token| state.challenge_state.get(token))
@@ -399,30 +397,22 @@ impl ProxyHttp for FluxoProxy {
                     format!("failed to build ACME challenge response: {e}"),
                 )
             })?;
-            session
-                .write_response_header(Box::new(header), false)
-                .await
-                .map_err(|e| {
-                    Error::explain(
-                        pingora_core::ErrorType::WriteError,
-                        format!("failed to write ACME challenge header: {e}"),
-                    )
-                })?;
-            session
-                .write_response_body(Some(key_auth.into()), true)
-                .await
-                .map_err(|e| {
-                    Error::explain(
-                        pingora_core::ErrorType::WriteError,
-                        format!("failed to write ACME challenge body: {e}"),
-                    )
-                })?;
-            return Ok(true); // short-circuit, handled
+            session.write_response_header(Box::new(header), false).await.map_err(|e| {
+                Error::explain(
+                    pingora_core::ErrorType::WriteError,
+                    format!("failed to write ACME challenge header: {e}"),
+                )
+            })?;
+            session.write_response_body(Some(key_auth.into()), true).await.map_err(|e| {
+                Error::explain(
+                    pingora_core::ErrorType::WriteError,
+                    format!("failed to write ACME challenge body: {e}"),
+                )
+            })?;
+            return Ok(true);
         }
 
         // --- HTTP→HTTPS redirect ---
-        // If TLS is configured for any service and the request came on plaintext,
-        // redirect to HTTPS. Skip for ACME challenge paths (handled above).
         let is_tls = session
             .as_downstream()
             .digest()
@@ -447,19 +437,15 @@ impl ProxyHttp for FluxoProxy {
                     format!("failed to set Location header: {e}"),
                 )
             })?;
-            session
-                .write_response_header(Box::new(header), true)
-                .await
-                .map_err(|e| {
-                    Error::explain(
-                        pingora_core::ErrorType::WriteError,
-                        format!("failed to write redirect response: {e}"),
-                    )
-                })?;
-            return Ok(true); // short-circuit, handled
+            session.write_response_header(Box::new(header), true).await.map_err(|e| {
+                Error::explain(
+                    pingora_core::ErrorType::WriteError,
+                    format!("failed to write redirect response: {e}"),
+                )
+            })?;
+            return Ok(true);
         }
 
-        // Populate remaining wide-event fields that need the session/digest
         let req_header = session.req_header();
         ctx.http_version = Some(format!("{:?}", req_header.version));
         ctx.user_agent = req_header
@@ -468,22 +454,20 @@ impl ProxyHttp for FluxoProxy {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        // Client IP: use peer address by default, only trust X-Forwarded-For
-        // when the peer is in the trusted_proxies list.
+        // Client IP — only trust XFF if peer is in trusted_proxies
         let peer_addr = session.as_downstream().client_addr();
-        let xff_ip = if peer_addr.is_some_and(|addr| is_trusted_proxy(addr, &state.trusted_proxies))
-        {
-            req_header
-                .headers
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-        } else {
-            None
-        };
+        let xff_ip =
+            if peer_addr.is_some_and(|addr| is_trusted_proxy(addr, &state.trusted_proxies)) {
+                req_header
+                    .headers
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+            } else {
+                None
+            };
         ctx.client_ip = xff_ip.or_else(|| peer_addr.map(|a| a.to_string()));
 
-        // TLS version
         if let Some(ssl) = session
             .as_downstream()
             .digest()
@@ -492,12 +476,9 @@ impl ProxyHttp for FluxoProxy {
             ctx.tls_version = Some(ssl.version.to_string());
         }
 
-        // --- Route matching (with header support) ---
+        // --- Route matching ---
         let pingora_hdrs = PingoraHeaders(req_header);
-        match state
-            .router
-            .match_route_with_headers(host, path, method, &pingora_hdrs)
-        {
+        match state.router.match_route_with_headers(host, path, method, &pingora_hdrs) {
             Some(route) => {
                 ctx.matched_route = Some(MatchedRoute {
                     index: route.index,
@@ -505,19 +486,17 @@ impl ProxyHttp for FluxoProxy {
                     name: route.name.clone(),
                 });
 
-                // Run request-phase plugins
                 let req_header = session.req_header();
                 if let PluginAction::Handled(status) = route.pipeline.run_request(req_header, ctx) {
                     self.send_plugin_response(session, ctx, status).await?;
                     return Ok(true);
                 }
 
-                Ok(false) // continue to upstream_peer
+                Ok(false)
             }
             None => {
-                // No route matched — return 404
                 let _ = session.respond_error(404).await;
-                Ok(true) // short-circuit, handled
+                Ok(true)
             }
         }
     }
@@ -532,7 +511,7 @@ impl ProxyHttp for FluxoProxy {
         let route = ctx.matched_route.as_ref().ok_or_else(|| {
             Error::explain(
                 pingora_core::ErrorType::InternalError,
-                "upstream_peer called without matched route (request_filter bug)",
+                "upstream_peer called without matched route",
             )
         })?;
 
@@ -550,12 +529,8 @@ impl ProxyHttp for FluxoProxy {
             )
         })?;
 
-        // Record which peer was selected (for logging)
         if let Some(addr) = peer.address().as_inet() {
-            ctx.selected_peer = Some(SelectedPeer {
-                address: *addr,
-                tls: peer.is_tls(),
-            });
+            ctx.selected_peer = Some(SelectedPeer { address: *addr, tls: peer.is_tls() });
         }
 
         info!(
@@ -574,13 +549,11 @@ impl ProxyHttp for FluxoProxy {
         upstream_request: &mut pingora_http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> Result<(), Box<Error>> {
-        // Run upstream-request-phase plugins
         let state = self.state.load();
         if let Some(route) = &ctx.matched_route {
             let pipeline = &state.router.routes()[route.index].pipeline;
             pipeline.run_upstream_request(upstream_request, ctx);
         }
-
         Ok(())
     }
 
@@ -613,6 +586,20 @@ impl ProxyHttp for FluxoProxy {
     {
         if let Some(b) = body {
             ctx.bytes_received += b.len() as u64;
+
+            // Enforce max_request_body limit (nginx: client_max_body_size)
+            let state = self.state.load();
+            if let Some(route) = &ctx.matched_route {
+                let max = state.router.routes()[route.index].max_body_bytes;
+                if let Some(max_bytes) = max {
+                    if ctx.bytes_received > max_bytes {
+                        return Err(Error::explain(
+                            pingora_core::ErrorType::HTTPStatus(413),
+                            "request body too large",
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -621,12 +608,39 @@ impl ProxyHttp for FluxoProxy {
         &self,
         _session: &mut Session,
         body: &mut Option<bytes::Bytes>,
-        _end_of_stream: bool,
+        end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<std::time::Duration>, Box<Error>> {
-        if let Some(b) = body {
+        // Take the chunk (if any) from the body slot
+        if let Some(b) = body.take() {
             ctx.bytes_sent += b.len() as u64;
+            if ctx.compression_encoding.is_some() {
+                // Buffer for deferred compression
+                ctx.response_body_buffer.extend_from_slice(&b);
+            } else {
+                // No compression — pass through immediately
+                *body = Some(b);
+            }
         }
+
+        // On end-of-stream, compress all buffered data and emit
+        if end_of_stream {
+            if let Some(encoding) = ctx.compression_encoding {
+                if !ctx.response_body_buffer.is_empty() {
+                    match compress_body(&ctx.response_body_buffer, encoding) {
+                        Ok(compressed) => {
+                            *body = Some(bytes::Bytes::from(compressed));
+                        }
+                        Err(_) => {
+                            // Compression failed — emit uncompressed
+                            *body = Some(bytes::Bytes::copy_from_slice(&ctx.response_body_buffer));
+                        }
+                    }
+                    ctx.response_body_buffer.clear();
+                }
+            }
+        }
+
         Ok(None)
     }
 
@@ -639,11 +653,9 @@ impl ProxyHttp for FluxoProxy {
     where
         Self::CTX: Send + Sync,
     {
-        // Capture error for wide event
         ctx.error_message = Some(format!("{e}"));
 
         use pingora_core::ErrorType::*;
-
         let code = match e.etype() {
             HTTPStatus(code) => *code,
             ConnectTimedout | ConnectRefused | ConnectNoRoute | ConnectError => 502,
@@ -660,13 +672,30 @@ impl ProxyHttp for FluxoProxy {
             "proxy error"
         );
 
-        // Send a simple error response
-        let _ = session.respond_error(code).await;
+        // Use custom error page if configured for this status code
+        let state = self.state.load();
+        let sent = if let Some(body) = state.config.global.error_pages.get(&code) {
+            let result = async {
+                let mut header = pingora_http::ResponseHeader::build(code, None)?;
+                header.insert_header("content-type", "text/html; charset=utf-8")?;
+                session.write_response_header(Box::new(header), false).await?;
+                session
+                    .write_response_body(
+                        Some(bytes::Bytes::from(body.clone().into_bytes())),
+                        true,
+                    )
+                    .await
+            };
+            result.await.is_ok()
+        } else {
+            false
+        };
 
-        pingora_proxy::FailToProxy {
-            error_code: code,
-            can_reuse_downstream: false,
+        if !sent {
+            let _ = session.respond_error(code).await;
         }
+
+        pingora_proxy::FailToProxy { error_code: code, can_reuse_downstream: false }
     }
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
@@ -680,10 +709,8 @@ impl ProxyHttp for FluxoProxy {
             .map(|resp| resp.status.as_u16())
             .unwrap_or(0);
 
-        // Wide event access log
         crate::observability::access_log::emit_access_log(ctx, status);
 
-        // Prometheus metrics
         let route = ctx
             .matched_route
             .as_ref()
@@ -693,7 +720,7 @@ impl ProxyHttp for FluxoProxy {
         let duration_secs = ctx.elapsed().as_secs_f64();
 
         state.metrics.record_request(
-            "-", // TODO: add service name to MatchedRoute
+            "-",
             route,
             method,
             status,

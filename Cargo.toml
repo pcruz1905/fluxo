@@ -42,3 +42,8 @@ ipnet = "2"
 governor = "0.10"
 dashmap = "6"
 moka = { version = "0.12", features = ["sync"] }
+flate2 = "1"
+brotli = "7"
+zstd = "0.13"
+base64 = "0.22"
+sha2 = "0.10"

@@ -4,6 +4,8 @@
 //! Each route compiles its configured plugins into a `PluginPipeline` at config
 //! load time. During request processing, proxy.rs calls the pipeline at each phase.
 
+pub mod basic_auth;
+pub mod compression;
 pub mod config;
 pub mod cors;
 pub mod headers;
@@ -38,6 +40,8 @@ pub enum BuiltinPlugin {
     RequestId(request_id::RequestIdPlugin),
     Redirect(redirect::RedirectPlugin),
     StaticResponse(static_response::StaticResponsePlugin),
+    Compression(compression::CompressionPlugin),
+    BasicAuth(basic_auth::BasicAuthPlugin),
 }
 
 impl BuiltinPlugin {
@@ -53,6 +57,8 @@ impl BuiltinPlugin {
             Self::Redirect(p) => p.on_request(req, ctx),
             Self::StaticResponse(p) => p.on_request(req, ctx),
             Self::Cors(p) => p.on_request(req, ctx),
+            Self::Compression(p) => p.on_request(req, ctx),
+            Self::BasicAuth(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
@@ -74,12 +80,13 @@ impl BuiltinPlugin {
     pub fn on_response(
         &self,
         resp: &mut pingora_http::ResponseHeader,
-        ctx: &crate::context::RequestContext,
+        ctx: &mut crate::context::RequestContext,
     ) {
         match self {
             Self::Headers(p) => p.on_response(resp, ctx),
             Self::Cors(p) => p.on_response(resp, ctx),
             Self::SecurityHeaders(p) => p.on_response(resp, ctx),
+            Self::Compression(p) => p.on_response(resp, ctx),
             _ => {}
         }
     }

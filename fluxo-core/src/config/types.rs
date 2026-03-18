@@ -15,6 +15,37 @@ pub enum AccessLogFormat {
     Compact,
 }
 
+/// A single upstream target — supports simple string or weighted form.
+///
+/// Simple:   `targets = ["127.0.0.1:3000"]`
+/// Weighted: `targets = [{address = "127.0.0.1:3000", weight = 3}]`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TargetConfig {
+    /// Simple string: `"127.0.0.1:3000"` — weight defaults to 1.
+    Simple(String),
+    /// Weighted: `{ address = "127.0.0.1:3000", weight = 3 }`.
+    Weighted { address: String, weight: u32 },
+}
+
+impl TargetConfig {
+    /// The target's socket address string.
+    pub fn address(&self) -> &str {
+        match self {
+            Self::Simple(s) => s,
+            Self::Weighted { address, .. } => address,
+        }
+    }
+
+    /// The target's weight (default 1 for simple form).
+    pub fn weight(&self) -> u32 {
+        match self {
+            Self::Simple(_) => 1,
+            Self::Weighted { weight, .. } => *weight,
+        }
+    }
+}
+
 /// Top-level Fluxo configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FluxoConfig {
@@ -53,7 +84,6 @@ pub struct GlobalConfig {
     pub log_level: String,
 
     /// Base directory for certificate storage (ACME certs, account keys).
-    /// Defaults to platform-specific data dir (~/.local/share/fluxo/certs).
     pub cert_dir: Option<String>,
 
     /// Access log format: json (default) or compact.
@@ -65,14 +95,18 @@ pub struct GlobalConfig {
     pub metrics_enabled: bool,
 
     /// Trusted proxy CIDRs — only trust X-Forwarded-For from these sources.
-    /// When empty (default), the peer address is always used as client IP.
-    /// Example: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
 
     /// Global plugin configuration (applies to all routes, can be overridden per-route).
     #[serde(default)]
     pub plugins: HashMap<String, serde_json::Value>,
+
+    /// Custom error pages keyed by HTTP status code.
+    /// Values are raw HTML/text bodies returned instead of the default Pingora error.
+    /// Example: `{ 502 = "<html>Bad Gateway</html>" }`
+    #[serde(default)]
+    pub error_pages: HashMap<u16, String>,
 }
 
 impl Default for GlobalConfig {
@@ -88,6 +122,7 @@ impl Default for GlobalConfig {
             metrics_enabled: defaults::metrics_enabled(),
             trusted_proxies: Vec::new(),
             plugins: HashMap::new(),
+            error_pages: HashMap::new(),
         }
     }
 }
@@ -160,16 +195,18 @@ pub struct RouteConfig {
     #[serde(default)]
     pub match_method: Vec<String>,
 
-    /// Header conditions to match (e.g., {"X-Debug": "true", "X-Version": "~^v[0-9]+"}).
-    /// Values starting with `~` are treated as regex patterns.
+    /// Header conditions to match (e.g., {"X-Debug": "true"}).
     #[serde(default)]
     pub match_header: std::collections::HashMap<String, String>,
 
     /// Name of the upstream group to forward to.
     pub upstream: String,
 
+    /// Maximum request body size (e.g., "10mb", "1gb"). Returns 413 if exceeded.
+    /// Nginx equivalent: `client_max_body_size`.
+    pub max_request_body: Option<String>,
+
     /// Plugin configuration for this route.
-    /// Keys are plugin names, values are plugin-specific config.
     #[serde(default)]
     pub plugins: HashMap<String, serde_json::Value>,
 }
@@ -177,20 +214,71 @@ pub struct RouteConfig {
 /// Configuration for an upstream group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
-    /// Discovery method: "static" (v0.1 only), "dns" (future).
+    /// Discovery method: "static" (v0.1 only).
     #[serde(default = "defaults::discovery")]
     pub discovery: String,
 
-    /// Static list of upstream targets (e.g., ["10.0.1.1:8080"]).
+    /// Static list of upstream targets. Supports simple strings or weighted objects.
     #[serde(default)]
-    pub targets: Vec<String>,
+    pub targets: Vec<TargetConfig>,
 
-    /// Load balancing strategy: "round_robin" (v0.1 only).
+    /// Load balancing strategy.
     #[serde(default = "defaults::load_balancing")]
     pub load_balancing: String,
 
     /// Health check configuration.
     pub health_check: Option<HealthCheckConfig>,
+
+    /// Timeout for establishing a TCP connection to an upstream.
+    /// Nginx equivalent: `proxy_connect_timeout`. Default: "5s".
+    #[serde(default = "defaults::connect_timeout")]
+    pub connect_timeout: String,
+
+    /// Timeout for reading a response from an upstream.
+    /// Nginx equivalent: `proxy_read_timeout`. Default: "60s".
+    #[serde(default = "defaults::read_timeout")]
+    pub read_timeout: String,
+
+    /// Timeout for writing a request to an upstream.
+    /// Nginx equivalent: `proxy_send_timeout`. Default: "60s".
+    #[serde(default = "defaults::write_timeout")]
+    pub write_timeout: String,
+
+    /// Retry configuration — retry failed requests on the next healthy backend.
+    /// Nginx equivalent: `proxy_next_upstream`.
+    pub retry: Option<RetryConfig>,
+
+    /// Passive health check — mark a backend unhealthy after consecutive proxy failures.
+    /// Nginx equivalent: `max_fails` / `fail_timeout`.
+    pub passive_health: Option<PassiveHealthConfig>,
+}
+
+/// Retry configuration for upstream failures.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts (not counting the original request).
+    #[serde(default = "defaults::retry_attempts")]
+    pub attempts: u32,
+
+    /// Conditions that trigger a retry.
+    /// Valid values: "error" (connection error), "timeout", "5xx" (5xx responses).
+    /// Default: ["error", "timeout"].
+    #[serde(default = "defaults::retry_on")]
+    pub on: Vec<String>,
+}
+
+/// Passive health check configuration — tracks failures during proxying.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassiveHealthConfig {
+    /// Number of consecutive proxy failures before marking backend unhealthy.
+    /// Nginx equivalent: `max_fails`. Default: 3.
+    #[serde(default = "defaults::passive_max_fails")]
+    pub max_fails: u32,
+
+    /// How long an unhealthy backend stays excluded.
+    /// Nginx equivalent: `fail_timeout`. Default: "30s".
+    #[serde(default = "defaults::passive_fail_timeout")]
+    pub fail_timeout: String,
 }
 
 /// Active health check settings.

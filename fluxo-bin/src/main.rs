@@ -96,8 +96,16 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Determine the config file path for hot-reload (not available in --upstream mode)
+    let config_file_path = if cli.upstream.is_none() {
+        let p = Path::new(&cli.config);
+        if p.exists() { Some(p.to_path_buf()) } else { None }
+    } else {
+        None
+    };
+
     // Build the app (compiles routes, initializes load balancers)
-    let mut app = FluxoApp::from_config(fluxo_config.clone())?;
+    let mut app = FluxoApp::from_config_with_path(fluxo_config.clone(), config_file_path)?;
 
     // Create Pingora server
     let mut server = Server::new(None)?;
@@ -182,5 +190,39 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(admin = %app.config().global.admin, "admin API registered");
 
     tracing::info!("fluxo is ready");
+
+    // SIGHUP handler for config hot-reload (Unix only — nginx-compatible)
+    #[cfg(unix)]
+    {
+        let proxy_for_signal = app.proxy();
+        let config_path_for_signal = cli.config.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("failed to register SIGHUP handler: {e}");
+                    return;
+                }
+            };
+            loop {
+                sighup.recv().await;
+                tracing::info!(path = %config_path_for_signal, "SIGHUP received — reloading config");
+                match fluxo_core::config::load_from_file(std::path::Path::new(&config_path_for_signal)) {
+                    Ok(new_config) => {
+                        match fluxo_core::FluxoState::try_from_config(new_config) {
+                            Ok(new_state) => {
+                                proxy_for_signal.reload(new_state);
+                                tracing::info!("config reloaded successfully");
+                            }
+                            Err(e) => tracing::error!("config reload failed (state build): {e}"),
+                        }
+                    }
+                    Err(e) => tracing::error!("config reload failed (parse): {e}"),
+                }
+            }
+        });
+    }
+
     server.run_forever();
 }

@@ -13,6 +13,7 @@ use pingora_load_balancing::selection::{Consistent, Random, RoundRobin};
 use pingora_core::services::ServiceWithDependents;
 use pingora_core::services::background::GenBackgroundService;
 
+use crate::config::TargetConfig;
 use crate::upstream::UpstreamError;
 use crate::upstream::UpstreamName;
 
@@ -42,16 +43,28 @@ impl Default for UpstreamTimeouts {
     fn default() -> Self {
         Self {
             connect: Duration::from_secs(5),
-            read: Duration::from_secs(30),
-            write: Duration::from_secs(30),
+            read: Duration::from_secs(60),
+            write: Duration::from_secs(60),
+        }
+    }
+}
+
+impl UpstreamTimeouts {
+    /// Build timeouts from an upstream config, parsing duration strings.
+    pub fn from_config(c: &crate::config::UpstreamConfig) -> Self {
+        use crate::config::parse_duration;
+        Self {
+            connect: parse_duration(&c.connect_timeout)
+                .unwrap_or(Duration::from_secs(5)),
+            read: parse_duration(&c.read_timeout)
+                .unwrap_or(Duration::from_secs(60)),
+            write: parse_duration(&c.write_timeout)
+                .unwrap_or(Duration::from_secs(60)),
         }
     }
 }
 
 /// The supported load balancing strategies.
-///
-/// Uses enum dispatch to avoid trait objects while supporting multiple
-/// Pingora `LoadBalancer<S>` generic instantiations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LbStrategy {
     RoundRobin,
@@ -74,8 +87,6 @@ impl LbStrategy {
 }
 
 /// Type-erased load balancer that wraps different Pingora `LoadBalancer<S>` types.
-///
-/// Each variant holds an `Arc<LoadBalancer<S>>` and dispatches `select()` calls.
 enum AnyLoadBalancer {
     RoundRobin(Arc<LoadBalancer<RoundRobin>>),
     Random(Arc<LoadBalancer<Random>>),
@@ -84,33 +95,54 @@ enum AnyLoadBalancer {
 }
 
 impl AnyLoadBalancer {
-    /// Build a load balancer from targets with the given strategy.
-    fn build(targets: &[String], strategy: LbStrategy) -> Result<Self, UpstreamError> {
-        let map_err = |e: std::io::Error| UpstreamError::InvalidAddress {
-            address: targets.join(", "),
+    /// Build a load balancer from `TargetConfig` entries.
+    ///
+    /// Weighted targets are expanded by repetition: a target with `weight = 3`
+    /// appears 3 times in the rotation, achieving weighted round robin.
+    fn build(targets: &[TargetConfig], strategy: LbStrategy) -> Result<Self, UpstreamError> {
+        // Expand targets by weight (weight=N → N copies in the rotation)
+        let expanded: Vec<String> = targets
+            .iter()
+            .flat_map(|t| {
+                let addr = t.address().to_string();
+                let weight = (t.weight() as usize).max(1);
+                std::iter::repeat(addr).take(weight)
+            })
+            .collect();
+
+        let addr_list = targets
+            .iter()
+            .map(|t| t.address())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let map_err = move |e: std::io::Error| UpstreamError::InvalidAddress {
+            address: addr_list.clone(),
             reason: e.to_string(),
         };
 
         match strategy {
             LbStrategy::RoundRobin => {
-                let lb =
-                    LoadBalancer::<RoundRobin>::try_from_iter(targets.iter()).map_err(map_err)?;
+                let lb = LoadBalancer::<RoundRobin>::try_from_iter(expanded.iter())
+                    .map_err(map_err)?;
                 Ok(Self::RoundRobin(Arc::new(lb)))
             }
             LbStrategy::Random => {
-                let lb = LoadBalancer::<Random>::try_from_iter(targets.iter()).map_err(map_err)?;
+                let lb =
+                    LoadBalancer::<Random>::try_from_iter(expanded.iter()).map_err(map_err)?;
                 Ok(Self::Random(Arc::new(lb)))
             }
             LbStrategy::FnvHash => {
-                let lb = LoadBalancer::<pingora_load_balancing::selection::FNVHash>::try_from_iter(
-                    targets.iter(),
-                )
-                .map_err(map_err)?;
+                let lb =
+                    LoadBalancer::<pingora_load_balancing::selection::FNVHash>::try_from_iter(
+                        expanded.iter(),
+                    )
+                    .map_err(map_err)?;
                 Ok(Self::FnvHash(Arc::new(lb)))
             }
             LbStrategy::ConsistentHash => {
-                let lb =
-                    LoadBalancer::<Consistent>::try_from_iter(targets.iter()).map_err(map_err)?;
+                let lb = LoadBalancer::<Consistent>::try_from_iter(expanded.iter())
+                    .map_err(map_err)?;
                 Ok(Self::ConsistentHash(Arc::new(lb)))
             }
         }
@@ -140,7 +172,6 @@ impl AnyLoadBalancer {
     }
 
     /// Get as a background service for health check scheduling.
-    /// Returns `None` if no health check is configured (no frequency set).
     fn as_background_service(&self, name: &str) -> Option<Box<dyn ServiceWithDependents>> {
         let svc_name = format!("BG health-check {name}");
         match self {
@@ -194,7 +225,6 @@ pub struct UpstreamGroup {
     timeouts: UpstreamTimeouts,
 }
 
-// Manual Debug because LoadBalancer doesn't impl Debug
 impl std::fmt::Debug for UpstreamGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpstreamGroup")
@@ -207,23 +237,18 @@ impl std::fmt::Debug for UpstreamGroup {
 }
 
 impl UpstreamGroup {
-    /// Create a new upstream group from a list of target addresses and a strategy.
+    /// Create a new upstream group from target configs, a strategy, and timeout settings.
+    ///
+    /// Weighted targets are expanded by repetition in the load balancer rotation.
     pub fn new(
         name: UpstreamName,
-        targets: &[String],
+        targets: &[TargetConfig],
         strategy: LbStrategy,
         tls: UpstreamTlsConfig,
         timeouts: UpstreamTimeouts,
     ) -> Result<Self, UpstreamError> {
         let lb = AnyLoadBalancer::build(targets, strategy)?;
-
-        Ok(Self {
-            name,
-            lb,
-            strategy,
-            tls,
-            timeouts,
-        })
+        Ok(Self { name, lb, strategy, tls, timeouts })
     }
 
     /// Set a health check on this upstream group.
@@ -237,34 +262,16 @@ impl UpstreamGroup {
     }
 
     /// Get the underlying load balancer as a background service for health check scheduling.
-    /// Returns `None` if no health check is configured.
     pub fn background_service(&self) -> Option<Box<dyn ServiceWithDependents>> {
         self.lb.as_background_service(&self.name.0)
     }
 
-    /// Select a peer using the configured strategy, then wrap it as an `HttpPeer`
-    /// with this group's TLS and timeout settings.
+    /// Select a peer and wrap it as an `HttpPeer` with this group's settings.
     pub fn select_peer(&self) -> Result<Box<HttpPeer>, UpstreamError> {
-        let backend = self
-            .lb
-            .select(b"", 256)
-            .ok_or_else(|| UpstreamError::NoHealthyBackends(self.name.clone()))?;
-
-        let mut peer = HttpPeer::new(
-            backend.addr,
-            self.tls.enabled,
-            self.tls.sni.as_deref().unwrap_or_default().to_string(),
-        );
-
-        // Apply timeouts
-        peer.options.connection_timeout = Some(self.timeouts.connect);
-        peer.options.read_timeout = Some(self.timeouts.read);
-        peer.options.write_timeout = Some(self.timeouts.write);
-
-        Ok(Box::new(peer))
+        self.select_peer_with_key(b"")
     }
 
-    /// Select a peer using a hash key (for hash-based strategies like fnv_hash, consistent_hash).
+    /// Select a peer using a hash key (for hash-based strategies).
     pub fn select_peer_with_key(&self, key: &[u8]) -> Result<Box<HttpPeer>, UpstreamError> {
         let backend = self
             .lb
@@ -288,23 +295,19 @@ impl UpstreamGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TargetConfig;
     use crate::upstream::UpstreamName;
     use pingora_core::upstreams::peer::Peer;
 
+    fn simple_targets(addrs: &[&str]) -> Vec<TargetConfig> {
+        addrs.iter().map(|a| TargetConfig::Simple(a.to_string())).collect()
+    }
+
     #[test]
     fn lb_strategy_from_config() {
-        assert_eq!(
-            LbStrategy::from_config("round_robin").unwrap(),
-            LbStrategy::RoundRobin
-        );
-        assert_eq!(
-            LbStrategy::from_config("random").unwrap(),
-            LbStrategy::Random
-        );
-        assert_eq!(
-            LbStrategy::from_config("fnv_hash").unwrap(),
-            LbStrategy::FnvHash
-        );
+        assert_eq!(LbStrategy::from_config("round_robin").unwrap(), LbStrategy::RoundRobin);
+        assert_eq!(LbStrategy::from_config("random").unwrap(), LbStrategy::Random);
+        assert_eq!(LbStrategy::from_config("fnv_hash").unwrap(), LbStrategy::FnvHash);
         assert_eq!(
             LbStrategy::from_config("consistent_hash").unwrap(),
             LbStrategy::ConsistentHash
@@ -314,7 +317,7 @@ mod tests {
 
     #[test]
     fn upstream_group_round_robin() {
-        let targets = vec!["127.0.0.1:3000".to_string(), "127.0.0.1:3001".to_string()];
+        let targets = simple_targets(&["127.0.0.1:3000", "127.0.0.1:3001"]);
         let group = UpstreamGroup::new(
             UpstreamName::from("test"),
             &targets,
@@ -323,17 +326,15 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        // Should be able to select peers
         let peer1 = group.select_peer().unwrap();
         let peer2 = group.select_peer().unwrap();
-        // Both should succeed (round robin across 2 backends)
         assert!(peer1.address().as_inet().is_some());
         assert!(peer2.address().as_inet().is_some());
     }
 
     #[test]
     fn upstream_group_all_strategies() {
-        let targets = vec!["127.0.0.1:3000".to_string(), "127.0.0.1:3001".to_string()];
+        let targets = simple_targets(&["127.0.0.1:3000", "127.0.0.1:3001"]);
         for strategy in &[
             LbStrategy::RoundRobin,
             LbStrategy::Random,
@@ -355,11 +356,7 @@ mod tests {
 
     #[test]
     fn upstream_group_consistent_hash_same_key() {
-        let targets = vec![
-            "127.0.0.1:3000".to_string(),
-            "127.0.0.1:3001".to_string(),
-            "127.0.0.1:3002".to_string(),
-        ];
+        let targets = simple_targets(&["127.0.0.1:3000", "127.0.0.1:3001", "127.0.0.1:3002"]);
         let group = UpstreamGroup::new(
             UpstreamName::from("test"),
             &targets,
@@ -368,8 +365,6 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-
-        // Same key should consistently select the same peer
         let peer1 = group.select_peer_with_key(b"user-123").unwrap();
         let peer2 = group.select_peer_with_key(b"user-123").unwrap();
         assert_eq!(
@@ -380,7 +375,7 @@ mod tests {
 
     #[test]
     fn upstream_group_no_health_check_no_bg_service() {
-        let targets = vec!["127.0.0.1:3000".to_string()];
+        let targets = simple_targets(&["127.0.0.1:3000"]);
         let group = UpstreamGroup::new(
             UpstreamName::from("test"),
             &targets,
@@ -390,5 +385,45 @@ mod tests {
         )
         .unwrap();
         assert!(group.background_service().is_none());
+    }
+
+    #[test]
+    fn weighted_targets_expand_correctly() {
+        // weight=3 means 3 entries in LB rotation
+        let targets = vec![
+            TargetConfig::Weighted { address: "127.0.0.1:3000".to_string(), weight: 3 },
+            TargetConfig::Weighted { address: "127.0.0.1:3001".to_string(), weight: 1 },
+        ];
+        // Build should succeed — 4 entries in rotation
+        let group = UpstreamGroup::new(
+            UpstreamName::from("weighted"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        let peer = group.select_peer().unwrap();
+        assert!(peer.address().as_inet().is_some());
+    }
+
+    #[test]
+    fn timeouts_from_config() {
+        use crate::config::UpstreamConfig;
+        let uc = UpstreamConfig {
+            discovery: "static".to_string(),
+            targets: vec![],
+            load_balancing: "round_robin".to_string(),
+            health_check: None,
+            connect_timeout: "3s".to_string(),
+            read_timeout: "45s".to_string(),
+            write_timeout: "30s".to_string(),
+            retry: None,
+            passive_health: None,
+        };
+        let t = UpstreamTimeouts::from_config(&uc);
+        assert_eq!(t.connect, Duration::from_secs(3));
+        assert_eq!(t.read, Duration::from_secs(45));
+        assert_eq!(t.write, Duration::from_secs(30));
     }
 }

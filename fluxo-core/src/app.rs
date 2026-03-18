@@ -28,6 +28,8 @@ pub struct FluxoApp {
     health_check_services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>>,
     /// Resolved TLS cert paths per service (from ACME or manual config).
     resolved_tls: HashMap<String, ResolvedTls>,
+    /// Path to the config file on disk (used by admin POST /reload).
+    config_path: Option<PathBuf>,
 }
 
 impl FluxoApp {
@@ -36,6 +38,15 @@ impl FluxoApp {
     /// Builds the pre-computed `FluxoState` (compiled routes, initialized load
     /// balancers) and wraps it in a `FluxoProxy` with ArcSwap.
     pub fn from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
+        Self::from_config_with_path(config, None)
+    }
+
+    /// Create a new FluxoApp from a validated config, recording the config file path
+    /// so the admin API's `POST /reload` endpoint can re-read it from disk.
+    pub fn from_config_with_path(
+        config: FluxoConfig,
+        config_path: Option<PathBuf>,
+    ) -> Result<Self, FluxoError> {
         let FluxoBuild {
             state,
             health_check_services,
@@ -46,6 +57,7 @@ impl FluxoApp {
             proxy,
             health_check_services,
             resolved_tls: HashMap::new(),
+            config_path,
         })
     }
 
@@ -261,6 +273,7 @@ impl FluxoApp {
             address,
             proxy: Arc::new(self.proxy.clone()),
             metrics: self.proxy.metrics(),
+            config_path: self.config_path.as_ref().map(|p| p.to_string_lossy().to_string()),
         };
 
         let svc = GenBackgroundService::new("admin API".to_string(), Arc::new(admin));

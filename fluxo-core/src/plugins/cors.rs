@@ -114,7 +114,7 @@ impl CorsPlugin {
     pub fn on_response(
         &self,
         resp: &mut pingora_http::ResponseHeader,
-        _ctx: &crate::context::RequestContext,
+        _ctx: &mut crate::context::RequestContext,
     ) {
         // For normal (non-preflight) responses, add CORS headers.
         // Use origin reflection (not join) for spec compliance.
@@ -190,8 +190,8 @@ mod tests {
         };
         let plugin = CorsPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
                 .get("Access-Control-Allow-Origin")
@@ -220,8 +220,8 @@ mod tests {
         };
         let plugin = CorsPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
                 .get("Access-Control-Allow-Origin")
@@ -246,8 +246,8 @@ mod tests {
         };
         let plugin = CorsPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
                 .get("Access-Control-Allow-Credentials")

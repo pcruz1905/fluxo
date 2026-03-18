@@ -61,7 +61,7 @@ impl PluginPipeline {
     pub fn run_response(
         &self,
         resp: &mut pingora_http::ResponseHeader,
-        ctx: &crate::context::RequestContext,
+        ctx: &mut crate::context::RequestContext,
     ) {
         for plugin in &self.plugins {
             plugin.on_response(resp, ctx);

@@ -46,7 +46,7 @@ impl HeadersPlugin {
     pub fn on_response(
         &self,
         resp: &mut pingora_http::ResponseHeader,
-        _ctx: &crate::context::RequestContext,
+        _ctx: &mut crate::context::RequestContext,
     ) {
         for (name, value) in &self.config.response_set {
             let _ = resp.insert_header(name.clone(), value.clone());
@@ -69,8 +69,8 @@ mod tests {
         };
         let plugin = HeadersPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers.get("X-Powered-By").unwrap().to_str().unwrap(),
             "fluxo"
@@ -86,8 +86,8 @@ mod tests {
         let plugin = HeadersPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
         resp.insert_header("Server", "nginx").unwrap();
-        let ctx = crate::context::RequestContext::new();
-        plugin.on_response(&mut resp, &ctx);
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
         assert!(resp.headers.get("Server").is_none());
     }
 
@@ -99,7 +99,7 @@ mod tests {
         };
         let plugin = HeadersPlugin::new(config);
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        let ctx = crate::context::RequestContext::new();
+        let mut ctx = crate::context::RequestContext::new();
         plugin.on_upstream_request(&mut req, &ctx);
         assert_eq!(
             req.headers.get("X-Proxy").unwrap().to_str().unwrap(),
@@ -116,7 +116,7 @@ mod tests {
         let plugin = HeadersPlugin::new(config);
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         req.insert_header("Cookie", "session=abc").unwrap();
-        let ctx = crate::context::RequestContext::new();
+        let mut ctx = crate::context::RequestContext::new();
         plugin.on_upstream_request(&mut req, &ctx);
         assert!(req.headers.get("Cookie").is_none());
     }

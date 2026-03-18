@@ -60,14 +60,10 @@ pub fn load_from_default_paths() -> Result<FluxoConfig, ConfigError> {
         }
     }
 
-    // No config file found — return defaults
     Ok(FluxoConfig::default())
 }
 
 /// Create a minimal config for the `--upstream` CLI shorthand.
-///
-/// Generates a single service with a catch-all route pointing to the given upstream.
-/// Validates the upstream address before returning.
 pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> {
     use std::collections::HashMap;
 
@@ -76,9 +72,14 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
         "default".to_string(),
         UpstreamConfig {
             discovery: "static".to_string(),
-            targets: vec![upstream.to_string()],
+            targets: vec![TargetConfig::Simple(upstream.to_string())],
             load_balancing: "round_robin".to_string(),
             health_check: None,
+            connect_timeout: defaults::connect_timeout(),
+            read_timeout: defaults::read_timeout(),
+            write_timeout: defaults::write_timeout(),
+            retry: None,
+            passive_health: None,
         },
     );
 
@@ -98,6 +99,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
                 match_method: vec![],
                 match_header: Default::default(),
                 upstream: "default".to_string(),
+                max_request_body: None,
                 plugins: Default::default(),
             }],
         },
@@ -114,7 +116,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
 
 /// Validate cross-references and semantic constraints in the config.
 pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
-    // Validate admin address is a valid socket address
+    // Validate admin address
     config
         .global
         .admin
@@ -154,9 +156,20 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                     route.upstream, service_name, route_desc
                 )));
             }
+
+            // Validate max_request_body size string if set
+            if let Some(size_str) = &route.max_request_body {
+                parse_size(size_str).map_err(|_| {
+                    ConfigError::Validation(format!(
+                        "service '{}' route {}: invalid max_request_body '{}': \
+                         expected format like '10mb', '1gb', '512kb'",
+                        service_name, i, size_str
+                    ))
+                })?;
+            }
         }
 
-        // Validate listener addresses are parseable as SocketAddr
+        // Validate listener addresses
         for listener in &service.listeners {
             if listener.address.is_empty() {
                 return Err(ConfigError::Validation(format!(
@@ -175,7 +188,7 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                 })?;
         }
 
-        // Validate plugin configuration
+        // Validate plugin configuration per route
         for (i, route) in service.routes.iter().enumerate() {
             if let Err(e) =
                 crate::plugins::config::compile_plugins(&route.plugins, &config.global.plugins)
@@ -199,7 +212,6 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
     // Validate TLS configuration
     for (service_name, service) in &config.services {
         if let Some(tls) = &service.tls {
-            // ACME validation
             if tls.acme {
                 if tls.acme_email.is_none() {
                     return Err(ConfigError::Validation(format!(
@@ -207,7 +219,6 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                         service_name
                     )));
                 }
-                // ACME and manual cert_path/key_path are mutually exclusive
                 if tls.cert_path.is_some() || tls.key_path.is_some() {
                     return Err(ConfigError::Validation(format!(
                         "service '{}': cannot use both acme and cert_path/key_path",
@@ -215,8 +226,6 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                     )));
                 }
             }
-
-            // Manual TLS: if cert_path is set, key_path must also be set
             match (&tls.cert_path, &tls.key_path) {
                 (Some(_), None) => {
                     return Err(ConfigError::Validation(format!(
@@ -235,7 +244,7 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         }
     }
 
-    // Validate upstream targets are non-empty and parseable for static discovery
+    // Validate upstream targets and timeouts
     for (name, upstream) in &config.upstreams {
         if upstream.discovery == "static" && upstream.targets.is_empty() {
             return Err(ConfigError::Validation(format!(
@@ -244,17 +253,29 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             )));
         }
 
-        // Validate each target is a parseable socket address
+        // Validate each target address
         for target in &upstream.targets {
-            target.parse::<std::net::SocketAddr>().map_err(|e| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid target address '{}': {}",
-                    name, target, e
-                ))
-            })?;
+            target
+                .address()
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| {
+                    ConfigError::Validation(format!(
+                        "upstream '{}': invalid target address '{}': {}",
+                        name,
+                        target.address(),
+                        e
+                    ))
+                })?;
+            if target.weight() == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': target '{}' has weight 0 (must be >= 1)",
+                    name,
+                    target.address()
+                )));
+            }
         }
 
-        // Only "static" discovery is supported currently
+        // Only "static" discovery supported currently
         if upstream.discovery != "static" {
             return Err(ConfigError::Validation(format!(
                 "upstream '{}': discovery '{}' is not yet supported. Only 'static' is available.",
@@ -273,7 +294,58 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             )));
         }
 
-        // Validate health check config if present
+        // Validate timeout strings
+        for (field, value) in [
+            ("connect_timeout", &upstream.connect_timeout),
+            ("read_timeout", &upstream.read_timeout),
+            ("write_timeout", &upstream.write_timeout),
+        ] {
+            parse_duration(value).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid {} '{}': expected format like '5s', '500ms', '2m'",
+                    name, field, value
+                ))
+            })?;
+        }
+
+        // Validate retry config
+        if let Some(retry) = &upstream.retry {
+            if retry.attempts == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': retry.attempts must be >= 1",
+                    name
+                )));
+            }
+            let valid_conditions = ["error", "timeout", "5xx"];
+            for condition in &retry.on {
+                if !valid_conditions.contains(&condition.as_str()) {
+                    return Err(ConfigError::Validation(format!(
+                        "upstream '{}': invalid retry condition '{}'. Valid: {}",
+                        name,
+                        condition,
+                        valid_conditions.join(", ")
+                    )));
+                }
+            }
+        }
+
+        // Validate passive health check config
+        if let Some(ph) = &upstream.passive_health {
+            parse_duration(&ph.fail_timeout).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid passive_health.fail_timeout '{}'",
+                    name, ph.fail_timeout
+                ))
+            })?;
+            if ph.max_fails == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': passive_health.max_fails must be >= 1",
+                    name
+                )));
+            }
+        }
+
+        // Validate health check config
         if let Some(hc) = &upstream.health_check {
             if hc.path.is_empty() {
                 return Err(ConfigError::Validation(format!(
@@ -335,12 +407,19 @@ pub fn default_config_toml() -> String {
   name = "default"
   # match_host = ["example.com"]
   # match_path = ["/api/*"]
+  # max_request_body = "10mb"
   upstream = "backend"
 
 [upstreams.backend]
 discovery = "static"
 targets = ["127.0.0.1:3000"]
 load_balancing = "round_robin"
+# connect_timeout = "5s"
+# read_timeout = "60s"
+# write_timeout = "60s"
+# [upstreams.backend.retry]
+# attempts = 2
+# on = ["error", "timeout"]
 # [upstreams.backend.health_check]
 # path = "/healthz"
 # interval = "10s"
@@ -373,6 +452,29 @@ pub fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
     }
 }
 
+/// Parse a byte-size string like "10mb", "1gb", "512kb", "1024" (bytes) into a `u64`.
+pub fn parse_size(s: &str) -> Result<u64, ConfigError> {
+    let s = s.trim().to_lowercase();
+    let err = || ConfigError::Validation(format!("invalid size '{}': expected e.g. '10mb', '1gb', '512kb'", s));
+
+    if let Some(val) = s.strip_suffix("gb") {
+        let n: u64 = val.trim().parse().map_err(|_| err())?;
+        Ok(n * 1024 * 1024 * 1024)
+    } else if let Some(val) = s.strip_suffix("mb") {
+        let n: u64 = val.trim().parse().map_err(|_| err())?;
+        Ok(n * 1024 * 1024)
+    } else if let Some(val) = s.strip_suffix("kb") {
+        let n: u64 = val.trim().parse().map_err(|_| err())?;
+        Ok(n * 1024)
+    } else if let Some(val) = s.strip_suffix('b') {
+        let n: u64 = val.trim().parse().map_err(|_| err())?;
+        Ok(n)
+    } else {
+        // Plain number = bytes
+        s.parse::<u64>().map_err(|_| err())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,7 +495,7 @@ targets = ["127.0.0.1:3000"]
         let config = load_from_str(toml).expect("should parse");
         assert_eq!(config.services.len(), 1);
         assert_eq!(config.upstreams.len(), 1);
-        assert_eq!(config.upstreams["backend"].targets, vec!["127.0.0.1:3000"]);
+        assert_eq!(config.upstreams["backend"].targets[0].address(), "127.0.0.1:3000");
     }
 
     #[test]
@@ -550,16 +652,13 @@ targets = ["127.0.0.1:3000"]
 targets = ["127.0.0.1:3000"]
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("cannot use both acme and cert_path")
-        );
+        assert!(err.to_string().contains("cannot use both acme and cert_path"));
     }
 
     #[test]
     fn config_from_upstream_shorthand() {
         let config = config_from_upstream("127.0.0.1:3000").unwrap();
-        assert_eq!(config.upstreams["default"].targets, vec!["127.0.0.1:3000"]);
+        assert_eq!(config.upstreams["default"].targets[0].address(), "127.0.0.1:3000");
         assert_eq!(config.services["default"].routes[0].upstream, "default");
     }
 
@@ -685,6 +784,15 @@ interval = "not_a_duration"
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_duration("2m").unwrap(), Duration::from_secs(120));
         assert!(parse_duration("bad").is_err());
+    }
+
+    #[test]
+    fn parse_size_values() {
+        assert_eq!(parse_size("1gb").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size("10mb").unwrap(), 10 * 1024 * 1024);
+        assert_eq!(parse_size("512kb").unwrap(), 512 * 1024);
+        assert_eq!(parse_size("1024").unwrap(), 1024);
+        assert!(parse_size("bad").is_err());
     }
 
     #[test]
@@ -925,5 +1033,149 @@ timeout = "10s"
 "#;
         let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("must be less than interval"));
+    }
+
+    #[test]
+    fn parse_weighted_targets() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = [
+  {address = "127.0.0.1:3000", weight = 3},
+  {address = "127.0.0.1:3001", weight = 1},
+]
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let targets = &config.upstreams["backend"].targets;
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].address(), "127.0.0.1:3000");
+        assert_eq!(targets[0].weight(), 3);
+        assert_eq!(targets[1].weight(), 1);
+    }
+
+    #[test]
+    fn reject_zero_weight_target() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = [{address = "127.0.0.1:3000", weight = 0}]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("weight 0"));
+    }
+
+    #[test]
+    fn parse_upstream_timeouts() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+connect_timeout = "3s"
+read_timeout = "30s"
+write_timeout = "30s"
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let up = &config.upstreams["backend"];
+        assert_eq!(up.connect_timeout, "3s");
+        assert_eq!(up.read_timeout, "30s");
+    }
+
+    #[test]
+    fn reject_invalid_upstream_timeout() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+connect_timeout = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("connect_timeout"));
+    }
+
+    #[test]
+    fn parse_retry_config() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.retry]
+attempts = 3
+on = ["error", "timeout", "5xx"]
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let retry = config.upstreams["backend"].retry.as_ref().unwrap();
+        assert_eq!(retry.attempts, 3);
+        assert!(retry.on.contains(&"5xx".to_string()));
+    }
+
+    #[test]
+    fn reject_invalid_retry_condition() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.retry]
+attempts = 2
+on = ["error", "badcondition"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("badcondition"));
+    }
+
+    #[test]
+    fn parse_max_request_body() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+max_request_body = "10mb"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let route = &config.services["web"].routes[0];
+        assert_eq!(route.max_request_body.as_deref(), Some("10mb"));
+    }
+
+    #[test]
+    fn reject_invalid_max_request_body() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+max_request_body = "bigfile"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("max_request_body"));
     }
 }

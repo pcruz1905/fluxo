@@ -36,3 +36,5 @@ Cargo.lock
 aralez
 pingap
 compare_repos
+traefik
+nginx
