@@ -41,6 +41,8 @@ pub struct FluxoState {
     pub metrics: Arc<crate::observability::MetricsRegistry>,
     /// Whether any service has TLS configured (precomputed to avoid per-request scan).
     pub has_tls: bool,
+    /// Trusted proxy CIDRs — XFF is only trusted when the peer matches one of these.
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 /// Result of building a FluxoState, including services that need to be registered
@@ -61,6 +63,7 @@ impl FluxoState {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
         let has_tls = has_tls_configured(&config);
+        let trusted_proxies = parse_trusted_proxies(&config);
         Ok(Self {
             config,
             router,
@@ -68,6 +71,7 @@ impl FluxoState {
             challenge_state: Arc::new(ChallengeState::new()),
             metrics: Arc::new(crate::observability::MetricsRegistry::new()),
             has_tls,
+            trusted_proxies,
         })
     }
 
@@ -83,6 +87,7 @@ impl FluxoState {
                 .collect();
 
         let has_tls = has_tls_configured(&config);
+        let trusted_proxies = parse_trusted_proxies(&config);
         Ok(FluxoBuild {
             state: Self {
                 config,
@@ -91,6 +96,7 @@ impl FluxoState {
                 challenge_state: Arc::new(ChallengeState::new()),
                 metrics: Arc::new(crate::observability::MetricsRegistry::new()),
                 has_tls,
+                trusted_proxies,
             },
             health_check_services,
         })
@@ -162,6 +168,26 @@ fn has_tls_configured(config: &FluxoConfig) -> bool {
             .as_ref()
             .is_some_and(|tls| tls.acme || (tls.cert_path.is_some() && tls.key_path.is_some()))
     })
+}
+
+/// Parse trusted proxy CIDRs from config. Called once at state construction time.
+/// Validation already happened in config::validate(), so unwrap is safe.
+fn parse_trusted_proxies(config: &FluxoConfig) -> Vec<ipnet::IpNet> {
+    config
+        .global
+        .trusted_proxies
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
+/// Check if a peer address is from a trusted proxy.
+fn is_trusted_proxy(
+    peer_addr: &pingora_core::protocols::l4::socket::SocketAddr,
+    trusted: &[ipnet::IpNet],
+) -> bool {
+    let pingora_core::protocols::l4::socket::SocketAddr::Inet(addr) = peer_addr;
+    trusted.iter().any(|net| net.contains(&addr.ip()))
 }
 
 /// Adapter to let Pingora request headers implement our `RequestHeaders` trait.
@@ -237,7 +263,14 @@ impl FluxoProxy {
                             format!("failed to build redirect response: {e}"),
                         )
                     })?;
-                let _ = header.insert_header("Location", location.as_str());
+                header
+                    .insert_header("Location", location.as_str())
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to set Location header: {e}"),
+                        )
+                    })?;
                 session
                     .write_response_header(Box::new(header), true)
                     .await
@@ -259,7 +292,14 @@ impl FluxoProxy {
                         )
                     })?;
                 if let Some(ct) = content_type {
-                    let _ = header.insert_header("Content-Type", ct.as_str());
+                    header
+                        .insert_header("Content-Type", ct.as_str())
+                        .map_err(|e| {
+                            Error::explain(
+                                pingora_core::ErrorType::InternalError,
+                                format!("failed to set Content-Type header: {e}"),
+                            )
+                        })?;
                 }
                 let end_of_stream = body.is_none();
                 session
@@ -291,7 +331,14 @@ impl FluxoProxy {
                     )
                 })?;
                 if let Some(secs) = retry_after_secs {
-                    let _ = header.insert_header("Retry-After", secs.to_string());
+                    header
+                        .insert_header("Retry-After", secs.to_string())
+                        .map_err(|e| {
+                            Error::explain(
+                                pingora_core::ErrorType::InternalError,
+                                format!("failed to set Retry-After header: {e}"),
+                            )
+                        })?;
                 }
                 session
                     .write_response_header(Box::new(header), true)
@@ -421,13 +468,20 @@ impl ProxyHttp for FluxoProxy {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        // Client IP: check X-Forwarded-For first, fall back to peer address
-        ctx.client_ip = req_header
-            .headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-            .or_else(|| session.as_downstream().client_addr().map(|a| a.to_string()));
+        // Client IP: use peer address by default, only trust X-Forwarded-For
+        // when the peer is in the trusted_proxies list.
+        let peer_addr = session.as_downstream().client_addr();
+        let xff_ip = if peer_addr.is_some_and(|addr| is_trusted_proxy(addr, &state.trusted_proxies))
+        {
+            req_header
+                .headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        } else {
+            None
+        };
+        ctx.client_ip = xff_ip.or_else(|| peer_addr.map(|a| a.to_string()));
 
         // TLS version
         if let Some(ssl) = session
@@ -543,6 +597,22 @@ impl ProxyHttp for FluxoProxy {
         if let Some(route) = &ctx.matched_route {
             let pipeline = &state.router.routes()[route.index].pipeline;
             pipeline.run_response(upstream_response, ctx);
+        }
+        Ok(())
+    }
+
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<bytes::Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if let Some(b) = body {
+            ctx.bytes_received += b.len() as u64;
         }
         Ok(())
     }

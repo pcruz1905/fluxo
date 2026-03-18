@@ -33,8 +33,9 @@ pub fn handle_metrics(metrics: &MetricsRegistry) -> (u16, String, &'static str) 
 /// GET /config — export running config as JSON
 pub fn handle_config(proxy: &FluxoProxy) -> (u16, String, &'static str) {
     let state = proxy.state_snapshot();
-    let body = serde_json::to_string_pretty(&state.config)
-        .unwrap_or_else(|e| format!(r#"{{"error": "{e}"}}"#));
+    let body = serde_json::to_string_pretty(&state.config).unwrap_or_else(|e| {
+        serde_json::to_string(&serde_json::json!({"error": e.to_string()})).unwrap_or_default()
+    });
     (200, body, "application/json")
 }
 

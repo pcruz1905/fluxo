@@ -5,6 +5,16 @@ use std::collections::HashMap;
 
 use super::defaults;
 
+/// Access log output format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessLogFormat {
+    /// Structured JSON lines.
+    Json,
+    /// Compact human-readable format.
+    Compact,
+}
+
 /// Top-level Fluxo configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FluxoConfig {
@@ -46,13 +56,19 @@ pub struct GlobalConfig {
     /// Defaults to platform-specific data dir (~/.local/share/fluxo/certs).
     pub cert_dir: Option<String>,
 
-    /// Access log format: "json" (default) or "compact".
+    /// Access log format: json (default) or compact.
     #[serde(default = "defaults::access_log_format")]
-    pub access_log_format: String,
+    pub access_log_format: AccessLogFormat,
 
     /// Whether to expose Prometheus metrics at /metrics on the admin API.
     #[serde(default = "defaults::metrics_enabled")]
     pub metrics_enabled: bool,
+
+    /// Trusted proxy CIDRs — only trust X-Forwarded-For from these sources.
+    /// When empty (default), the peer address is always used as client IP.
+    /// Example: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 
     /// Global plugin configuration (applies to all routes, can be overridden per-route).
     #[serde(default)]
@@ -68,8 +84,9 @@ impl Default for GlobalConfig {
             upgrade_socket: None,
             log_level: defaults::log_level(),
             cert_dir: None,
-            access_log_format: defaults::access_log_format(),
+            access_log_format: AccessLogFormat::Json,
             metrics_enabled: defaults::metrics_enabled(),
+            trusted_proxies: Vec::new(),
             plugins: HashMap::new(),
         }
     }

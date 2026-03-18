@@ -136,15 +136,11 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         )));
     }
 
-    // Validate access_log_format
-    match config.global.access_log_format.as_str() {
-        "json" | "compact" => {}
-        other => {
-            return Err(ConfigError::Validation(format!(
-                "invalid access_log_format '{}': must be 'json' or 'compact'",
-                other
-            )));
-        }
+    // Validate trusted_proxies are valid CIDRs
+    for cidr in &config.global.trusted_proxies {
+        cidr.parse::<ipnet::IpNet>().map_err(|e| {
+            ConfigError::Validation(format!("invalid trusted_proxy CIDR '{}': {}", cidr, e))
+        })?;
     }
 
     // Every route's upstream must reference a key in config.upstreams
@@ -285,18 +281,30 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                     name
                 )));
             }
-            parse_duration(&hc.interval).map_err(|_| {
+            if !hc.path.starts_with('/') {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': health_check.path must start with '/'",
+                    name
+                )));
+            }
+            let interval = parse_duration(&hc.interval).map_err(|_| {
                 ConfigError::Validation(format!(
                     "upstream '{}': invalid health_check.interval '{}'",
                     name, hc.interval
                 ))
             })?;
-            parse_duration(&hc.timeout).map_err(|_| {
+            let timeout = parse_duration(&hc.timeout).map_err(|_| {
                 ConfigError::Validation(format!(
                     "upstream '{}': invalid health_check.timeout '{}'",
                     name, hc.timeout
                 ))
             })?;
+            if timeout >= interval {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': health_check.timeout ({}) must be less than interval ({})",
+                    name, hc.timeout, hc.interval
+                )));
+            }
         }
     }
 
@@ -740,7 +748,7 @@ targets = ["127.0.0.1:3000"]
         assert_eq!(config.global.admin, "127.0.0.1:2019");
         assert_eq!(config.global.log_level, "info");
         assert_eq!(config.global.threads, 0);
-        assert_eq!(config.global.access_log_format, "json");
+        assert_eq!(config.global.access_log_format, AccessLogFormat::Json);
         assert!(config.global.metrics_enabled);
     }
 
@@ -757,7 +765,7 @@ upstream = "backend"
 targets = ["127.0.0.1:3000"]
 "#;
         let config = load_from_str(toml).unwrap();
-        assert_eq!(config.global.access_log_format, "json");
+        assert_eq!(config.global.access_log_format, AccessLogFormat::Json);
         assert!(config.global.metrics_enabled);
     }
 
@@ -847,5 +855,75 @@ targets = ["127.0.0.1:3000"]
     fn config_from_upstream_rejects_invalid_address() {
         let result = config_from_upstream("not-valid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn reject_invalid_trusted_proxy_cidr() {
+        let toml = r#"
+[global]
+trusted_proxies = ["not-a-cidr"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid trusted_proxy CIDR"));
+    }
+
+    #[test]
+    fn accept_valid_trusted_proxies() {
+        let toml = r#"
+[global]
+trusted_proxies = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).unwrap();
+        assert_eq!(config.global.trusted_proxies.len(), 3);
+    }
+
+    #[test]
+    fn reject_health_check_path_without_leading_slash() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.health_check]
+path = "healthz"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("must start with '/'"));
+    }
+
+    #[test]
+    fn reject_health_check_timeout_exceeds_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.health_check]
+path = "/health"
+interval = "5s"
+timeout = "10s"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("must be less than interval"));
     }
 }

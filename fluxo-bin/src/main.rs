@@ -73,14 +73,14 @@ fn main() -> anyhow::Result<()> {
     // Initialize tracing (structured logging) — format from config
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
-    match fluxo_config.global.access_log_format.as_str() {
-        "json" => {
+    match fluxo_config.global.access_log_format {
+        config::AccessLogFormat::Json => {
             tracing_subscriber::fmt()
                 .json()
                 .with_env_filter(env_filter)
                 .init();
         }
-        _ => {
+        config::AccessLogFormat::Compact => {
             tracing_subscriber::fmt().with_env_filter(env_filter).init();
         }
     }
@@ -111,9 +111,15 @@ fn main() -> anyhow::Result<()> {
 
     if has_acme {
         tracing::info!("checking ACME certificates...");
-        // Run the async cert acquisition on Tokio
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(app.ensure_certs())?;
+        // Run the async cert acquisition — reuse existing runtime if available
+        // (Pingora may have already started one), otherwise create a temporary one.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(app.ensure_certs())?,
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(app.ensure_certs())?;
+            }
+        }
     }
 
     // Register services from config

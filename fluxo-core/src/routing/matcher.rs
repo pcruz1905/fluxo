@@ -96,12 +96,15 @@ impl HostMatcher {
 
     /// Test whether this matcher matches the given host string.
     pub fn matches(&self, host: &str) -> bool {
-        let host_lower = host.to_lowercase();
         // Strip port if present (e.g., "example.com:443" → "example.com")
-        let host_name = host_lower.split(':').next().unwrap_or(&host_lower);
+        let host_name = host.split(':').next().unwrap_or(host);
         match self {
-            HostMatcher::Exact(expected) => host_name == expected,
-            HostMatcher::Wildcard { suffix } => host_name.ends_with(suffix.as_str()),
+            HostMatcher::Exact(expected) => host_name.eq_ignore_ascii_case(expected),
+            HostMatcher::Wildcard { suffix } => {
+                // suffix is stored lowercase; compare case-insensitively
+                host_name.len() >= suffix.len()
+                    && host_name[host_name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+            }
         }
     }
 }

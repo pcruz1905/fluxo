@@ -32,8 +32,8 @@ pub fn healthy_threshold() -> u32 {
     2
 }
 
-pub fn access_log_format() -> String {
-    "json".to_string()
+pub fn access_log_format() -> super::types::AccessLogFormat {
+    super::types::AccessLogFormat::Json
 }
 
 pub fn metrics_enabled() -> bool {
