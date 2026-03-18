@@ -39,6 +39,8 @@ pub struct FluxoState {
     pub challenge_state: Arc<ChallengeState>,
     /// Prometheus metrics (shared across all states, survives reloads).
     pub metrics: Arc<crate::observability::MetricsRegistry>,
+    /// Whether any service has TLS configured (precomputed to avoid per-request scan).
+    pub has_tls: bool,
 }
 
 /// Result of building a FluxoState, including services that need to be registered
@@ -55,19 +57,17 @@ impl FluxoState {
     ///
     /// This is the single validation + compilation boundary. It can fail if
     /// route patterns are invalid or upstream addresses can't be resolved.
-    /// Build a new `FluxoState` from a validated config.
-    ///
-    /// This is the single validation + compilation boundary. It can fail if
-    /// route patterns are invalid or upstream addresses can't be resolved.
     pub fn try_from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
+        let has_tls = has_tls_configured(&config);
         Ok(Self {
             config,
             router,
             upstreams,
             challenge_state: Arc::new(ChallengeState::new()),
             metrics: Arc::new(crate::observability::MetricsRegistry::new()),
+            has_tls,
         })
     }
 
@@ -82,6 +82,7 @@ impl FluxoState {
                 .filter_map(|g| g.background_service())
                 .collect();
 
+        let has_tls = has_tls_configured(&config);
         Ok(FluxoBuild {
             state: Self {
                 config,
@@ -89,6 +90,7 @@ impl FluxoState {
                 upstreams,
                 challenge_state: Arc::new(ChallengeState::new()),
                 metrics: Arc::new(crate::observability::MetricsRegistry::new()),
+                has_tls,
             },
             health_check_services,
         })
@@ -153,6 +155,7 @@ fn build_upstream_groups(
 }
 
 /// Check if any service in the config has TLS (manual or ACME) configured.
+/// Called once at state construction time; the result is cached in `FluxoState::has_tls`.
 fn has_tls_configured(config: &FluxoConfig) -> bool {
     config.services.values().any(|svc| {
         svc.tls
@@ -378,8 +381,13 @@ impl ProxyHttp for FluxoProxy {
             .digest()
             .and_then(|d| d.ssl_digest.as_ref())
             .is_some();
-        if let (false, true, Some(host_val)) = (is_tls, has_tls_configured(&state.config), host) {
-            let location = format!("https://{host_val}{path}");
+        if let (false, true, Some(host_val)) = (is_tls, state.has_tls, host) {
+            let path_and_query = req_header
+                .uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or(path);
+            let location = format!("https://{host_val}{path_and_query}");
             let mut header = pingora_http::ResponseHeader::build(301, None).map_err(|e| {
                 Error::explain(
                     pingora_core::ErrorType::InternalError,
@@ -467,10 +475,12 @@ impl ProxyHttp for FluxoProxy {
     ) -> Result<Box<HttpPeer>, Box<Error>> {
         let state = self.state.load();
 
-        let route = ctx
-            .matched_route
-            .as_ref()
-            .expect("upstream_peer called without matched route (request_filter bug)");
+        let route = ctx.matched_route.as_ref().ok_or_else(|| {
+            Error::explain(
+                pingora_core::ErrorType::InternalError,
+                "upstream_peer called without matched route (request_filter bug)",
+            )
+        })?;
 
         let upstream_group = state.upstreams.get(&route.upstream).ok_or_else(|| {
             Error::explain(

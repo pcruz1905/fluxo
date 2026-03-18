@@ -9,12 +9,14 @@ use crate::routing::RoutingError;
 /// A single match condition, pre-compiled from config at load time.
 ///
 /// Uses enum dispatch for zero vtable overhead on the hot path.
+/// Host and Path variants hold a vec — any match within the vec satisfies
+/// the condition (OR semantics), while different matcher types are AND'd.
 #[derive(Debug)]
 pub enum RouteMatcher {
-    /// Match on the Host header.
-    Host(HostMatcher),
-    /// Match on the request path.
-    Path(PathMatcher),
+    /// Match on the Host header (any of the patterns).
+    Host(Vec<HostMatcher>),
+    /// Match on the request path (any of the patterns).
+    Path(Vec<PathMatcher>),
     /// Match on the HTTP method.
     Method(MethodMatcher),
     /// Match on a request header value.
@@ -36,11 +38,11 @@ impl RouteMatcher {
     /// Header matchers always return true here — use `matches_with_headers` for full matching.
     pub fn matches(&self, host: Option<&str>, path: &str, method: &str) -> bool {
         match self {
-            Self::Host(m) => match host {
-                Some(h) => m.matches(h),
+            Self::Host(matchers) => match host {
+                Some(h) => matchers.iter().any(|m| m.matches(h)),
                 None => false,
             },
-            Self::Path(m) => m.matches(path),
+            Self::Path(matchers) => matchers.iter().any(|m| m.matches(path)),
             Self::Method(m) => m.matches(method),
             Self::Header(_) => true, // header matching requires headers; see matches_with_headers
         }
@@ -55,11 +57,11 @@ impl RouteMatcher {
         headers: &dyn RequestHeaders,
     ) -> bool {
         match self {
-            Self::Host(m) => match host {
-                Some(h) => m.matches(h),
+            Self::Host(matchers) => match host {
+                Some(h) => matchers.iter().any(|m| m.matches(h)),
                 None => false,
             },
-            Self::Path(m) => m.matches(path),
+            Self::Path(matchers) => matchers.iter().any(|m| m.matches(path)),
             Self::Method(m) => m.matches(method),
             Self::Header(m) => m.matches(headers),
         }

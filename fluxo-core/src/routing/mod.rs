@@ -122,18 +122,24 @@ impl RouteTable {
     ) -> Result<CompiledRoute, RoutingError> {
         let mut matchers = Vec::new();
 
-        // Compile host matchers
+        // Compile host matchers (OR within, AND with other matcher types)
         if !config.match_host.is_empty() {
-            for host_pattern in &config.match_host {
-                matchers.push(RouteMatcher::Host(HostMatcher::compile(host_pattern)));
-            }
+            let host_matchers: Vec<HostMatcher> = config
+                .match_host
+                .iter()
+                .map(|p| HostMatcher::compile(p))
+                .collect();
+            matchers.push(RouteMatcher::Host(host_matchers));
         }
 
-        // Compile path matchers
+        // Compile path matchers (OR within, AND with other matcher types)
         if !config.match_path.is_empty() {
-            for path_pattern in &config.match_path {
-                matchers.push(RouteMatcher::Path(PathMatcher::compile(path_pattern)?));
-            }
+            let path_matchers: Vec<PathMatcher> = config
+                .match_path
+                .iter()
+                .map(|p| PathMatcher::compile(p))
+                .collect::<Result<_, _>>()?;
+            matchers.push(RouteMatcher::Path(path_matchers));
         }
 
         // Compile method matchers
@@ -353,6 +359,77 @@ targets = ["127.0.0.1:3000"]
         let hdrs = H(std::collections::HashMap::new());
         let matched = table.match_route_with_headers(None, "/", "GET", &hdrs);
         assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
+    }
+
+    #[test]
+    fn multi_host_matches_any() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "multi"
+  match_host = ["api.example.com", "www.example.com"]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+
+        // Both hosts should match the same route (OR semantics)
+        let matched = table.match_route(Some("api.example.com"), "/", "GET");
+        assert_eq!(matched.unwrap().name.as_deref(), Some("multi"));
+
+        let matched = table.match_route(Some("www.example.com"), "/", "GET");
+        assert_eq!(matched.unwrap().name.as_deref(), Some("multi"));
+
+        // Non-listed host should NOT match
+        let matched = table.match_route(Some("other.com"), "/", "GET");
+        assert!(matched.is_none());
+    }
+
+    #[test]
+    fn multi_path_matches_any() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "multi-path"
+  match_path = ["/api/*", "/v2/*"]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+
+        assert_eq!(
+            table
+                .match_route(None, "/api/users", "GET")
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("multi-path")
+        );
+        assert_eq!(
+            table
+                .match_route(None, "/v2/items", "GET")
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("multi-path")
+        );
+        assert!(table.match_route(None, "/other", "GET").is_none());
     }
 
     #[test]

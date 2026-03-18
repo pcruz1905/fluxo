@@ -9,6 +9,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tracing::{error, info};
 
 use crate::observability::MetricsRegistry;
@@ -63,6 +64,8 @@ impl pingora_core::services::background::BackgroundService for AdminService {
 
         info!(address = %self.address, "admin API listening");
 
+        let mut connections = JoinSet::new();
+
         loop {
             tokio::select! {
                 accept = listener.accept() => {
@@ -72,7 +75,7 @@ impl pingora_core::services::background::BackgroundService for AdminService {
                             let metrics = self.metrics.clone();
                             let io = hyper_util::rt::TokioIo::new(stream);
 
-                            tokio::spawn(async move {
+                            connections.spawn(async move {
                                 let svc = service_fn(move |req| {
                                     Self::handle_request(
                                         proxy.clone(),
@@ -99,5 +102,8 @@ impl pingora_core::services::background::BackgroundService for AdminService {
                 }
             }
         }
+
+        // Abort in-flight connections on shutdown
+        connections.shutdown().await;
     }
 }

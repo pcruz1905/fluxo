@@ -67,7 +67,8 @@ pub fn load_from_default_paths() -> Result<FluxoConfig, ConfigError> {
 /// Create a minimal config for the `--upstream` CLI shorthand.
 ///
 /// Generates a single service with a catch-all route pointing to the given upstream.
-pub fn config_from_upstream(upstream: &str) -> FluxoConfig {
+/// Validates the upstream address before returning.
+pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> {
     use std::collections::HashMap;
 
     let mut upstreams = HashMap::new();
@@ -102,15 +103,39 @@ pub fn config_from_upstream(upstream: &str) -> FluxoConfig {
         },
     );
 
-    FluxoConfig {
+    let config = FluxoConfig {
         global: GlobalConfig::default(),
         services,
         upstreams,
-    }
+    };
+    validate(&config)?;
+    Ok(config)
 }
 
 /// Validate cross-references and semantic constraints in the config.
 pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
+    // Validate admin address is a valid socket address
+    config
+        .global
+        .admin
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| {
+            ConfigError::Validation(format!(
+                "invalid admin address '{}': {}",
+                config.global.admin, e
+            ))
+        })?;
+
+    // Validate log_level
+    let valid_levels = ["trace", "debug", "info", "warn", "error"];
+    if !valid_levels.contains(&config.global.log_level.as_str()) {
+        return Err(ConfigError::Validation(format!(
+            "invalid log_level '{}': must be one of {}",
+            config.global.log_level,
+            valid_levels.join(", ")
+        )));
+    }
+
     // Validate access_log_format
     match config.global.access_log_format.as_str() {
         "json" | "compact" => {}
@@ -135,7 +160,7 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             }
         }
 
-        // Validate listeners have parseable addresses
+        // Validate listener addresses are parseable as SocketAddr
         for listener in &service.listeners {
             if listener.address.is_empty() {
                 return Err(ConfigError::Validation(format!(
@@ -143,6 +168,15 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                     service_name
                 )));
             }
+            listener
+                .address
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| {
+                    ConfigError::Validation(format!(
+                        "invalid listener address '{}' in service '{}': {}",
+                        listener.address, service_name, e
+                    ))
+                })?;
         }
 
         // Validate plugin configuration
@@ -205,13 +239,23 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         }
     }
 
-    // Validate upstream targets are non-empty for static discovery
+    // Validate upstream targets are non-empty and parseable for static discovery
     for (name, upstream) in &config.upstreams {
         if upstream.discovery == "static" && upstream.targets.is_empty() {
             return Err(ConfigError::Validation(format!(
                 "upstream '{}' has static discovery but no targets",
                 name
             )));
+        }
+
+        // Validate each target is a parseable socket address
+        for target in &upstream.targets {
+            target.parse::<std::net::SocketAddr>().map_err(|e| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid target address '{}': {}",
+                    name, target, e
+                ))
+            })?;
         }
 
         // Only "static" discovery is supported currently
@@ -506,8 +550,8 @@ targets = ["127.0.0.1:3000"]
 
     #[test]
     fn config_from_upstream_shorthand() {
-        let config = config_from_upstream("localhost:3000");
-        assert_eq!(config.upstreams["default"].targets, vec!["localhost:3000"]);
+        let config = config_from_upstream("127.0.0.1:3000").unwrap();
+        assert_eq!(config.upstreams["default"].targets, vec!["127.0.0.1:3000"]);
         assert_eq!(config.services["default"].routes[0].upstream, "default");
     }
 
@@ -733,5 +777,75 @@ targets = ["127.0.0.1:3000"]
 "#;
         let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("access_log_format"));
+    }
+
+    #[test]
+    fn reject_invalid_admin_address() {
+        let toml = r#"
+[global]
+admin = "not-an-address"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid admin address"));
+    }
+
+    #[test]
+    fn reject_invalid_listener_address() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "foobar"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid listener address"));
+    }
+
+    #[test]
+    fn reject_invalid_upstream_target() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["not-a-host"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid target address"));
+    }
+
+    #[test]
+    fn reject_invalid_log_level() {
+        let toml = r#"
+[global]
+log_level = "verbose"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid log_level"));
+    }
+
+    #[test]
+    fn config_from_upstream_rejects_invalid_address() {
+        let result = config_from_upstream("not-valid");
+        assert!(result.is_err());
     }
 }

@@ -78,16 +78,7 @@ impl FluxoApp {
                 _ => continue,
             };
 
-            // Collect domains from route match_host patterns (skip wildcards)
-            let domains: Vec<String> = service
-                .routes
-                .iter()
-                .flat_map(|r| r.match_host.iter())
-                .filter(|h| !h.starts_with('*'))
-                .cloned()
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
+            let domains = collect_acme_domains(service);
 
             if domains.is_empty() {
                 warn!(
@@ -221,15 +212,7 @@ impl FluxoApp {
                 _ => continue,
             };
 
-            let domains: Vec<String> = service
-                .routes
-                .iter()
-                .flat_map(|r| r.match_host.iter())
-                .filter(|h| !h.starts_with('*'))
-                .cloned()
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
+            let domains = collect_acme_domains(service);
 
             if domains.is_empty() {
                 continue;
@@ -271,12 +254,8 @@ impl FluxoApp {
     pub fn admin_service(&self) -> Box<dyn pingora_core::services::ServiceWithDependents> {
         use pingora_core::services::background::GenBackgroundService;
 
-        let address: std::net::SocketAddr = self
-            .config
-            .global
-            .admin
-            .parse()
-            .expect("admin address should be valid (validated at config load)");
+        // Safe: validated at config load time by config::validate()
+        let address: std::net::SocketAddr = self.config.global.admin.parse().unwrap();
 
         let admin = crate::admin::AdminService {
             address,
@@ -287,7 +266,22 @@ impl FluxoApp {
         let svc = GenBackgroundService::new("admin API".to_string(), Arc::new(admin));
         Box::new(svc)
     }
+}
 
+/// Collect unique non-wildcard domains from a service's route host patterns.
+fn collect_acme_domains(service: &crate::config::ServiceConfig) -> Vec<String> {
+    service
+        .routes
+        .iter()
+        .flat_map(|r| r.match_host.iter())
+        .filter(|h| !h.starts_with('*'))
+        .cloned()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+impl FluxoApp {
     /// Reload the proxy with a new config.
     ///
     /// Builds a new `FluxoState` and atomically swaps it into the proxy.

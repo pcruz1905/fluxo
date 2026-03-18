@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
 
     // Load configuration first (before tracing init so we can respect access_log_format)
     let fluxo_config = if let Some(ref upstream) = cli.upstream {
-        config::config_from_upstream(upstream)
+        config::config_from_upstream(upstream)?
     } else {
         let config_path = Path::new(&cli.config);
         if config_path.exists() {
