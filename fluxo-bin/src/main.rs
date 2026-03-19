@@ -146,7 +146,7 @@ fn main() -> anyhow::Result<()> {
         // Run the async cert acquisition — reuse existing runtime if available
         // (Pingora may have already started one), otherwise create a temporary one.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(app.ensure_certs())?
+            handle.block_on(app.ensure_certs())?;
         } else {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(app.ensure_certs())?;

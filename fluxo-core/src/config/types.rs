@@ -66,12 +66,12 @@ impl FluxoConfig {
     /// Append a namespace (e.g., "@file") to all named resources.
     /// Used by multi-provider setups to prevent name collisions.
     pub fn qualify_namespace(&mut self, namespace: &str) {
-        let suffix = format!("@{}", namespace);
+        let suffix = format!("@{namespace}");
 
         // Qualify upstreams
         let mut new_upstreams = HashMap::new();
         for (name, cfg) in std::mem::take(&mut self.upstreams) {
-            new_upstreams.insert(format!("{}{}", name, suffix), cfg);
+            new_upstreams.insert(format!("{name}{suffix}"), cfg);
         }
         self.upstreams = new_upstreams;
 
@@ -92,7 +92,7 @@ impl FluxoConfig {
     /// Merge another `FluxoConfig` into this one.
     /// `global` settings clobber via `extend` (not deeply merged for simplicity yet),
     /// but `services` and `upstreams` are combined.
-    pub fn merge(&mut self, other: FluxoConfig) {
+    pub fn merge(&mut self, other: Self) {
         self.services.extend(other.services);
         self.upstreams.extend(other.upstreams);
         // Note: Global settings are typically taken from the primary provider (file)
@@ -155,7 +155,7 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub error_pages: HashMap<u16, String>,
 
-    /// When true, intercept upstream error responses (matching error_pages status codes)
+    /// When true, intercept upstream error responses (matching `error_pages` status codes)
     /// and replace the body with the custom error page. Nginx equivalent: `proxy_intercept_errors`.
     #[serde(default)]
     pub intercept_errors: bool,
@@ -232,7 +232,7 @@ pub struct ListenerConfig {
     #[serde(default)]
     pub offer_h2: bool,
 
-    /// Enable PROXY protocol (HAProxy) on this listener.
+    /// Enable PROXY protocol (`HAProxy`) on this listener.
     /// When enabled, the first bytes of each connection are expected to be
     /// a PROXY protocol V1 or V2 header containing the real client IP.
     ///
@@ -387,7 +387,7 @@ pub struct UpstreamConfig {
     pub keepalive_pool_size: usize,
 
     /// TCP keepalive settings for upstream connections.
-    /// Pingora: `tcp_keepalive`. Maps to OS-level TCP_KEEPIDLE/TCP_KEEPINTVL/TCP_KEEPCNT.
+    /// Pingora: `tcp_keepalive`. Maps to OS-level `TCP_KEEPIDLE/TCP_KEEPINTVL/TCP_KEEPCNT`.
     pub tcp_keepalive: Option<TcpKeepaliveConfig>,
 
     /// Maximum concurrent HTTP/2 streams per connection.
@@ -492,7 +492,7 @@ pub struct PassiveHealthConfig {
 /// Sticky session configuration — cookie-based backend affinity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StickySessionConfig {
-    /// Name of the affinity cookie. Default: "FLUXO_STICKY".
+    /// Name of the affinity cookie. Default: "`FLUXO_STICKY`".
     #[serde(default = "defaults::sticky_cookie_name")]
     pub cookie_name: String,
 
@@ -504,7 +504,7 @@ pub struct StickySessionConfig {
     #[serde(default)]
     pub cookie_secure: bool,
 
-    /// Whether to set the HttpOnly flag on the cookie. Default: true.
+    /// Whether to set the `HttpOnly` flag on the cookie. Default: true.
     #[serde(default = "defaults::sticky_cookie_http_only")]
     pub cookie_http_only: bool,
 }
@@ -524,7 +524,7 @@ pub struct CircuitBreakerConfig {
     #[serde(default = "defaults::cb_open_duration")]
     pub open_duration: String,
 
-    /// Error ratio threshold (0.0-1.0) for ratio-based tripping (Traefik's NetworkErrorRatio).
+    /// Error ratio threshold (0.0-1.0) for ratio-based tripping (Traefik's `NetworkErrorRatio`).
     /// When the error ratio in the sliding window exceeds this, the circuit opens.
     /// Default: 0.5 (50%).
     #[serde(default = "defaults::cb_error_ratio_threshold")]

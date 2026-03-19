@@ -33,15 +33,15 @@ pub struct FluxoApp {
 }
 
 impl FluxoApp {
-    /// Create a new FluxoApp from a validated config.
+    /// Create a new `FluxoApp` from a validated config.
     ///
     /// Builds the pre-computed `FluxoState` (compiled routes, initialized load
-    /// balancers) and wraps it in a `FluxoProxy` with ArcSwap.
+    /// balancers) and wraps it in a `FluxoProxy` with `ArcSwap`.
     pub fn from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
         Self::from_config_with_path(config, None)
     }
 
-    /// Create a new FluxoApp from a validated config, recording the config file path
+    /// Create a new `FluxoApp` from a validated config, recording the config file path
     /// so the admin API's `POST /reload` endpoint can re-read it from disk.
     pub fn from_config_with_path(
         config: FluxoConfig,
@@ -182,10 +182,10 @@ impl FluxoApp {
 
     /// Build the cert store from config.
     pub fn cert_store(&self) -> CertStore {
-        match &self.config.global.cert_dir {
-            Some(dir) => CertStore::new(PathBuf::from(dir)),
-            None => CertStore::new(CertStore::default_dir()),
-        }
+        self.config.global.cert_dir.as_ref().map_or_else(
+            || CertStore::new(CertStore::default_dir()),
+            |dir| CertStore::new(PathBuf::from(dir)),
+        )
     }
 
     /// Get a clone of the proxy for registering with Pingora services.

@@ -50,7 +50,7 @@ impl FileProvider {
 
 #[async_trait]
 impl ConfigProvider for FileProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "file"
     }
 

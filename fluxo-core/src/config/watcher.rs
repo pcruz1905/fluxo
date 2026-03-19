@@ -18,9 +18,10 @@ use crate::proxy::FluxoProxy;
 /// Uses the serialized TOML representation for a stable hash.
 /// This is cheaper than full structural equality.
 fn hash_config(config: &FluxoConfig) -> u64 {
-    let toml_str = toml::to_string(config).unwrap_or_default();
     let mut hasher = DefaultHasher::new();
-    toml_str.hash(&mut hasher);
+    toml::to_string(config)
+        .unwrap_or_default()
+        .hash(&mut hasher);
     hasher.finish()
 }
 

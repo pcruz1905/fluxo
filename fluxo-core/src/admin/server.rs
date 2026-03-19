@@ -19,7 +19,7 @@ use super::handlers;
 
 /// Admin API HTTP server.
 ///
-/// Runs as a Pingora BackgroundService, listening on a configurable address
+/// Runs as a Pingora `BackgroundService`, listening on a configurable address
 /// (default 127.0.0.1:2019). Serves health checks, Prometheus metrics,
 /// config inspection, and hot-reload endpoints.
 pub struct AdminService {
@@ -54,7 +54,7 @@ impl AdminService {
                             "error": format!("failed to read body: {e}")
                         })) {
                             Ok(b) => b,
-                            Err(se) => format!(r#"{{"error": "JSON error: {}"}}"#, se),
+                            Err(se) => format!(r#"{{"error": "JSON error: {se}"}}"#),
                         };
                         return Ok(Response::builder()
                             .status(400)

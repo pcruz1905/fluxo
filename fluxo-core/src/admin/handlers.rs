@@ -10,7 +10,7 @@ pub fn json_response<T: serde::Serialize>(status: u16, value: &T) -> (u16, Strin
         Ok(body) => (status, body, "application/json"),
         Err(e) => (
             500,
-            format!(r#"{{"error": "serialization failed: {}"}}"#, e),
+            format!(r#"{{"error": "serialization failed: {e}"}}"#),
             "application/json",
         ),
     }
@@ -25,7 +25,7 @@ pub fn json_response_pretty<T: serde::Serialize>(
         Ok(body) => (status, body, "application/json"),
         Err(e) => (
             500,
-            format!(r#"{{"error": "pretty serialization failed: {}"}}"#, e),
+            format!(r#"{{"error": "pretty serialization failed: {e}"}}"#),
             "application/json",
         ),
     }
@@ -147,19 +147,18 @@ pub fn handle_reload(
     proxy: &Arc<FluxoProxy>,
     config_path: Option<&str>,
 ) -> (u16, String, &'static str) {
-    let path = match config_path {
-        Some(p) => p.to_string(),
-        None => {
-            // Try default paths
-            let candidates = ["fluxo.toml", "/etc/fluxo/fluxo.toml"];
-            match candidates.iter().find(|p| Path::new(p).exists()) {
-                Some(p) => p.to_string(),
-                None => {
-                    return json_response(
-                        404,
-                        &serde_json::json!({"error": "no config file found"}),
-                    );
-                }
+    let path = if let Some(p) = config_path {
+        p.to_string()
+    } else {
+        // Try default paths
+        let candidates = ["fluxo.toml", "/etc/fluxo/fluxo.toml"];
+        match candidates.iter().find(|p| Path::new(p).exists()) {
+            Some(p) => p.to_string(),
+            None => {
+                return json_response(
+                    404,
+                    &serde_json::json!({"error": "no config file found"}),
+                );
             }
         }
     };

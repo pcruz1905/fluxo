@@ -154,6 +154,7 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
 }
 
 /// Collect all validation errors from the config without short-circuiting.
+#[allow(clippy::too_many_lines)]
 fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
     let mut errors = Vec::new();
 
@@ -725,8 +726,7 @@ pub fn parse_size(s: &str) -> Result<u64, ConfigError> {
     let s = s.trim().to_lowercase();
     let err = || {
         ConfigError::Validation(format!(
-            "invalid size '{}': expected e.g. '10mb', '1gb', '512kb'",
-            s
+            "invalid size '{s}': expected e.g. '10mb', '1gb', '512kb'"
         ))
     };
 
