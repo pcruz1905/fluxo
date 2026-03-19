@@ -97,6 +97,8 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             tcp_recv_buf: None,
             h2_ping_interval: None,
             response_buffer_size: None,
+            upstream_type: None,
+            services: vec![],
         },
     );
 
@@ -120,6 +122,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
                 upstream: "default".to_string(),
                 max_request_body: None,
                 plugins: Default::default(),
+                mirror: None,
             }],
         },
     );
@@ -250,6 +253,22 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                     errors.push(format!(
                         "service '{service_name}' route {i}: invalid max_request_body '{size_str}': \
                          expected format like '10mb', '1gb', '512kb'"
+                    ));
+                }
+            }
+
+            // Validate mirror config
+            if let Some(mirror) = &route.mirror {
+                if !config.upstreams.contains_key(&mirror.upstream) {
+                    errors.push(format!(
+                        "service '{service_name}' route {i}: mirror upstream '{}' not found",
+                        mirror.upstream
+                    ));
+                }
+                if mirror.percent > 100 {
+                    errors.push(format!(
+                        "service '{service_name}' route {i}: mirror.percent must be 0-100, got {}",
+                        mirror.percent
                     ));
                 }
             }

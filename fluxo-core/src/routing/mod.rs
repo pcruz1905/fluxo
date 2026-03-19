@@ -77,6 +77,17 @@ pub struct CompiledRoute {
     /// Maximum request body size in bytes. `None` = unlimited.
     /// Parsed at compile time from `RouteConfig::max_request_body`.
     pub max_body_bytes: Option<u64>,
+    /// Traffic mirror config — fire-and-forget request copies to a shadow upstream.
+    pub mirror: Option<CompiledMirror>,
+}
+
+/// Pre-compiled mirror configuration for a route.
+#[derive(Debug)]
+pub struct CompiledMirror {
+    /// Name of the upstream to mirror to.
+    pub upstream: UpstreamName,
+    /// Percentage of requests to mirror (0-100).
+    pub percent: u8,
 }
 
 impl CompiledRoute {
@@ -274,6 +285,10 @@ impl RouteTable {
                 .max_request_body
                 .as_deref()
                 .and_then(|s| crate::config::parse_size(s).ok()),
+            mirror: config.mirror.as_ref().map(|m| CompiledMirror {
+                upstream: UpstreamName::from(m.upstream.as_str()),
+                percent: m.percent,
+            }),
         })
     }
 

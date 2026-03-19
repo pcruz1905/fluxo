@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use pingora_core::Error;
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_proxy::{ProxyHttp, Session};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::FluxoConfig;
 use crate::context::{
@@ -875,8 +875,30 @@ impl ProxyHttp for FluxoProxy {
     ) -> Result<(), Box<Error>> {
         let state = self.state.load();
         if let Some(route) = &ctx.matched_route {
-            let pipeline = &state.router.routes()[route.index].pipeline;
-            pipeline.run_upstream_request(upstream_request, ctx);
+            let compiled = &state.router.routes()[route.index];
+            compiled.pipeline.run_upstream_request(upstream_request, ctx);
+
+            // --- Traffic mirroring (Traefik-inspired) ---
+            // Fire-and-forget: clone headers, send to mirror upstream in background.
+            // v0.1 limitation: headers only, no body.
+            if let Some(ref mirror) = compiled.mirror {
+                if mirror.percent >= 100 || fastrand::u8(0..100) < mirror.percent {
+                    if let Some(group) = state.upstreams.get(&mirror.upstream) {
+                        if let Ok(peer) = group.select_peer() {
+                            let mut header = upstream_request.clone();
+                            let _ = header.insert_header("X-Fluxo-Mirror", "true");
+                            let addr = format!("{}", peer.address());
+
+                            tokio::spawn(async move {
+                                let result = send_mirror_request(&addr, header).await;
+                                if let Err(e) = result {
+                                    tracing::debug!("mirror request to {} failed: {}", addr, e);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1237,4 +1259,48 @@ impl ProxyHttp for FluxoProxy {
         // Return context to pool
         self.static_state.context_pool.release(std::mem::take(ctx));
     }
+}
+
+/// Send a fire-and-forget mirror request (headers only, no body).
+/// Uses raw TCP with a short timeout so mirror failures never block anything.
+async fn send_mirror_request(
+    addr: &str,
+    header: pingora_http::RequestHeader,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
+
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        TcpStream::connect(addr),
+    )
+    .await??;
+
+    let method = header.method.as_str();
+    let path = header
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let mut buf = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    for (name, value) in header.headers.iter() {
+        if let Ok(v) = std::str::from_utf8(value.as_bytes()) {
+            let n = name.as_str();
+            if n != "host" && n != "connection" {
+                buf.push_str(n);
+                buf.push_str(": ");
+                buf.push_str(v);
+                buf.push_str("\r\n");
+            }
+        }
+    }
+    buf.push_str("Content-Length: 0\r\n\r\n");
+
+    let (_, mut write_half) = stream.into_split();
+    write_half.write_all(buf.as_bytes()).await?;
+    write_half.shutdown().await?;
+
+    debug!("mirror request to {} completed", addr);
+    Ok(())
 }

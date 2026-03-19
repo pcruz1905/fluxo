@@ -142,3 +142,9 @@ pub fn tcp_keepalive_interval() -> String {
 pub fn tcp_keepalive_count() -> usize {
     5
 }
+
+// --- Traffic mirroring defaults ---
+
+pub fn mirror_percent() -> u8 {
+    100
+}

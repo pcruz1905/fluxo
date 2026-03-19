@@ -306,6 +306,21 @@ pub struct RouteConfig {
     /// Plugin configuration for this route.
     #[serde(default)]
     pub plugins: HashMap<String, serde_json::Value>,
+
+    /// Traffic mirroring — fire-and-forget request copies to a shadow upstream.
+    /// Traefik-inspired: used for canary testing, shadow traffic, and gradual rollouts.
+    pub mirror: Option<MirrorConfig>,
+}
+
+/// Configuration for traffic mirroring to a shadow upstream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MirrorConfig {
+    /// Name of the upstream group to mirror requests to.
+    pub upstream: String,
+
+    /// Percentage of requests to mirror (0-100). Default: 100.
+    #[serde(default = "defaults::mirror_percent")]
+    pub percent: u8,
 }
 
 /// Configuration for an upstream group.
@@ -392,6 +407,31 @@ pub struct UpstreamConfig {
     /// When set, response body chunks are accumulated up to this size before being flushed
     /// to the client. If the response exceeds this size, it switches to streaming mode.
     pub response_buffer_size: Option<String>,
+
+    /// Upstream type: "static" (default, direct targets), "weighted" (WRR of child upstreams),
+    /// "failover" (try children in order, skip those with open circuit breakers).
+    /// Traefik equivalent: weighted round-robin service / failover service.
+    #[serde(default)]
+    pub upstream_type: Option<String>,
+
+    /// Child upstream references for composite types ("weighted" / "failover").
+    /// Each entry references another upstream by name, with an optional weight.
+    #[serde(default)]
+    pub services: Vec<ServiceRef>,
+}
+
+/// A reference to a child upstream in a composite upstream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceRef {
+    /// Name of the referenced upstream.
+    pub upstream: String,
+    /// Weight for weighted round-robin (ignored for failover). Default: 1.
+    #[serde(default = "service_ref_default_weight")]
+    pub weight: u32,
+}
+
+fn service_ref_default_weight() -> u32 {
+    1
 }
 
 /// TCP keepalive settings — maps to OS socket options.
