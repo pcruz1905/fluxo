@@ -182,7 +182,18 @@ fn build_upstream_groups(
                 ))
             })?;
             hc.req = req;
-            group.set_health_check(Box::new(hc), interval);
+
+            // Dual-interval health checks (Traefik-inspired):
+            // When unhealthy_interval is set, use the faster interval for all checks.
+            // This ensures unhealthy backends are re-probed more aggressively while
+            // adding minimal overhead for healthy backends (health checks are lightweight).
+            let effective_interval = hc_config
+                .unhealthy_interval
+                .as_deref()
+                .and_then(|ui| crate::config::parse_duration(ui).ok())
+                .unwrap_or(interval);
+
+            group.set_health_check(Box::new(hc), effective_interval);
         }
 
         groups.insert(upstream_name, group);

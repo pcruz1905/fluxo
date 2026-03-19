@@ -536,6 +536,13 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                     ));
                 }
             }
+            if let Some(ref ui) = hc.unhealthy_interval {
+                if parse_duration(ui).is_err() {
+                    errors.push(format!(
+                        "upstream '{name}': invalid health_check.unhealthy_interval '{ui}'"
+                    ));
+                }
+            }
         }
     }
 

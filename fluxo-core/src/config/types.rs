@@ -510,4 +510,8 @@ pub struct HealthCheckConfig {
     /// Consecutive successes before marking healthy.
     #[serde(default = "defaults::healthy_threshold")]
     pub healthy_threshold: u32,
+
+    /// Faster probe interval for unhealthy targets (Traefik-inspired dual-interval).
+    /// Defaults to interval/3 if not set. Example: "3s".
+    pub unhealthy_interval: Option<String>,
 }
