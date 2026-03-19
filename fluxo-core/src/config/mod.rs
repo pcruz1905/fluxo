@@ -350,7 +350,7 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
         }
 
         // Validate load balancing strategy
-        let valid_strategies = ["round_robin", "random", "fnv_hash", "consistent_hash"];
+        let valid_strategies = ["round_robin", "random", "fnv_hash", "consistent_hash", "weighted_edf"];
         if !valid_strategies.contains(&upstream.load_balancing.as_str()) {
             errors.push(format!(
                 "upstream '{name}': unknown load_balancing '{}'. Valid: {}",

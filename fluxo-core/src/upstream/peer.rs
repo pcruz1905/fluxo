@@ -110,6 +110,8 @@ pub enum LbStrategy {
     Random,
     FnvHash,
     ConsistentHash,
+    /// Earliest Deadline First — heap-based precise weighted distribution (Traefik-inspired).
+    WeightedEdf,
 }
 
 impl LbStrategy {
@@ -120,6 +122,7 @@ impl LbStrategy {
             "random" => Ok(Self::Random),
             "fnv_hash" => Ok(Self::FnvHash),
             "consistent_hash" => Ok(Self::ConsistentHash),
+            "weighted_edf" => Ok(Self::WeightedEdf),
             other => Err(UpstreamError::InvalidStrategy(other.to_string())),
         }
     }
@@ -131,6 +134,8 @@ enum AnyLoadBalancer {
     Random(Arc<LoadBalancer<Random>>),
     FnvHash(Arc<LoadBalancer<pingora_load_balancing::selection::FNVHash>>),
     ConsistentHash(Arc<LoadBalancer<Consistent>>),
+    /// EDF-based weighted scheduler — doesn't use Pingora's LoadBalancer.
+    Edf(Arc<super::edf::EdfScheduler>),
 }
 
 impl AnyLoadBalancer {
@@ -182,6 +187,16 @@ impl AnyLoadBalancer {
                     LoadBalancer::<Consistent>::try_from_iter(expanded.iter()).map_err(map_err)?;
                 Ok(Self::ConsistentHash(Arc::new(lb)))
             }
+            LbStrategy::WeightedEdf => {
+                let edf_targets: Vec<super::edf::EdfTarget> = targets
+                    .iter()
+                    .map(|t| super::edf::EdfTarget {
+                        address: t.address().to_string(),
+                        weight: t.weight(),
+                    })
+                    .collect();
+                Ok(Self::Edf(Arc::new(super::edf::EdfScheduler::new(edf_targets))))
+            }
         }
     }
 
@@ -192,6 +207,15 @@ impl AnyLoadBalancer {
             Self::Random(lb) => lb.select(key, max_iterations),
             Self::FnvHash(lb) => lb.select(key, max_iterations),
             Self::ConsistentHash(lb) => lb.select(key, max_iterations),
+            Self::Edf(scheduler) => {
+                let (_, addr) = scheduler.select()?;
+                // Create a Backend from the address string
+                Some(pingora_load_balancing::Backend {
+                    addr: addr.parse().ok()?,
+                    weight: 1, // Weight is handled by the EDF scheduler itself
+                    ext: Default::default(),
+                })
+            }
         }
     }
 
@@ -220,6 +244,10 @@ impl AnyLoadBalancer {
                     mut_lb.set_health_check(hc);
                 }
             }
+            Self::Edf(_) => {
+                // EDF doesn't use Pingora's LoadBalancer health checking.
+                // Health checks for EDF upstreams would need a custom implementation.
+            }
         }
     }
 
@@ -239,6 +267,7 @@ impl AnyLoadBalancer {
             Self::ConsistentHash(lb) if lb.health_check_frequency.is_some() => {
                 Some(Box::new(GenBackgroundService::new(svc_name, lb.clone())))
             }
+            // EDF does not support Pingora-integrated health checks
             _ => None,
         }
     }
@@ -265,6 +294,7 @@ impl AnyLoadBalancer {
                     mut_lb.health_check_frequency = Some(freq);
                 }
             }
+            Self::Edf(_) => {}
         }
     }
 }
