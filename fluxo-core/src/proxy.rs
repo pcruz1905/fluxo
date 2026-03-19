@@ -761,28 +761,70 @@ impl ProxyHttp for FluxoProxy {
             .get(&upstream_name_str)
             .and_then(|c| c.sticky.as_ref());
 
-        let peer = if let (Some(cookie_val), Some(_)) = (&ctx.sticky_cookie_value, sticky_config) {
-            // Existing cookie — find the backend whose hash matches
-            let matched = upstream_group.select_peer_by_sticky_hash(cookie_val);
-            match matched {
-                Some(p) => Ok(p),
-                None => {
-                    // Backend was removed — fall through to normal selection, set new cookie
-                    ctx.sticky_cookie_new = true;
-                    upstream_group.select_peer()
+        // --- Peer selection with retry + exponential backoff (Traefik-inspired) ---
+        let retry_config = state
+            .config
+            .upstreams
+            .get(&upstream_name_str)
+            .and_then(|c| c.retry.as_ref());
+        let max_attempts = retry_config.map(|r| r.attempts).unwrap_or(0);
+        let initial_interval = retry_config
+            .and_then(|r| crate::config::parse_duration(&r.initial_interval).ok())
+            .unwrap_or(std::time::Duration::from_millis(100));
+        let max_interval = retry_config
+            .and_then(|r| crate::config::parse_duration(&r.max_interval).ok())
+            .unwrap_or(std::time::Duration::from_secs(1));
+
+        let mut last_err = None;
+        let mut peer_result: Option<Box<HttpPeer>> = None;
+
+        for attempt in 0..=max_attempts {
+            if attempt > 0 {
+                // Exponential backoff with jitter
+                let base = initial_interval.as_millis() as u64 * (1u64 << (attempt - 1).min(10));
+                let capped = base.min(max_interval.as_millis() as u64);
+                let jitter = fastrand::u64(0..=capped / 4 + 1);
+                let delay = std::time::Duration::from_millis(capped + jitter);
+                tokio::time::sleep(delay).await;
+                ctx.retry_count = attempt;
+            }
+
+            let result = if let (Some(cookie_val), Some(_)) =
+                (&ctx.sticky_cookie_value, sticky_config)
+            {
+                let matched = upstream_group.select_peer_by_sticky_hash(cookie_val);
+                match matched {
+                    Some(p) => Ok(p),
+                    None => {
+                        ctx.sticky_cookie_new = true;
+                        upstream_group.select_peer()
+                    }
+                }
+            } else if sticky_config.is_some() {
+                ctx.sticky_cookie_new = true;
+                upstream_group.select_peer()
+            } else {
+                upstream_group.select_peer()
+            };
+
+            match result {
+                Ok(p) => {
+                    peer_result = Some(p);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
                 }
             }
-        } else if sticky_config.is_some() {
-            // No cookie yet — select normally, will set cookie in response_filter
-            ctx.sticky_cookie_new = true;
-            upstream_group.select_peer()
-        } else {
-            upstream_group.select_peer()
         }
-        .map_err(|e| {
+
+        let peer = peer_result.ok_or_else(|| {
+            let err_msg = last_err
+                .map(|e| format!("{e}"))
+                .unwrap_or_else(|| "no healthy backends".to_string());
             Error::explain(
                 pingora_core::ErrorType::ConnectError,
-                format!("failed to select peer from '{}': {}", route.upstream, e),
+                format!("failed to select peer from '{}': {}", route.upstream, err_msg),
             )
         })?;
 
