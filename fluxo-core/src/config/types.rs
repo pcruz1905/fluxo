@@ -192,7 +192,7 @@ impl Default for GlobalConfig {
 }
 
 /// A service groups listeners and routes together.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServiceConfig {
     /// Listener addresses for this service.
     #[serde(default)]
@@ -251,7 +251,7 @@ pub struct TlsConfig {
 }
 
 /// A single route definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RouteConfig {
     /// Display name for logging.
     pub name: Option<String>,
@@ -292,7 +292,7 @@ pub struct RouteConfig {
 }
 
 /// Configuration for an upstream group.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UpstreamConfig {
     /// Discovery method: "static" (v0.1 only).
     #[serde(default = "defaults::discovery")]
