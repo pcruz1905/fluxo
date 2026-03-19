@@ -76,7 +76,7 @@ impl ConfigProvider for FileProvider {
             #[cfg(unix)]
             {
                 tokio::select! {
-                    _ = tokio::time::sleep(self.poll_interval) => {
+                    () = tokio::time::sleep(self.poll_interval) => {
                         // Check if file was modified
                         let current_modified = std::fs::metadata(&self.path)
                             .and_then(|m| m.modified())
