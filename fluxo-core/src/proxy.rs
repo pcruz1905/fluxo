@@ -352,8 +352,13 @@ fn is_trusted_proxy(
     peer_addr: &pingora_core::protocols::l4::socket::SocketAddr,
     trusted: &[ipnet::IpNet],
 ) -> bool {
-    let pingora_core::protocols::l4::socket::SocketAddr::Inet(addr) = peer_addr;
-    trusted.iter().any(|net| net.contains(&addr.ip()))
+    match peer_addr {
+        pingora_core::protocols::l4::socket::SocketAddr::Inet(addr) => {
+            trusted.iter().any(|net| net.contains(&addr.ip()))
+        }
+        #[cfg(unix)]
+        pingora_core::protocols::l4::socket::SocketAddr::Unix(_) => false,
+    }
 }
 
 /// Check if a status code should be included in access logs.
