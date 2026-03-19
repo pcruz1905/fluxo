@@ -208,17 +208,28 @@ fn main() -> anyhow::Result<()> {
             loop {
                 sighup.recv().await;
                 tracing::info!(path = %config_path_for_signal, "SIGHUP received — reloading config");
-                match fluxo_core::config::load_from_file(std::path::Path::new(&config_path_for_signal)) {
-                    Ok(new_config) => {
-                        match fluxo_core::FluxoState::try_from_config(new_config) {
-                            Ok(new_state) => {
-                                proxy_for_signal.reload(new_state);
-                                tracing::info!("config reloaded successfully");
-                            }
-                            Err(e) => tracing::error!("config reload failed (state build): {e}"),
-                        }
+
+                // Two-stage reload (Monolake pattern): precommit → validate → commit or abort
+                let new_config = match fluxo_core::config::load_from_file(
+                    std::path::Path::new(&config_path_for_signal),
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("config reload ABORTED (parse error): {e}");
+                        continue;
                     }
-                    Err(e) => tracing::error!("config reload failed (parse): {e}"),
+                };
+
+                // Stage 1: Precommit — build new state, validate it compiles
+                match fluxo_core::FluxoProxy::precommit_reload(new_config) {
+                    Ok(new_state) => {
+                        // Stage 2: Commit — atomic swap with pool preservation
+                        proxy_for_signal.reload(new_state);
+                        tracing::info!("config reloaded successfully");
+                    }
+                    Err(e) => {
+                        tracing::error!("config reload ABORTED (validation failed): {e}");
+                    }
                 }
             }
         });
