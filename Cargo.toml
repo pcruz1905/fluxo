@@ -55,10 +55,10 @@ ppp = "2"
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 
-# Explicitly discourage panics (set to warn so existing code compiles)
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
+# Explicitly ban panics
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
 
 # Allow specific noisy rules
 module_name_repetitions = "allow"

@@ -50,15 +50,17 @@ impl AdminService {
                 let body_bytes = match req.into_body().collect().await {
                     Ok(collected) => collected.to_bytes(),
                     Err(e) => {
-                        let err_body = serde_json::to_string(&serde_json::json!({
+                        let err_body = match serde_json::to_string(&serde_json::json!({
                             "error": format!("failed to read body: {e}")
-                        }))
-                        .unwrap();
+                        })) {
+                            Ok(b) => b,
+                            Err(se) => format!(r#"{{"error": "JSON error: {}"}}"#, se),
+                        };
                         return Ok(Response::builder()
                             .status(400)
                             .header("content-type", "application/json")
                             .body(Full::new(Bytes::from(err_body)))
-                            .unwrap());
+                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
                     }
                 };
                 handlers::handle_post_config(&proxy, &body_bytes)
@@ -71,7 +73,7 @@ impl AdminService {
             .status(status)
             .header("content-type", content_type)
             .body(Full::new(Bytes::from(body)))
-            .unwrap();
+            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
 
         Ok(response)
     }

@@ -104,7 +104,7 @@ impl BodyFilter for CompressionBodyFilter {
         if let Some(b) = body.take() {
             // Lazily initialize the streaming compressor on first chunk
             if ctx.compressor.is_none() {
-                ctx.compressor = Some(StreamingCompressor::new(encoding));
+                ctx.compressor = StreamingCompressor::new(encoding);
             }
             if let Some(ref mut compressor) = ctx.compressor {
                 match compressor.write_chunk(&b) {

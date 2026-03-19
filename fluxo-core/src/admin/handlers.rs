@@ -4,6 +4,31 @@ use std::sync::Arc;
 use crate::observability::MetricsRegistry;
 use crate::proxy::{FluxoProxy, FluxoState};
 
+
+/// Helper to safely serialize JSON and ensure a valid response even on serialization panic/failure.
+pub fn json_response<T: serde::Serialize>(status: u16, value: &T) -> (u16, String, &'static str) {
+    match serde_json::to_string(value) {
+        Ok(body) => (status, body, "application/json"),
+        Err(e) => (
+            500,
+            format!(r#"{{"error": "serialization failed: {}"}}"#, e),
+            "application/json",
+        ),
+    }
+}
+
+/// Helper for pretty-printed JSON responses.
+pub fn json_response_pretty<T: serde::Serialize>(status: u16, value: &T) -> (u16, String, &'static str) {
+    match serde_json::to_string_pretty(value) {
+        Ok(body) => (status, body, "application/json"),
+        Err(e) => (
+            500,
+            format!(r#"{{"error": "pretty serialization failed: {}"}}"#, e),
+            "application/json",
+        ),
+    }
+}
+
 /// GET /health — process health info
 pub fn handle_health(proxy: &FluxoProxy) -> (u16, String, &'static str) {
     let state = proxy.state_snapshot();
@@ -16,12 +41,7 @@ pub fn handle_health(proxy: &FluxoProxy) -> (u16, String, &'static str) {
         "services": service_count,
         "upstreams": upstream_count,
     });
-
-    (
-        200,
-        serde_json::to_string_pretty(&body).unwrap(),
-        "application/json",
-    )
+    json_response_pretty(200, &body)
 }
 
 /// GET /metrics — Prometheus text exposition
@@ -36,10 +56,7 @@ pub fn handle_metrics(metrics: &MetricsRegistry) -> (u16, String, &'static str) 
 /// GET /config — export running config as JSON
 pub fn handle_config(proxy: &FluxoProxy) -> (u16, String, &'static str) {
     let state = proxy.state_snapshot();
-    let body = serde_json::to_string_pretty(&state.config).unwrap_or_else(|e| {
-        serde_json::to_string(&serde_json::json!({"error": e.to_string()})).unwrap_or_default()
-    });
-    (200, body, "application/json")
+    json_response_pretty(200, &state.config)
 }
 
 /// GET /upstreams — list all upstreams with their target counts and health check status
@@ -74,12 +91,7 @@ pub fn handle_upstreams(proxy: &FluxoProxy) -> (u16, String, &'static str) {
             }),
         );
     }
-
-    (
-        200,
-        serde_json::to_string_pretty(&serde_json::Value::Object(upstreams)).unwrap(),
-        "application/json",
-    )
+    json_response_pretty(200, &serde_json::Value::Object(upstreams))
 }
 
 /// POST /config — replace running config with JSON body
@@ -87,37 +99,20 @@ pub fn handle_post_config(proxy: &Arc<FluxoProxy>, body: &[u8]) -> (u16, String,
     let config: crate::config::FluxoConfig = match serde_json::from_slice(body) {
         Ok(c) => c,
         Err(e) => {
-            return (
-                400,
-                serde_json::to_string(&serde_json::json!({"error": format!("invalid JSON: {e}")}))
-                    .unwrap(),
-                "application/json",
-            );
+            return json_response(400, &serde_json::json!({"error": format!("invalid JSON: {e}")}));
         }
     };
 
     if let Err(e) = crate::config::validate(&config) {
-        return (
-            400,
-            serde_json::to_string(&serde_json::json!({"error": e.to_string()})).unwrap(),
-            "application/json",
-        );
+        return json_response(400, &serde_json::json!({"error": e.to_string()}));
     }
 
     match FluxoState::try_from_config(config) {
         Ok(new_state) => {
             proxy.reload(new_state);
-            (
-                200,
-                serde_json::to_string(&serde_json::json!({"status": "reloaded"})).unwrap(),
-                "application/json",
-            )
+            json_response(200, &serde_json::json!({"status": "reloaded"}))
         }
-        Err(e) => (
-            500,
-            serde_json::to_string(&serde_json::json!({"error": e.to_string()})).unwrap(),
-            "application/json",
-        ),
+        Err(e) => json_response(500, &serde_json::json!({"error": e.to_string()})),
     }
 }
 
@@ -134,14 +129,7 @@ pub fn handle_reload(
             match candidates.iter().find(|p| Path::new(p).exists()) {
                 Some(p) => p.to_string(),
                 None => {
-                    return (
-                        404,
-                        serde_json::to_string(&serde_json::json!({
-                            "error": "no config file found"
-                        }))
-                        .unwrap(),
-                        "application/json",
-                    );
+                    return json_response(404, &serde_json::json!({"error": "no config file found"}));
                 }
             }
         }
@@ -151,27 +139,11 @@ pub fn handle_reload(
         Ok(config) => match FluxoState::try_from_config(config) {
             Ok(new_state) => {
                 proxy.reload(new_state);
-                (
-                    200,
-                    serde_json::to_string(&serde_json::json!({
-                        "status": "reloaded",
-                        "path": path,
-                    }))
-                    .unwrap(),
-                    "application/json",
-                )
+                json_response(200, &serde_json::json!({"status": "reloaded", "path": path}))
             }
-            Err(e) => (
-                500,
-                serde_json::to_string(&serde_json::json!({"error": e.to_string()})).unwrap(),
-                "application/json",
-            ),
+            Err(e) => json_response(500, &serde_json::json!({"error": e.to_string()})),
         },
-        Err(e) => (
-            500,
-            serde_json::to_string(&serde_json::json!({"error": e.to_string()})).unwrap(),
-            "application/json",
-        ),
+        Err(e) => json_response(500, &serde_json::json!({"error": e.to_string()})),
     }
 }
 
@@ -188,11 +160,7 @@ pub fn handle_not_found() -> (u16, String, &'static str) {
             "POST /reload",
         ]
     });
-    (
-        404,
-        serde_json::to_string(&body).unwrap(),
-        "application/json",
-    )
+    json_response(404, &body)
 }
 
 #[cfg(test)]
@@ -212,7 +180,7 @@ mod tests {
 
     #[test]
     fn metrics_endpoint_returns_prometheus_format() {
-        let metrics = MetricsRegistry::new();
+        let metrics = MetricsRegistry::new().unwrap();
         metrics.record_request("web", "api", "GET", 200, 0.05, 1024, 256);
 
         let (status, body, content_type) = handle_metrics(&metrics);
@@ -226,7 +194,7 @@ mod tests {
 
     #[test]
     fn metrics_endpoint_histogram_has_correct_buckets() {
-        let metrics = MetricsRegistry::new();
+        let metrics = MetricsRegistry::new().unwrap();
         metrics.record_request("web", "api", "GET", 200, 0.042, 0, 0);
 
         let (_, body, _) = handle_metrics(&metrics);

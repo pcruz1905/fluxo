@@ -284,8 +284,11 @@ pub struct FluxoProxy {
 }
 
 impl FluxoProxy {
-    pub fn new(state: FluxoState) -> Self {
-        let metrics = Arc::new(crate::observability::MetricsRegistry::new());
+    pub fn new(state: FluxoState) -> Result<Self, crate::error::FluxoError> {
+        let metrics = Arc::new(
+            crate::observability::MetricsRegistry::new()
+                .map_err(|e| crate::error::FluxoError::Config(crate::config::ConfigError::Validation(format!("Metrics init failed: {}", e))))?,
+        );
         let cb = Arc::new(CircuitBreakerTracker::new());
 
         // Register circuit breakers for upstreams that have them configured
@@ -302,10 +305,10 @@ impl FluxoProxy {
             context_pool: Arc::new(RequestContextPool::new(1024)),
         });
 
-        Self {
+        Ok(Self {
             state: Arc::new(ArcSwap::from(Arc::new(state))),
             static_state,
-        }
+        })
     }
 
     pub fn from_state(state: Arc<FluxoState>, static_state: Arc<FluxoStaticState>) -> Self {
@@ -921,7 +924,7 @@ impl ProxyHttp for FluxoProxy {
             if let Some(encoding) = ctx.compression_encoding {
                 // Lazily initialize the streaming compressor on first chunk
                 if ctx.compressor.is_none() {
-                    ctx.compressor = Some(StreamingCompressor::new(encoding));
+                    ctx.compressor = StreamingCompressor::new(encoding);
                 }
                 // Compress this chunk incrementally — no full-body buffering
                 if let Some(ref mut compressor) = ctx.compressor {

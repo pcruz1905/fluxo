@@ -36,20 +36,20 @@ pub enum StreamingCompressor {
 
 impl StreamingCompressor {
     /// Create a new streaming compressor for the given encoding.
-    pub fn new(encoding: CompressionEncoding) -> Self {
+    pub fn new(encoding: CompressionEncoding) -> Option<Self> {
         match encoding {
-            CompressionEncoding::Gzip => Self::Gzip(flate2::write::GzEncoder::new(
+            CompressionEncoding::Gzip => Some(Self::Gzip(flate2::write::GzEncoder::new(
                 Vec::new(),
                 flate2::Compression::fast(),
-            )),
-            CompressionEncoding::Brotli => Self::Brotli(Box::new(brotli::CompressorWriter::new(
+            ))),
+            CompressionEncoding::Brotli => Some(Self::Brotli(Box::new(brotli::CompressorWriter::new(
                 Vec::new(),
                 4096,
                 4,
                 22,
-            ))),
+            )))),
             CompressionEncoding::Zstd => {
-                Self::Zstd(zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap())
+                zstd::stream::write::Encoder::new(Vec::new(), 1).ok().map(Self::Zstd)
             }
         }
     }

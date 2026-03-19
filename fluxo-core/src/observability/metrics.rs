@@ -21,22 +21,18 @@ pub struct MetricsRegistry {
     upstream_errors_total: IntCounterVec,
 }
 
-impl Default for MetricsRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+
 
 impl MetricsRegistry {
     /// Create a new metrics registry with all Fluxo metrics pre-registered.
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, String> {
         let registry = Registry::new();
 
         let requests_total = IntCounterVec::new(
             Opts::new("fluxo_requests_total", "Total number of processed requests"),
             &["service", "route", "method", "status"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let request_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
@@ -48,19 +44,19 @@ impl MetricsRegistry {
             ]),
             &["service", "route"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let active_requests = IntGauge::new(
             "fluxo_active_requests",
             "Number of currently active requests",
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let bytes_sent_total = IntCounterVec::new(
             Opts::new("fluxo_bytes_sent_total", "Total bytes sent to clients"),
             &["service"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let bytes_received_total = IntCounterVec::new(
             Opts::new(
@@ -69,7 +65,7 @@ impl MetricsRegistry {
             ),
             &["service"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let upstream_requests_total = IntCounterVec::new(
             Opts::new(
@@ -78,7 +74,7 @@ impl MetricsRegistry {
             ),
             &["upstream", "status"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let upstream_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
@@ -90,7 +86,7 @@ impl MetricsRegistry {
             ]),
             &["upstream"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         let upstream_errors_total = IntCounterVec::new(
             Opts::new(
@@ -99,34 +95,34 @@ impl MetricsRegistry {
             ),
             &["upstream", "error_type"],
         )
-        .expect("metric can be created");
+        .map_err(|e| format!("metric creation failed: {}", e))?;
 
         registry
             .register(Box::new(requests_total.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(request_duration_seconds.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(active_requests.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(bytes_sent_total.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(bytes_received_total.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(upstream_requests_total.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(upstream_duration_seconds.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
         registry
             .register(Box::new(upstream_errors_total.clone()))
-            .expect("collector can be registered");
+            .map_err(|e| format!("collector registration failed: {}", e))?;
 
-        Self {
+        Ok(Self {
             registry,
             requests_total,
             request_duration_seconds,
@@ -136,7 +132,7 @@ impl MetricsRegistry {
             upstream_requests_total,
             upstream_duration_seconds,
             upstream_errors_total,
-        }
+        })
     }
 
     /// Record a completed request in all relevant metrics.
@@ -206,10 +202,8 @@ impl MetricsRegistry {
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
-        encoder
-            .encode(&metric_families, &mut buffer)
-            .expect("encoding should not fail");
-        String::from_utf8(buffer).expect("prometheus output is valid utf8")
+        let _ = encoder.encode(&metric_families, &mut buffer);
+        String::from_utf8(buffer).unwrap_or_default()
     }
 }
 
@@ -220,7 +214,7 @@ mod tests {
 
     #[test]
     fn new_registry_creates_all_metrics() {
-        let m = MetricsRegistry::new();
+        let m = MetricsRegistry::new().unwrap();
         // Touch each metric so it appears in output
         m.record_request("test", "test", "GET", 200, 0.01, 1, 1);
         m.inc_active();
@@ -234,7 +228,7 @@ mod tests {
 
     #[test]
     fn record_request_increments_counters() {
-        let m = MetricsRegistry::new();
+        let m = MetricsRegistry::new().unwrap();
         m.record_request("web", "api-v1", "GET", 200, 0.042, 1024, 256);
         m.record_request("web", "api-v1", "GET", 200, 0.038, 512, 128);
         m.record_request("web", "api-v1", "POST", 500, 1.2, 64, 8192);
@@ -250,7 +244,7 @@ mod tests {
 
     #[test]
     fn active_requests_gauge_increments_and_decrements() {
-        let m = MetricsRegistry::new();
+        let m = MetricsRegistry::new().unwrap();
         m.inc_active();
         m.inc_active();
         m.dec_active();
@@ -260,7 +254,7 @@ mod tests {
 
     #[test]
     fn encode_produces_valid_prometheus_format() {
-        let m = MetricsRegistry::new();
+        let m = MetricsRegistry::new().unwrap();
         m.record_request("web", "index", "GET", 200, 0.01, 100, 50);
         let output = m.encode();
         assert!(output.contains("# HELP fluxo_requests_total"));
@@ -269,7 +263,7 @@ mod tests {
 
     #[test]
     fn upstream_metrics_recorded() {
-        let m = MetricsRegistry::new();
+        let m = MetricsRegistry::new().unwrap();
         m.record_upstream_request("backend-api", 200, 0.05, None);
         m.record_upstream_request("backend-api", 200, 0.03, None);
         m.record_upstream_request("backend-api", 502, 1.0, Some("connect"));
@@ -283,7 +277,7 @@ mod tests {
 
     #[test]
     fn upstream_errors_only_recorded_when_present() {
-        let m = MetricsRegistry::new();
+        let m = MetricsRegistry::new().unwrap();
         m.record_upstream_request("svc", 200, 0.01, None);
         let output = m.encode();
         // No errors recorded → no error labels in output

@@ -51,7 +51,7 @@ impl FluxoApp {
             state,
             health_check_services,
         } = FluxoState::build(config.clone())?;
-        let proxy = FluxoProxy::new(state);
+        let proxy = FluxoProxy::new(state)?;
         Ok(Self {
             config,
             proxy,
@@ -78,13 +78,15 @@ impl FluxoApp {
                 Some(tls) if tls.acme => tls,
                 Some(tls) if tls.cert_path.is_some() && tls.key_path.is_some() => {
                     // Manual TLS — just record the paths
-                    self.resolved_tls.insert(
-                        service_name.clone(),
-                        ResolvedTls {
-                            cert_path: tls.cert_path.clone().unwrap(),
-                            key_path: tls.key_path.clone().unwrap(),
-                        },
-                    );
+                    if let (Some(cert_path), Some(key_path)) = (&tls.cert_path, &tls.key_path) {
+                        self.resolved_tls.insert(
+                            service_name.clone(),
+                            ResolvedTls {
+                                cert_path: cert_path.clone(),
+                                key_path: key_path.clone(),
+                            },
+                        );
+                    }
                     continue;
                 }
                 _ => continue,
@@ -266,8 +268,13 @@ impl FluxoApp {
     pub fn admin_service(&self) -> Box<dyn pingora_core::services::ServiceWithDependents> {
         use pingora_core::services::background::GenBackgroundService;
 
-        // Safe: validated at config load time by config::validate()
-        let address: std::net::SocketAddr = self.config.global.admin.parse().unwrap();
+        // Safe: fallback to 127.0.0.1:2019 if config parsing logic somehow failed
+        let address: std::net::SocketAddr = self
+            .config
+            .global
+            .admin
+            .parse()
+            .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 2019)));
 
         let admin = crate::admin::AdminService {
             address,
