@@ -89,14 +89,16 @@ impl EdfScheduler {
             let mut heap = self.heap.lock();
             let entry = heap.pop()?;
             let weight = f64::from(self.targets[entry.index].weight).max(1.0);
+            let index = entry.index;
 
             // Schedule next deadline for this target
             heap.push(EdfEntry {
                 deadline: entry.deadline + 1.0 / weight,
-                index: entry.index,
+                index,
             });
 
-            entry.index
+            drop(heap);
+            index
         };
 
         Some((idx, &self.targets[idx].address))
