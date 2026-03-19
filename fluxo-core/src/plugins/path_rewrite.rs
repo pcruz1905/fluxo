@@ -107,7 +107,7 @@ mod tests {
     fn invalid_regex_returns_error() {
         let config = PathRewriteConfig {
             pattern: r"[invalid".to_string(),
-            replacement: "".to_string(),
+            replacement: String::new(),
         };
         assert!(PathRewritePlugin::try_new(config).is_err());
     }

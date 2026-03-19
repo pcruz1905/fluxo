@@ -327,7 +327,7 @@ mod tests {
 
     impl RequestHeaders for TestHeaders {
         fn get_header(&self, name: &str) -> Option<&str> {
-            self.0.get(name).map(|s| s.as_str())
+            self.0.get(name).map(String::as_str)
         }
     }
 

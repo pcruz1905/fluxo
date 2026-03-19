@@ -155,7 +155,7 @@ mod tests {
     fn make_plugin_hashed(username: &str, password: &str) -> BasicAuthPlugin {
         let hash = format!("{{SHA256}}{}", sha256_hex(password));
         BasicAuthPlugin::new(BasicAuthConfig {
-            users: [(username.to_string(), hash)].into_iter().collect(),
+            users: std::iter::once((username.to_string(), hash)).collect(),
             realm: "Test".to_string(),
         })
     }

@@ -443,6 +443,14 @@ targets = ["127.0.0.1:3000"]
 
     #[test]
     fn header_matching_route() {
+        // Helper implementing RequestHeaders
+        struct H(std::collections::HashMap<String, String>);
+        impl matcher::RequestHeaders for H {
+            fn get_header(&self, name: &str) -> Option<&str> {
+                self.0.get(name).map(String::as_str)
+            }
+        }
+
         let cfg = make_config(
             r#"
 [services.web]
@@ -466,18 +474,8 @@ targets = ["127.0.0.1:3000"]
 
         let table = RouteTable::build(&cfg).unwrap();
 
-        // Helper implementing RequestHeaders
-        struct H(std::collections::HashMap<String, String>);
-        impl matcher::RequestHeaders for H {
-            fn get_header(&self, name: &str) -> Option<&str> {
-                self.0.get(name).map(|s| s.as_str())
-            }
-        }
-
         // With X-Debug header → should match "debug" route
-        let hdrs = H([("x-debug".to_string(), "true".to_string())]
-            .into_iter()
-            .collect());
+        let hdrs = H(std::iter::once(("x-debug".to_string(), "true".to_string())).collect());
         let matched = table.match_route_with_headers(None, "/", "GET", &hdrs);
         assert_eq!(matched.unwrap().name.as_deref(), Some("debug"));
 

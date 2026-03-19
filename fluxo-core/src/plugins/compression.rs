@@ -168,7 +168,7 @@ mod tests {
 
     fn make_plugin(algorithms: &[&str]) -> CompressionPlugin {
         CompressionPlugin::new(&CompressionConfig {
-            algorithms: algorithms.iter().map(|s| s.to_string()).collect(),
+            algorithms: algorithms.iter().map(ToString::to_string).collect(),
             min_size: 0, // no minimum for tests
         })
     }

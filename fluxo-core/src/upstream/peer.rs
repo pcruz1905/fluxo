@@ -508,7 +508,7 @@ mod tests {
                 Default::default(),
                 Default::default(),
             )
-            .unwrap_or_else(|e| panic!("strategy {:?} should work: {}", strategy, e));
+            .unwrap_or_else(|e| panic!("strategy {strategy:?} should work: {e}"));
             let peer = group.select_peer().unwrap();
             assert!(peer.address().as_inet().is_some());
         }

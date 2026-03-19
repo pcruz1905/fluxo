@@ -50,6 +50,7 @@ async fn start_mock_upstream() -> SocketAddr {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn test_end_to_end_proxy_complete_suite() {
     // 1. Start Mock Upstream
     let upstream_addr = start_mock_upstream().await;
@@ -189,7 +190,7 @@ async fn test_end_to_end_proxy_complete_suite() {
 
     // 3. Start Pingora Server
     let random_port = fastrand::u16(10000..60000);
-    let proxy_addr = format!("127.0.0.1:{}", random_port);
+    let proxy_addr = format!("127.0.0.1:{random_port}");
 
     let mut server = Server::new(Some(Opt {
         conf: None,
@@ -219,7 +220,7 @@ async fn test_end_to_end_proxy_complete_suite() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let proxy_url = format!("http://{}", proxy_addr);
+    let proxy_url = format!("http://{proxy_addr}");
 
     // === EXECUTE TESTS ===
 
@@ -250,7 +251,7 @@ async fn test_end_to_end_proxy_complete_suite() {
 
     // Test: Compression
     let resp = client
-        .get(format!("{}/large", proxy_url))
+        .get(format!("{proxy_url}/large"))
         .header("Host", "compress.test")
         .header("Accept-Encoding", "gzip")
         .send()
