@@ -35,6 +35,9 @@ pub enum AcmeError {
 
     #[error("order failed: {0}")]
     OrderFailed(String),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 /// ACME manager for obtaining and renewing certificates.
@@ -150,7 +153,9 @@ impl AcmeManager {
         let cert_pem = order.poll_certificate(&retry).await?;
 
         // Save to store
-        let primary_domain = domains.first().unwrap();
+        let primary_domain = domains
+            .first()
+            .ok_or_else(|| AcmeError::Other("no domains provided".into()))?;
         self.store.save_cert(primary_domain, &cert_pem, &key_pem)?;
 
         info!(domain = %primary_domain, "certificate obtained and saved");

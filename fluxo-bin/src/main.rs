@@ -149,8 +149,9 @@ fn main() -> anyhow::Result<()> {
                 // Fallback: check raw config for manual TLS (non-ACME path)
                 match &service_config.tls {
                     Some(tls) if tls.cert_path.is_some() && tls.key_path.is_some() => {
-                        let cert = tls.cert_path.as_ref().unwrap();
-                        let key = tls.key_path.as_ref().unwrap();
+                        // SAFETY: guarded by is_some() checks above
+                        let Some(cert) = tls.cert_path.as_ref() else { continue };
+                        let Some(key) = tls.key_path.as_ref() else { continue };
                         svc.add_tls(&listener.address, cert, key)?;
                         tracing::info!(
                             service = service_name,

@@ -45,8 +45,9 @@ impl std::fmt::Debug for RateLimitPlugin {
 
 impl RateLimitPlugin {
     pub fn new(config: RateLimitConfig) -> Self {
-        let burst = NonZeroU32::new(config.burst.max(1)).unwrap();
-        let rps = NonZeroU32::new(config.requests_per_second.max(1)).unwrap();
+        // SAFETY: .max(1) guarantees the value is at least 1, so NonZeroU32::new never returns None.
+        let burst = NonZeroU32::new(config.burst.max(1)).unwrap_or(NonZeroU32::MIN);
+        let rps = NonZeroU32::new(config.requests_per_second.max(1)).unwrap_or(NonZeroU32::MIN);
         let quota = Quota::per_second(rps).allow_burst(burst);
 
         // Bounded cache: evicts LRU entries when full, auto-expires after 5 minutes idle.
@@ -85,7 +86,7 @@ impl RateLimitPlugin {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]

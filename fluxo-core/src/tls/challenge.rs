@@ -26,33 +26,31 @@ impl ChallengeState {
 
     /// Register a pending challenge token.
     pub fn set(&self, token: String, key_authorization: String) {
-        self.tokens
-            .write()
-            .expect("challenge state lock poisoned")
-            .insert(token, key_authorization);
+        if let Ok(mut guard) = self.tokens.write() {
+            guard.insert(token, key_authorization);
+        }
     }
 
     /// Look up a challenge token. Returns the key authorization if found.
     pub fn get(&self, token: &str) -> Option<String> {
         self.tokens
             .read()
-            .expect("challenge state lock poisoned")
+            .ok()?
             .get(token)
             .cloned()
     }
 
     /// Remove a challenge token after validation completes.
     pub fn remove(&self, token: &str) {
-        self.tokens
-            .write()
-            .expect("challenge state lock poisoned")
-            .remove(token);
+        if let Ok(mut guard) = self.tokens.write() {
+            guard.remove(token);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]
