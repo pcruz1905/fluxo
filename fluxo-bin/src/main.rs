@@ -229,8 +229,20 @@ fn main() -> anyhow::Result<()> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            let mut term = signal(SignalKind::terminate()).expect("failed to register SIGTERM");
-            let mut int = signal(SignalKind::interrupt()).expect("failed to register SIGINT");
+            let mut term = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("failed to register SIGTERM: {e}");
+                    return;
+                }
+            };
+            let mut int = match signal(SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("failed to register SIGINT: {e}");
+                    return;
+                }
+            };
             tokio::select! {
                 _ = term.recv() => {},
                 _ = int.recv() => {},
