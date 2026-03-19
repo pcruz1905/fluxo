@@ -28,7 +28,15 @@ pub struct UpstreamTlsConfig {
     pub sni: Option<Arc<str>>,
 }
 
-/// Timeout configuration for connections to an upstream group.
+/// TCP keepalive settings — mirrors Pingora's TcpKeepalive.
+#[derive(Debug, Clone)]
+pub struct TcpKeepaliveSettings {
+    pub idle: Duration,
+    pub interval: Duration,
+    pub count: usize,
+}
+
+/// Timeout and connection configuration for an upstream group.
 #[derive(Debug, Clone)]
 pub struct UpstreamTimeouts {
     /// Timeout for establishing a connection.
@@ -39,6 +47,16 @@ pub struct UpstreamTimeouts {
     pub write: Duration,
     /// Idle timeout for keepalive connections.
     pub idle: Duration,
+    /// Total connection timeout (entire connection attempt).
+    pub total_connection_timeout: Option<Duration>,
+    /// TCP keepalive settings.
+    pub tcp_keepalive: Option<TcpKeepaliveSettings>,
+    /// Max concurrent H2 streams per connection.
+    pub max_h2_streams: Option<usize>,
+    /// TCP receive buffer size.
+    pub tcp_recv_buf: Option<usize>,
+    /// H2 ping interval for connection keepalive.
+    pub h2_ping_interval: Option<Duration>,
 }
 
 impl Default for UpstreamTimeouts {
@@ -48,6 +66,11 @@ impl Default for UpstreamTimeouts {
             read: Duration::from_secs(60),
             write: Duration::from_secs(60),
             idle: Duration::from_secs(60),
+            total_connection_timeout: None,
+            tcp_keepalive: None,
+            max_h2_streams: None,
+            tcp_recv_buf: None,
+            h2_ping_interval: None,
         }
     }
 }
@@ -65,6 +88,21 @@ impl UpstreamTimeouts {
                 .unwrap_or(Duration::from_secs(60)),
             idle: parse_duration(&c.keepalive_timeout)
                 .unwrap_or(Duration::from_secs(60)),
+            total_connection_timeout: c.total_connection_timeout
+                .as_ref()
+                .and_then(|s| parse_duration(s).ok()),
+            tcp_keepalive: c.tcp_keepalive.as_ref().map(|ka| {
+                TcpKeepaliveSettings {
+                    idle: parse_duration(&ka.idle).unwrap_or(Duration::from_secs(60)),
+                    interval: parse_duration(&ka.interval).unwrap_or(Duration::from_secs(15)),
+                    count: ka.count,
+                }
+            }),
+            max_h2_streams: c.max_h2_streams,
+            tcp_recv_buf: c.tcp_recv_buf,
+            h2_ping_interval: c.h2_ping_interval
+                .as_ref()
+                .and_then(|s| parse_duration(s).ok()),
         }
     }
 }
@@ -276,6 +314,33 @@ impl UpstreamGroup {
         self.select_peer_with_key(b"")
     }
 
+    /// Apply all configured timeouts and options to a peer.
+    fn apply_peer_options(&self, peer: &mut HttpPeer) {
+        peer.options.connection_timeout = Some(self.timeouts.connect);
+        peer.options.read_timeout = Some(self.timeouts.read);
+        peer.options.write_timeout = Some(self.timeouts.write);
+        peer.options.idle_timeout = Some(self.timeouts.idle);
+        peer.options.total_connection_timeout = self.timeouts.total_connection_timeout;
+        if let Some(ref ka) = self.timeouts.tcp_keepalive {
+            peer.options.tcp_keepalive = Some(pingora_core::protocols::TcpKeepalive {
+                idle: ka.idle,
+                interval: ka.interval,
+                count: ka.count,
+                #[cfg(target_os = "linux")]
+                user_timeout: Duration::ZERO,
+            });
+        }
+        if let Some(streams) = self.timeouts.max_h2_streams {
+            peer.options.max_h2_streams = streams;
+        }
+        if let Some(buf) = self.timeouts.tcp_recv_buf {
+            peer.options.tcp_recv_buf = Some(buf);
+        }
+        if let Some(interval) = self.timeouts.h2_ping_interval {
+            peer.options.h2_ping_interval = Some(interval);
+        }
+    }
+
     /// Select a peer whose address matches the given sticky cookie hash.
     ///
     /// Iterates all backends to find one whose SHA256 hash prefix matches.
@@ -294,10 +359,7 @@ impl UpstreamGroup {
                         self.tls.enabled,
                         self.tls.sni.as_deref().unwrap_or_default().to_string(),
                     );
-                    peer.options.connection_timeout = Some(self.timeouts.connect);
-                    peer.options.read_timeout = Some(self.timeouts.read);
-                    peer.options.write_timeout = Some(self.timeouts.write);
-                    peer.options.idle_timeout = Some(self.timeouts.idle);
+                    self.apply_peer_options(&mut peer);
                     return Some(Box::new(peer));
                 }
             }
@@ -317,11 +379,7 @@ impl UpstreamGroup {
             self.tls.enabled,
             self.tls.sni.as_deref().unwrap_or_default().to_string(),
         );
-
-        peer.options.connection_timeout = Some(self.timeouts.connect);
-        peer.options.read_timeout = Some(self.timeouts.read);
-        peer.options.write_timeout = Some(self.timeouts.write);
-        peer.options.idle_timeout = Some(self.timeouts.idle);
+        self.apply_peer_options(&mut peer);
 
         Ok(Box::new(peer))
     }
@@ -444,7 +502,7 @@ mod tests {
 
     #[test]
     fn timeouts_from_config() {
-        use crate::config::UpstreamConfig;
+        use crate::config::{UpstreamConfig, TcpKeepaliveConfig};
         let uc = UpstreamConfig {
             discovery: "static".to_string(),
             targets: vec![],
@@ -453,17 +511,34 @@ mod tests {
             connect_timeout: "3s".to_string(),
             read_timeout: "45s".to_string(),
             write_timeout: "30s".to_string(),
+            total_connection_timeout: Some("10s".to_string()),
             retry: None,
             passive_health: None,
             sticky: None,
             circuit_breaker: None,
             keepalive_timeout: "120s".to_string(),
             keepalive_pool_size: 64,
+            tcp_keepalive: Some(TcpKeepaliveConfig {
+                idle: "30s".to_string(),
+                interval: "10s".to_string(),
+                count: 3,
+            }),
+            max_h2_streams: Some(100),
+            tcp_recv_buf: Some(65536),
+            h2_ping_interval: Some("30s".to_string()),
         };
         let t = UpstreamTimeouts::from_config(&uc);
         assert_eq!(t.connect, Duration::from_secs(3));
         assert_eq!(t.read, Duration::from_secs(45));
         assert_eq!(t.write, Duration::from_secs(30));
         assert_eq!(t.idle, Duration::from_secs(120));
+        assert_eq!(t.total_connection_timeout, Some(Duration::from_secs(10)));
+        let ka = t.tcp_keepalive.unwrap();
+        assert_eq!(ka.idle, Duration::from_secs(30));
+        assert_eq!(ka.interval, Duration::from_secs(10));
+        assert_eq!(ka.count, 3);
+        assert_eq!(t.max_h2_streams, Some(100));
+        assert_eq!(t.tcp_recv_buf, Some(65536));
+        assert_eq!(t.h2_ping_interval, Some(Duration::from_secs(30)));
     }
 }

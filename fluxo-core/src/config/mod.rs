@@ -80,10 +80,15 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             write_timeout: defaults::write_timeout(),
             retry: None,
             passive_health: None,
+            total_connection_timeout: None,
             sticky: None,
             circuit_breaker: None,
             keepalive_timeout: defaults::keepalive_timeout(),
             keepalive_pool_size: defaults::keepalive_pool_size(),
+            tcp_keepalive: None,
+            max_h2_streams: None,
+            tcp_recv_buf: None,
+            h2_ping_interval: None,
         },
     );
 
@@ -382,6 +387,42 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             ))
         })?;
 
+        // Validate total_connection_timeout
+        if let Some(ref tct) = upstream.total_connection_timeout {
+            parse_duration(tct).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid total_connection_timeout '{}': expected format like '10s', '500ms'",
+                    name, tct
+                ))
+            })?;
+        }
+
+        // Validate tcp_keepalive
+        if let Some(ref ka) = upstream.tcp_keepalive {
+            parse_duration(&ka.idle).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid tcp_keepalive.idle '{}'",
+                    name, ka.idle
+                ))
+            })?;
+            parse_duration(&ka.interval).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid tcp_keepalive.interval '{}'",
+                    name, ka.interval
+                ))
+            })?;
+        }
+
+        // Validate h2_ping_interval
+        if let Some(ref h2pi) = upstream.h2_ping_interval {
+            parse_duration(h2pi).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid h2_ping_interval '{}'",
+                    name, h2pi
+                ))
+            })?;
+        }
+
         // Validate circuit breaker config
         if let Some(cb) = &upstream.circuit_breaker {
             if cb.failure_threshold == 0 {
@@ -402,6 +443,26 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
                     name, cb.open_duration
                 ))
             })?;
+            if cb.error_ratio_threshold < 0.0 || cb.error_ratio_threshold > 1.0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': circuit_breaker.error_ratio_threshold must be between 0.0 and 1.0",
+                    name
+                )));
+            }
+            if cb.min_requests == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': circuit_breaker.min_requests must be >= 1",
+                    name
+                )));
+            }
+            if let Some(ref w) = cb.window {
+                parse_duration(w).map_err(|_| {
+                    ConfigError::Validation(format!(
+                        "upstream '{}': invalid circuit_breaker.window '{}'",
+                        name, w
+                    ))
+                })?;
+            }
         }
 
         // Validate sticky session config

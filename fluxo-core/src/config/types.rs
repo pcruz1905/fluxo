@@ -259,6 +259,10 @@ pub struct UpstreamConfig {
     #[serde(default = "defaults::write_timeout")]
     pub write_timeout: String,
 
+    /// Total connection timeout — upper bound for the entire connection attempt
+    /// (including DNS, TCP handshake, TLS). Pingora: `total_connection_timeout`.
+    pub total_connection_timeout: Option<String>,
+
     /// Retry configuration — retry failed requests on the next healthy backend.
     /// Nginx equivalent: `proxy_next_upstream`.
     pub retry: Option<RetryConfig>,
@@ -284,6 +288,39 @@ pub struct UpstreamConfig {
     /// Nginx equivalent: `keepalive`. Default: 128.
     #[serde(default = "defaults::keepalive_pool_size")]
     pub keepalive_pool_size: usize,
+
+    /// TCP keepalive settings for upstream connections.
+    /// Pingora: `tcp_keepalive`. Maps to OS-level TCP_KEEPIDLE/TCP_KEEPINTVL/TCP_KEEPCNT.
+    pub tcp_keepalive: Option<TcpKeepaliveConfig>,
+
+    /// Maximum concurrent HTTP/2 streams per connection.
+    /// Pingora: `max_h2_streams`. Default: 1.
+    pub max_h2_streams: Option<usize>,
+
+    /// TCP receive buffer size in bytes.
+    /// Pingora: `tcp_recv_buf`. Uses OS default if not set.
+    pub tcp_recv_buf: Option<usize>,
+
+    /// HTTP/2 ping interval for keepalive on idle connections.
+    /// Pingora: `h2_ping_interval`. Example: "30s".
+    pub h2_ping_interval: Option<String>,
+}
+
+/// TCP keepalive settings — maps to OS socket options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpKeepaliveConfig {
+    /// Time a connection needs to be idle before TCP begins sending keepalive probes.
+    /// Default: "60s".
+    #[serde(default = "defaults::tcp_keepalive_idle")]
+    pub idle: String,
+
+    /// Interval between TCP keepalive probes. Default: "15s".
+    #[serde(default = "defaults::tcp_keepalive_interval")]
+    pub interval: String,
+
+    /// Max number of keepalive probes before giving up. Default: 5.
+    #[serde(default = "defaults::tcp_keepalive_count")]
+    pub count: usize,
 }
 
 /// Retry configuration for upstream failures.
@@ -348,6 +385,21 @@ pub struct CircuitBreakerConfig {
     /// How long the circuit stays open before transitioning to half-open. Default: "30s".
     #[serde(default = "defaults::cb_open_duration")]
     pub open_duration: String,
+
+    /// Error ratio threshold (0.0-1.0) for ratio-based tripping (Traefik's NetworkErrorRatio).
+    /// When the error ratio in the sliding window exceeds this, the circuit opens.
+    /// Default: 0.5 (50%).
+    #[serde(default = "defaults::cb_error_ratio_threshold")]
+    pub error_ratio_threshold: f64,
+
+    /// Minimum requests in the sliding window before ratio-based tripping activates.
+    /// Prevents tripping on small sample sizes. Default: 10.
+    #[serde(default = "defaults::cb_min_requests")]
+    pub min_requests: u32,
+
+    /// Sliding window duration for error ratio calculation. Default: "30s".
+    /// If not set, uses the same value as `open_duration`.
+    pub window: Option<String>,
 }
 
 /// Active health check settings.

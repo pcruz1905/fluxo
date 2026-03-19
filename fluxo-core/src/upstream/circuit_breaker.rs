@@ -94,13 +94,15 @@ impl CircuitState {
     fn new(config: CircuitBreakerConfig) -> Self {
         let open_duration = crate::config::parse_duration(&config.open_duration)
             .unwrap_or(Duration::from_secs(30));
+        let window_duration = config.window.as_ref()
+            .and_then(|w| crate::config::parse_duration(w).ok())
+            .unwrap_or(open_duration);
         Self {
             status: CircuitStatus::Closed,
             failure_count: 0,
             success_count: 0,
             last_failure: None,
-            // Sliding window matches the open_duration for ratio calculation
-            window: SlidingWindow::new(open_duration),
+            window: SlidingWindow::new(window_duration),
             config,
             open_duration,
         }
@@ -159,9 +161,8 @@ impl CircuitState {
             CircuitStatus::Closed => {
                 self.failure_count += 1;
                 // Open circuit if consecutive failures OR error ratio exceeds threshold
-                // Minimum 10 requests in window before ratio-based trip
-                let ratio_trip = self.window.total_in_window() >= 10
-                    && self.window.error_ratio() > 0.5;
+                let ratio_trip = self.window.total_in_window() >= self.config.min_requests
+                    && self.window.error_ratio() > self.config.error_ratio_threshold;
                 if self.failure_count >= self.config.failure_threshold || ratio_trip {
                     self.status = CircuitStatus::Open;
                 }
@@ -298,6 +299,9 @@ mod tests {
             failure_threshold: 3,
             success_threshold: 2,
             open_duration: "1s".to_string(),
+            error_ratio_threshold: 0.5,
+            min_requests: 10,
+            window: None,
         }
     }
 
@@ -424,5 +428,82 @@ mod tests {
 
         tracker.record_success("127.0.0.1:3000");
         assert!(!tracker.is_unhealthy("127.0.0.1:3000", 3, Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn circuit_opens_on_error_ratio() {
+        let tracker = CircuitBreakerTracker::new();
+        let name = UpstreamName::from("ratio-test");
+        // High failure_threshold (100) so only ratio-based tripping fires
+        let config = CircuitBreakerConfig {
+            failure_threshold: 100,
+            success_threshold: 2,
+            open_duration: "1s".to_string(),
+            error_ratio_threshold: 0.5,
+            min_requests: 5,
+            window: None,
+        };
+        tracker.register(name.clone(), config);
+
+        // 3 successes + 4 failures = 7 requests, ratio = 4/7 ≈ 0.57 > 0.5
+        for _ in 0..3 {
+            tracker.record_success(&name);
+        }
+        for _ in 0..3 {
+            tracker.record_failure(&name);
+        }
+        // 6 requests, ratio = 3/6 = 0.5 — not > 0.5, still closed
+        assert_eq!(tracker.check(&name), Some(CircuitStatus::Closed));
+
+        tracker.record_failure(&name);
+        // 7 requests, ratio = 4/7 ≈ 0.57 > 0.5, circuit should open
+        assert_eq!(tracker.check(&name), Some(CircuitStatus::Open));
+    }
+
+    #[test]
+    fn circuit_ratio_respects_min_requests() {
+        let tracker = CircuitBreakerTracker::new();
+        let name = UpstreamName::from("min-req-test");
+        let config = CircuitBreakerConfig {
+            failure_threshold: 100,
+            success_threshold: 2,
+            open_duration: "1s".to_string(),
+            error_ratio_threshold: 0.3,
+            min_requests: 20,
+            window: None,
+        };
+        tracker.register(name.clone(), config);
+
+        // 10 failures out of 10 — ratio 1.0 but below min_requests (20)
+        for _ in 0..10 {
+            tracker.record_failure(&name);
+        }
+        assert_eq!(tracker.check(&name), Some(CircuitStatus::Closed));
+    }
+
+    #[test]
+    fn circuit_custom_window_duration() {
+        let tracker = CircuitBreakerTracker::new();
+        let name = UpstreamName::from("window-test");
+        let config = CircuitBreakerConfig {
+            failure_threshold: 100,
+            success_threshold: 2,
+            open_duration: "30s".to_string(),
+            error_ratio_threshold: 0.5,
+            min_requests: 5,
+            window: Some("1ms".to_string()), // very short window
+        };
+        tracker.register(name.clone(), config);
+
+        // Record failures
+        for _ in 0..10 {
+            tracker.record_failure(&name);
+        }
+        // Wait for the window to expire
+        std::thread::sleep(Duration::from_millis(5));
+        // All entries expired — ratio is 0.0, so should stay closed
+        // (new failure alone won't hit threshold of 100)
+        tracker.record_failure(&name);
+        assert_eq!(tracker.check(&name), Some(CircuitStatus::Closed));
     }
 }

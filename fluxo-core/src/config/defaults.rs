@@ -101,6 +101,16 @@ pub fn cb_open_duration() -> String {
     "30s".to_string()
 }
 
+// --- Circuit breaker expression defaults ---
+
+pub fn cb_error_ratio_threshold() -> f64 {
+    0.5
+}
+
+pub fn cb_min_requests() -> u32 {
+    10
+}
+
 // --- Keepalive defaults ---
 
 pub fn keepalive_timeout() -> String {
@@ -109,4 +119,18 @@ pub fn keepalive_timeout() -> String {
 
 pub fn keepalive_pool_size() -> usize {
     128
+}
+
+// --- TCP keepalive defaults ---
+
+pub fn tcp_keepalive_idle() -> String {
+    "60s".to_string()
+}
+
+pub fn tcp_keepalive_interval() -> String {
+    "15s".to_string()
+}
+
+pub fn tcp_keepalive_count() -> usize {
+    5
 }
