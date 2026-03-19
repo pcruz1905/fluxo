@@ -155,6 +155,11 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub error_pages: HashMap<u16, String>,
 
+    /// When true, intercept upstream error responses (matching error_pages status codes)
+    /// and replace the body with the custom error page. Nginx equivalent: `proxy_intercept_errors`.
+    #[serde(default)]
+    pub intercept_errors: bool,
+
     /// Access log filter — exclude certain status codes from access logs.
     /// Supports ranges like "2xx", "3xx", "200-299" or exact codes like "200", "404".
     /// Example: `["2xx", "3xx"]` to suppress successful request logs.
@@ -183,6 +188,7 @@ impl Default for GlobalConfig {
             trusted_proxies: Vec::new(),
             plugins: HashMap::new(),
             error_pages: HashMap::new(),
+            intercept_errors: false,
             client_body_timeout: None,
             client_write_timeout: None,
             access_log_exclude: Vec::new(),
@@ -406,6 +412,16 @@ pub struct RetryConfig {
     /// Default: ["error", "timeout"].
     #[serde(default = "defaults::retry_on")]
     pub on: Vec<String>,
+
+    /// Initial backoff interval between retries. Default: "100ms".
+    /// Traefik equivalent: `initialInterval`.
+    #[serde(default = "defaults::retry_initial_interval")]
+    pub initial_interval: String,
+
+    /// Maximum backoff interval between retries. Default: "1s".
+    /// Backoff is capped at this value. Formula: min(initial * 2^attempt, max).
+    #[serde(default = "defaults::retry_max_interval")]
+    pub max_interval: String,
 }
 
 /// Passive health check configuration — tracks failures during proxying.

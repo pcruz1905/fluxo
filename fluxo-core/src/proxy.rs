@@ -855,6 +855,17 @@ impl ProxyHttp for FluxoProxy {
                 // (Pingora handles the actual connection lifecycle, but we set the header)
             }
 
+            // --- Error page interception (Nginx proxy_intercept_errors) ---
+            if state.config.global.intercept_errors {
+                let status = upstream_response.status.as_u16();
+                if let Some(page_body) = state.config.global.error_pages.get(&status) {
+                    ctx.error_page_override = Some(page_body.clone());
+                    upstream_response.remove_header("content-length");
+                    upstream_response.remove_header("content-encoding");
+                    let _ = upstream_response.insert_header("content-type", "text/html; charset=utf-8");
+                }
+            }
+
             // --- Response buffering activation (Nginx proxy_buffering) ---
             if let Some(upstream_config) = state.config.upstreams.get(upstream_name) {
                 if let Some(ref buf_size) = upstream_config.response_buffer_size {
@@ -928,6 +939,19 @@ impl ProxyHttp for FluxoProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<std::time::Duration>, Box<Error>> {
+        // --- Error page interception (Nginx proxy_intercept_errors) ---
+        // Replace upstream body with custom error page when intercepting.
+        if let Some(ref page) = ctx.error_page_override {
+            *body = None; // suppress upstream body chunks
+            if end_of_stream {
+                let page_bytes = page.clone().into_bytes();
+                ctx.bytes_sent += page_bytes.len() as u64;
+                *body = Some(bytes::Bytes::from(page_bytes));
+                ctx.error_page_override = None;
+            }
+            return Ok(None);
+        }
+
         // --- Response buffering (Nginx proxy_buffering) ---
         // Buffer upstream chunks to free backend connections early for slow clients.
         if ctx.response_buffering_active {

@@ -177,6 +177,10 @@ pub struct RequestContext {
     /// Streaming compressor state — compresses chunks incrementally (no full-body buffering).
     pub compressor: Option<StreamingCompressor>,
 
+    // --- Error page interception (Nginx proxy_intercept_errors inspired) ---
+    /// Custom error page body to serve instead of upstream response.
+    pub error_page_override: Option<String>,
+
     // --- Response buffering state (Nginx proxy_buffering inspired) ---
     /// Accumulation buffer for upstream response chunks.
     pub response_buffer: Vec<u8>,
@@ -259,6 +263,7 @@ impl RequestContext {
             accept_encoding: None,
             compression_encoding: None,
             compressor: None,
+            error_page_override: None,
             response_buffer: Vec::new(),
             response_buffer_limit: 0,
             response_buffering_active: false,
@@ -308,6 +313,7 @@ impl RequestContext {
         self.accept_encoding = None;
         self.compression_encoding = None;
         self.compressor = None;
+        self.error_page_override = None;
         self.response_buffer.clear();
         self.response_buffer_limit = 0;
         self.response_buffering_active = false;

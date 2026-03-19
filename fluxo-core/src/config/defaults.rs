@@ -67,6 +67,14 @@ pub fn retry_on() -> Vec<String> {
     vec!["error".to_string(), "timeout".to_string()]
 }
 
+pub fn retry_initial_interval() -> String {
+    "100ms".to_string()
+}
+
+pub fn retry_max_interval() -> String {
+    "1s".to_string()
+}
+
 // --- Passive health check defaults ---
 
 pub fn passive_max_fails() -> u32 {

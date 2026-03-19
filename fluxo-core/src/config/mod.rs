@@ -376,6 +376,18 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                     ));
                 }
             }
+            if parse_duration(&retry.initial_interval).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid retry.initial_interval '{}'",
+                    retry.initial_interval
+                ));
+            }
+            if parse_duration(&retry.max_interval).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid retry.max_interval '{}'",
+                    retry.max_interval
+                ));
+            }
         }
 
         // Validate passive health check config
