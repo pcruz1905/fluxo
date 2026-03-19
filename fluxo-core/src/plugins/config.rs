@@ -34,19 +34,19 @@ pub fn compile_plugins(
 
     // Build plugins in phase order
     let ordered_names = [
-        "basic_auth",    // Auth first — reject unauthorized before doing any work
+        "basic_auth", // Auth first — reject unauthorized before doing any work
         "ip_restrict",
         "rate_limit",
         "redirect",
         "static_response",
         "request_id",
-        "strip_prefix",  // Path manipulation before forwarding
+        "strip_prefix", // Path manipulation before forwarding
         "add_prefix",
         "path_rewrite",
         "headers",
         "cors",
         "security_headers",
-        "compression",   // Compression last in request phase (captures Accept-Encoding)
+        "compression", // Compression last in request phase (captures Accept-Encoding)
     ];
 
     for name in ordered_names {
@@ -165,8 +165,8 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
             ))
         }
         "compression" => {
-            let cfg: super::compression::CompressionConfig =
-                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+            let cfg: super::compression::CompressionConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
@@ -191,8 +191,8 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
             ))
         }
         "strip_prefix" => {
-            let cfg: super::strip_prefix::StripPrefixConfig =
-                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+            let cfg: super::strip_prefix::StripPrefixConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
@@ -223,8 +223,8 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
             ))
         }
         "path_rewrite" => {
-            let cfg: super::path_rewrite::PathRewriteConfig =
-                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+            let cfg: super::path_rewrite::PathRewriteConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
@@ -243,6 +243,7 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

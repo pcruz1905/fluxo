@@ -67,7 +67,10 @@ impl CompressionPlugin {
                 _ => None,
             })
             .collect();
-        Self { algorithms, min_size: config.min_size }
+        Self {
+            algorithms,
+            min_size: config.min_size,
+        }
     }
 
     /// Capture `Accept-Encoding` from the client request.
@@ -88,11 +91,7 @@ impl CompressionPlugin {
     ///
     /// Called in the response phase. Sets `ctx.compression_encoding` which
     /// signals `response_body_filter` in proxy.rs to buffer and compress.
-    pub fn on_response(
-        &self,
-        resp: &mut pingora_http::ResponseHeader,
-        ctx: &mut RequestContext,
-    ) {
+    pub fn on_response(&self, resp: &mut pingora_http::ResponseHeader, ctx: &mut RequestContext) {
         // Don't re-encode already-encoded responses
         if resp.headers.get("content-encoding").is_some() {
             return;
@@ -115,7 +114,11 @@ impl CompressionPlugin {
         }
 
         // Pick first algorithm the client accepts
-        let encoding = match self.algorithms.iter().find(|enc| accept.contains(enc.as_str())) {
+        let encoding = match self
+            .algorithms
+            .iter()
+            .find(|enc| accept.contains(enc.as_str()))
+        {
             Some(e) => *e,
             None => return,
         };
@@ -153,11 +156,14 @@ fn should_skip_compression(content_type: &str) -> bool {
         "application/octet-stream",
         "application/pdf",
     ];
-    skip_prefixes.iter().any(|prefix| content_type.starts_with(prefix))
+    skip_prefixes
+        .iter()
+        .any(|prefix| content_type.starts_with(prefix))
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn make_plugin(algorithms: &[&str]) -> CompressionPlugin {

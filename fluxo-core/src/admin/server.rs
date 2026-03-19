@@ -63,9 +63,7 @@ impl AdminService {
                 };
                 handlers::handle_post_config(&proxy, &body_bytes)
             }
-            ("POST", "/reload") => {
-                handlers::handle_reload(&proxy, config_path.as_deref())
-            }
+            ("POST", "/reload") => handlers::handle_reload(&proxy, config_path.as_deref()),
             _ => handlers::handle_not_found(),
         };
 

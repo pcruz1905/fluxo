@@ -3,6 +3,11 @@
 //! Plugins are middleware that run at specific phases of the request lifecycle.
 //! Each route compiles its configured plugins into a `PluginPipeline` at config
 //! load time. During request processing, proxy.rs calls the pipeline at each phase.
+//!
+//! Body filters (Nginx-inspired) handle streaming response body transformations
+//! separately from the header-level plugin pipeline.
+
+pub mod body_filter;
 
 pub mod add_prefix;
 pub mod basic_auth;

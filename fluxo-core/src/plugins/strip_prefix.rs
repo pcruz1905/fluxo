@@ -69,6 +69,7 @@ impl StripPrefixPlugin {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::context::RequestContext;
 
@@ -85,7 +86,11 @@ mod tests {
         plugin.on_upstream_request(&mut req, &ctx);
         assert_eq!(req.uri.path(), "/users");
         assert_eq!(
-            req.headers.get("X-Forwarded-Prefix").unwrap().to_str().unwrap(),
+            req.headers
+                .get("X-Forwarded-Prefix")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "/api/v1"
         );
     }
@@ -112,8 +117,7 @@ mod tests {
             forward_prefix: true,
         };
         let plugin = StripPrefixPlugin::new(config);
-        let mut req =
-            pingora_http::RequestHeader::build("GET", b"/api/v1/items", None).unwrap();
+        let mut req = pingora_http::RequestHeader::build("GET", b"/api/v1/items", None).unwrap();
         let ctx = RequestContext::new();
 
         plugin.on_upstream_request(&mut req, &ctx);

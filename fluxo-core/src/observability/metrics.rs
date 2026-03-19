@@ -15,6 +15,10 @@ pub struct MetricsRegistry {
     active_requests: IntGauge,
     bytes_sent_total: IntCounterVec,
     bytes_received_total: IntCounterVec,
+    // Per-upstream metrics (Traefik-inspired: per-server observability wrapping)
+    upstream_requests_total: IntCounterVec,
+    upstream_duration_seconds: HistogramVec,
+    upstream_errors_total: IntCounterVec,
 }
 
 impl Default for MetricsRegistry {
@@ -67,6 +71,36 @@ impl MetricsRegistry {
         )
         .expect("metric can be created");
 
+        let upstream_requests_total = IntCounterVec::new(
+            Opts::new(
+                "fluxo_upstream_requests_total",
+                "Total requests proxied to each upstream",
+            ),
+            &["upstream", "status"],
+        )
+        .expect("metric can be created");
+
+        let upstream_duration_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "fluxo_upstream_duration_seconds",
+                "Upstream response duration in seconds",
+            )
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+            ]),
+            &["upstream"],
+        )
+        .expect("metric can be created");
+
+        let upstream_errors_total = IntCounterVec::new(
+            Opts::new(
+                "fluxo_upstream_errors_total",
+                "Total proxy errors per upstream",
+            ),
+            &["upstream", "error_type"],
+        )
+        .expect("metric can be created");
+
         registry
             .register(Box::new(requests_total.clone()))
             .expect("collector can be registered");
@@ -82,6 +116,15 @@ impl MetricsRegistry {
         registry
             .register(Box::new(bytes_received_total.clone()))
             .expect("collector can be registered");
+        registry
+            .register(Box::new(upstream_requests_total.clone()))
+            .expect("collector can be registered");
+        registry
+            .register(Box::new(upstream_duration_seconds.clone()))
+            .expect("collector can be registered");
+        registry
+            .register(Box::new(upstream_errors_total.clone()))
+            .expect("collector can be registered");
 
         Self {
             registry,
@@ -90,6 +133,9 @@ impl MetricsRegistry {
             active_requests,
             bytes_sent_total,
             bytes_received_total,
+            upstream_requests_total,
+            upstream_duration_seconds,
+            upstream_errors_total,
         }
     }
 
@@ -120,6 +166,31 @@ impl MetricsRegistry {
             .inc_by(bytes_received);
     }
 
+    /// Record a completed upstream request — per-upstream observability.
+    ///
+    /// Traefik-inspired: every upstream server gets its own metrics so you can
+    /// see request count, latency, and error rate per backend.
+    pub fn record_upstream_request(
+        &self,
+        upstream: &str,
+        status: u16,
+        duration_secs: f64,
+        error_type: Option<&str>,
+    ) {
+        let status_str = status.to_string();
+        self.upstream_requests_total
+            .with_label_values(&[upstream, &status_str])
+            .inc();
+        self.upstream_duration_seconds
+            .with_label_values(&[upstream])
+            .observe(duration_secs);
+        if let Some(err) = error_type {
+            self.upstream_errors_total
+                .with_label_values(&[upstream, err])
+                .inc();
+        }
+    }
+
     /// Increment the active requests gauge.
     pub fn inc_active(&self) {
         self.active_requests.inc();
@@ -144,6 +215,7 @@ impl MetricsRegistry {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -193,5 +265,33 @@ mod tests {
         let output = m.encode();
         assert!(output.contains("# HELP fluxo_requests_total"));
         assert!(output.contains("# TYPE fluxo_requests_total counter"));
+    }
+
+    #[test]
+    fn upstream_metrics_recorded() {
+        let m = MetricsRegistry::new();
+        m.record_upstream_request("backend-api", 200, 0.05, None);
+        m.record_upstream_request("backend-api", 200, 0.03, None);
+        m.record_upstream_request("backend-api", 502, 1.0, Some("connect"));
+
+        let output = m.encode();
+        assert!(output.contains("fluxo_upstream_requests_total"));
+        assert!(output.contains(r#"upstream="backend-api"#));
+        assert!(output.contains("fluxo_upstream_duration_seconds"));
+        assert!(output.contains("fluxo_upstream_errors_total"));
+    }
+
+    #[test]
+    fn upstream_errors_only_recorded_when_present() {
+        let m = MetricsRegistry::new();
+        m.record_upstream_request("svc", 200, 0.01, None);
+        let output = m.encode();
+        // No errors recorded → no error labels in output
+        assert!(!output.contains(r#"fluxo_upstream_errors_total{upstream="svc"#));
+
+        // Record an error
+        m.record_upstream_request("svc", 504, 5.0, Some("timeout"));
+        let output = m.encode();
+        assert!(output.contains(r#"error_type="timeout"#));
     }
 }

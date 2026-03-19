@@ -38,12 +38,16 @@ impl StreamingCompressor {
     /// Create a new streaming compressor for the given encoding.
     pub fn new(encoding: CompressionEncoding) -> Self {
         match encoding {
-            CompressionEncoding::Gzip => {
-                Self::Gzip(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()))
-            }
-            CompressionEncoding::Brotli => {
-                Self::Brotli(Box::new(brotli::CompressorWriter::new(Vec::new(), 4096, 4, 22)))
-            }
+            CompressionEncoding::Gzip => Self::Gzip(flate2::write::GzEncoder::new(
+                Vec::new(),
+                flate2::Compression::fast(),
+            )),
+            CompressionEncoding::Brotli => Self::Brotli(Box::new(brotli::CompressorWriter::new(
+                Vec::new(),
+                4096,
+                4,
+                22,
+            ))),
             CompressionEncoding::Zstd => {
                 Self::Zstd(zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap())
             }
@@ -256,8 +260,87 @@ impl Default for RequestContext {
     }
 }
 
+impl RequestContext {
+    /// Reset all fields to defaults without deallocating.
+    ///
+    /// Nginx-inspired: reuse pre-allocated context objects instead of creating
+    /// new ones per request. This avoids allocation pressure under high load.
+    pub fn reset(&mut self) {
+        self.start_time = Instant::now();
+        self.request_id = RequestId::generate();
+        self.matched_route = None;
+        self.selected_peer = None;
+        self.plugin_response = None;
+        self.method = None;
+        self.host = None;
+        self.path = None;
+        self.client_ip = None;
+        self.user_agent = None;
+        self.tls_version = None;
+        self.http_version = None;
+        self.bytes_sent = 0;
+        self.bytes_received = 0;
+        self.upstream_connect_ms = None;
+        self.upstream_response_ms = None;
+        self.error_message = None;
+        self.retry_count = 0;
+        self.sticky_cookie_value = None;
+        self.sticky_cookie_new = false;
+        self.proxy_protocol_info = None;
+        self.accept_encoding = None;
+        self.compression_encoding = None;
+        self.compressor = None;
+    }
+}
+
+/// Pre-allocated pool of `RequestContext` objects.
+///
+/// Nginx-inspired: connections are pre-allocated at startup in a flat array.
+/// This pool does the same for per-request contexts, avoiding allocation
+/// churn under high load. When the pool is empty, new contexts are created
+/// on-demand (graceful degradation).
+pub struct RequestContextPool {
+    pool: parking_lot::Mutex<Vec<RequestContext>>,
+    capacity: usize,
+}
+
+impl RequestContextPool {
+    /// Create a new pool pre-populated with `capacity` contexts.
+    pub fn new(capacity: usize) -> Self {
+        let mut pool = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            pool.push(RequestContext::new());
+        }
+        Self {
+            pool: parking_lot::Mutex::new(pool),
+            capacity,
+        }
+    }
+
+    /// Acquire a context from the pool, or create a new one if empty.
+    pub fn acquire(&self) -> RequestContext {
+        self.pool.lock().pop().unwrap_or_else(RequestContext::new)
+    }
+
+    /// Return a context to the pool. Resets all fields before storing.
+    /// If the pool is at capacity, the context is dropped.
+    pub fn release(&self, mut ctx: RequestContext) {
+        ctx.reset();
+        let mut pool = self.pool.lock();
+        if pool.len() < self.capacity {
+            pool.push(ctx);
+        }
+    }
+
+    /// Current number of available contexts in the pool.
+    pub fn available(&self) -> usize {
+        self.pool.lock().len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -297,5 +380,62 @@ mod tests {
         assert_eq!(CompressionEncoding::Gzip.as_str(), "gzip");
         assert_eq!(CompressionEncoding::Brotli.as_str(), "br");
         assert_eq!(CompressionEncoding::Zstd.as_str(), "zstd");
+    }
+
+    #[test]
+    fn reset_clears_all_fields() {
+        let mut ctx = RequestContext::new();
+        ctx.method = Some("POST".to_string());
+        ctx.bytes_sent = 999;
+        ctx.retry_count = 3;
+        ctx.sticky_cookie_new = true;
+
+        ctx.reset();
+
+        assert!(ctx.method.is_none());
+        assert_eq!(ctx.bytes_sent, 0);
+        assert_eq!(ctx.retry_count, 0);
+        assert!(!ctx.sticky_cookie_new);
+    }
+
+    #[test]
+    fn pool_acquire_returns_context() {
+        let pool = RequestContextPool::new(2);
+        assert_eq!(pool.available(), 2);
+
+        let _ctx = pool.acquire();
+        assert_eq!(pool.available(), 1);
+    }
+
+    #[test]
+    fn pool_release_recycles_context() {
+        let pool = RequestContextPool::new(1);
+        let ctx = pool.acquire();
+        assert_eq!(pool.available(), 0);
+
+        pool.release(ctx);
+        assert_eq!(pool.available(), 1);
+    }
+
+    #[test]
+    fn pool_acquire_creates_new_when_empty() {
+        let pool = RequestContextPool::new(0);
+        assert_eq!(pool.available(), 0);
+
+        let ctx = pool.acquire(); // should not panic
+        assert!(ctx.method.is_none());
+    }
+
+    #[test]
+    fn pool_release_drops_when_at_capacity() {
+        let pool = RequestContextPool::new(1);
+        // Pool starts full
+        assert_eq!(pool.available(), 1);
+
+        let ctx1 = pool.acquire();
+        let ctx2 = RequestContext::new();
+        pool.release(ctx1);
+        pool.release(ctx2); // should be dropped (pool at capacity)
+        assert_eq!(pool.available(), 1);
     }
 }

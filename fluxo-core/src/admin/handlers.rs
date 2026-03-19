@@ -17,12 +17,20 @@ pub fn handle_health(proxy: &FluxoProxy) -> (u16, String, &'static str) {
         "upstreams": upstream_count,
     });
 
-    (200, serde_json::to_string_pretty(&body).unwrap(), "application/json")
+    (
+        200,
+        serde_json::to_string_pretty(&body).unwrap(),
+        "application/json",
+    )
 }
 
 /// GET /metrics — Prometheus text exposition
 pub fn handle_metrics(metrics: &MetricsRegistry) -> (u16, String, &'static str) {
-    (200, metrics.encode(), "text/plain; version=0.0.4; charset=utf-8")
+    (
+        200,
+        metrics.encode(),
+        "text/plain; version=0.0.4; charset=utf-8",
+    )
 }
 
 /// GET /config — export running config as JSON
@@ -67,7 +75,11 @@ pub fn handle_upstreams(proxy: &FluxoProxy) -> (u16, String, &'static str) {
         );
     }
 
-    (200, serde_json::to_string_pretty(&serde_json::Value::Object(upstreams)).unwrap(), "application/json")
+    (
+        200,
+        serde_json::to_string_pretty(&serde_json::Value::Object(upstreams)).unwrap(),
+        "application/json",
+    )
 }
 
 /// POST /config — replace running config with JSON body
@@ -176,11 +188,16 @@ pub fn handle_not_found() -> (u16, String, &'static str) {
             "POST /reload",
         ]
     });
-    (404, serde_json::to_string(&body).unwrap(), "application/json")
+    (
+        404,
+        serde_json::to_string(&body).unwrap(),
+        "application/json",
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

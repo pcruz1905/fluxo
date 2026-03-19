@@ -48,7 +48,10 @@ pub struct BasicAuthPlugin {
 
 impl BasicAuthPlugin {
     pub fn new(config: BasicAuthConfig) -> Self {
-        Self { users: config.users, realm: config.realm }
+        Self {
+            users: config.users,
+            realm: config.realm,
+        }
     }
 
     /// Check the incoming request for valid Basic credentials.
@@ -77,7 +80,11 @@ impl BasicAuthPlugin {
                 // Split on first ':' — passwords may contain colons
                 let colon = creds.find(':').unwrap_or(creds.len());
                 let username = &creds[..colon];
-                let password = if colon < creds.len() { &creds[colon + 1..] } else { "" };
+                let password = if colon < creds.len() {
+                    &creds[colon + 1..]
+                } else {
+                    ""
+                };
                 self.check_credentials(username, password)
             })
             .unwrap_or(false);
@@ -85,8 +92,9 @@ impl BasicAuthPlugin {
         if authorized {
             PluginAction::Continue
         } else {
-            ctx.plugin_response =
-                Some(PluginResponse::BasicAuthChallenge { realm: self.realm.clone() });
+            ctx.plugin_response = Some(PluginResponse::BasicAuthChallenge {
+                realm: self.realm.clone(),
+            });
             PluginAction::Handled(401)
         }
     }
@@ -117,11 +125,15 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use sha2::{Digest, Sha256};
 
@@ -133,7 +145,10 @@ mod tests {
 
     fn make_plugin_plain(users: &[(&str, &str)]) -> BasicAuthPlugin {
         BasicAuthPlugin::new(BasicAuthConfig {
-            users: users.iter().map(|(u, p)| (u.to_string(), p.to_string())).collect(),
+            users: users
+                .iter()
+                .map(|(u, p)| (u.to_string(), p.to_string()))
+                .collect(),
             realm: "Test".to_string(),
         })
     }
@@ -148,10 +163,11 @@ mod tests {
 
     fn make_request_with_basic_auth(username: &str, password: &str) -> pingora_http::RequestHeader {
         use base64::Engine as _;
-        let creds = base64::engine::general_purpose::STANDARD
-            .encode(format!("{username}:{password}"));
+        let creds =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        req.insert_header("Authorization", format!("Basic {creds}")).unwrap();
+        req.insert_header("Authorization", format!("Basic {creds}"))
+            .unwrap();
         req
     }
 
@@ -171,7 +187,10 @@ mod tests {
         let mut ctx = RequestContext::new();
         let action = plugin.on_request(&req, &mut ctx);
         assert_eq!(action, PluginAction::Handled(401));
-        assert!(matches!(ctx.plugin_response, Some(PluginResponse::BasicAuthChallenge { .. })));
+        assert!(matches!(
+            ctx.plugin_response,
+            Some(PluginResponse::BasicAuthChallenge { .. })
+        ));
     }
 
     #[test]
@@ -205,7 +224,10 @@ mod tests {
         let plugin = make_plugin_hashed("admin", "supersecret");
         let req = make_request_with_basic_auth("admin", "wrong");
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(401));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(401)
+        );
     }
 
     #[test]

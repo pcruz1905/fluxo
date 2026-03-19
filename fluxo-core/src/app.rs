@@ -273,7 +273,10 @@ impl FluxoApp {
             address,
             proxy: Arc::new(self.proxy.clone()),
             metrics: self.proxy.metrics(),
-            config_path: self.config_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            config_path: self
+                .config_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
         };
 
         let svc = GenBackgroundService::new("admin API".to_string(), Arc::new(admin));

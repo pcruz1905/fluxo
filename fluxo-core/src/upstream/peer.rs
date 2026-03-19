@@ -80,27 +80,23 @@ impl UpstreamTimeouts {
     pub fn from_config(c: &crate::config::UpstreamConfig) -> Self {
         use crate::config::parse_duration;
         Self {
-            connect: parse_duration(&c.connect_timeout)
-                .unwrap_or(Duration::from_secs(5)),
-            read: parse_duration(&c.read_timeout)
-                .unwrap_or(Duration::from_secs(60)),
-            write: parse_duration(&c.write_timeout)
-                .unwrap_or(Duration::from_secs(60)),
-            idle: parse_duration(&c.keepalive_timeout)
-                .unwrap_or(Duration::from_secs(60)),
-            total_connection_timeout: c.total_connection_timeout
+            connect: parse_duration(&c.connect_timeout).unwrap_or(Duration::from_secs(5)),
+            read: parse_duration(&c.read_timeout).unwrap_or(Duration::from_secs(60)),
+            write: parse_duration(&c.write_timeout).unwrap_or(Duration::from_secs(60)),
+            idle: parse_duration(&c.keepalive_timeout).unwrap_or(Duration::from_secs(60)),
+            total_connection_timeout: c
+                .total_connection_timeout
                 .as_ref()
                 .and_then(|s| parse_duration(s).ok()),
-            tcp_keepalive: c.tcp_keepalive.as_ref().map(|ka| {
-                TcpKeepaliveSettings {
-                    idle: parse_duration(&ka.idle).unwrap_or(Duration::from_secs(60)),
-                    interval: parse_duration(&ka.interval).unwrap_or(Duration::from_secs(15)),
-                    count: ka.count,
-                }
+            tcp_keepalive: c.tcp_keepalive.as_ref().map(|ka| TcpKeepaliveSettings {
+                idle: parse_duration(&ka.idle).unwrap_or(Duration::from_secs(60)),
+                interval: parse_duration(&ka.interval).unwrap_or(Duration::from_secs(15)),
+                count: ka.count,
             }),
             max_h2_streams: c.max_h2_streams,
             tcp_recv_buf: c.tcp_recv_buf,
-            h2_ping_interval: c.h2_ping_interval
+            h2_ping_interval: c
+                .h2_ping_interval
                 .as_ref()
                 .and_then(|s| parse_duration(s).ok()),
         }
@@ -166,26 +162,24 @@ impl AnyLoadBalancer {
 
         match strategy {
             LbStrategy::RoundRobin => {
-                let lb = LoadBalancer::<RoundRobin>::try_from_iter(expanded.iter())
-                    .map_err(map_err)?;
+                let lb =
+                    LoadBalancer::<RoundRobin>::try_from_iter(expanded.iter()).map_err(map_err)?;
                 Ok(Self::RoundRobin(Arc::new(lb)))
             }
             LbStrategy::Random => {
-                let lb =
-                    LoadBalancer::<Random>::try_from_iter(expanded.iter()).map_err(map_err)?;
+                let lb = LoadBalancer::<Random>::try_from_iter(expanded.iter()).map_err(map_err)?;
                 Ok(Self::Random(Arc::new(lb)))
             }
             LbStrategy::FnvHash => {
-                let lb =
-                    LoadBalancer::<pingora_load_balancing::selection::FNVHash>::try_from_iter(
-                        expanded.iter(),
-                    )
-                    .map_err(map_err)?;
+                let lb = LoadBalancer::<pingora_load_balancing::selection::FNVHash>::try_from_iter(
+                    expanded.iter(),
+                )
+                .map_err(map_err)?;
                 Ok(Self::FnvHash(Arc::new(lb)))
             }
             LbStrategy::ConsistentHash => {
-                let lb = LoadBalancer::<Consistent>::try_from_iter(expanded.iter())
-                    .map_err(map_err)?;
+                let lb =
+                    LoadBalancer::<Consistent>::try_from_iter(expanded.iter()).map_err(map_err)?;
                 Ok(Self::ConsistentHash(Arc::new(lb)))
             }
         }
@@ -201,16 +195,31 @@ impl AnyLoadBalancer {
         }
     }
 
-    /// Set a health check on the underlying load balancer.
     fn set_health_check(
         &mut self,
         hc: Box<dyn pingora_load_balancing::health_check::HealthCheck + Send + Sync + 'static>,
     ) {
         match self {
-            Self::RoundRobin(lb) => Arc::get_mut(lb).unwrap().set_health_check(hc),
-            Self::Random(lb) => Arc::get_mut(lb).unwrap().set_health_check(hc),
-            Self::FnvHash(lb) => Arc::get_mut(lb).unwrap().set_health_check(hc),
-            Self::ConsistentHash(lb) => Arc::get_mut(lb).unwrap().set_health_check(hc),
+            Self::RoundRobin(lb) => {
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.set_health_check(hc);
+                }
+            }
+            Self::Random(lb) => {
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.set_health_check(hc);
+                }
+            }
+            Self::FnvHash(lb) => {
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.set_health_check(hc);
+                }
+            }
+            Self::ConsistentHash(lb) => {
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.set_health_check(hc);
+                }
+            }
         }
     }
 
@@ -234,20 +243,27 @@ impl AnyLoadBalancer {
         }
     }
 
-    /// Set health check frequency.
     fn set_health_check_frequency(&mut self, freq: Duration) {
         match self {
             Self::RoundRobin(lb) => {
-                Arc::get_mut(lb).unwrap().health_check_frequency = Some(freq);
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.health_check_frequency = Some(freq);
+                }
             }
             Self::Random(lb) => {
-                Arc::get_mut(lb).unwrap().health_check_frequency = Some(freq);
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.health_check_frequency = Some(freq);
+                }
             }
             Self::FnvHash(lb) => {
-                Arc::get_mut(lb).unwrap().health_check_frequency = Some(freq);
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.health_check_frequency = Some(freq);
+                }
             }
             Self::ConsistentHash(lb) => {
-                Arc::get_mut(lb).unwrap().health_check_frequency = Some(freq);
+                if let Some(mut_lb) = Arc::get_mut(lb) {
+                    mut_lb.health_check_frequency = Some(freq);
+                }
             }
         }
     }
@@ -291,7 +307,13 @@ impl UpstreamGroup {
         timeouts: UpstreamTimeouts,
     ) -> Result<Self, UpstreamError> {
         let lb = AnyLoadBalancer::build(targets, strategy)?;
-        Ok(Self { name, lb, strategy, tls, timeouts })
+        Ok(Self {
+            name,
+            lb,
+            strategy,
+            tls,
+            timeouts,
+        })
     }
 
     /// Set a health check on this upstream group.
@@ -387,20 +409,33 @@ impl UpstreamGroup {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::config::TargetConfig;
     use crate::upstream::UpstreamName;
     use pingora_core::upstreams::peer::Peer;
 
     fn simple_targets(addrs: &[&str]) -> Vec<TargetConfig> {
-        addrs.iter().map(|a| TargetConfig::Simple(a.to_string())).collect()
+        addrs
+            .iter()
+            .map(|a| TargetConfig::Simple(a.to_string()))
+            .collect()
     }
 
     #[test]
     fn lb_strategy_from_config() {
-        assert_eq!(LbStrategy::from_config("round_robin").unwrap(), LbStrategy::RoundRobin);
-        assert_eq!(LbStrategy::from_config("random").unwrap(), LbStrategy::Random);
-        assert_eq!(LbStrategy::from_config("fnv_hash").unwrap(), LbStrategy::FnvHash);
+        assert_eq!(
+            LbStrategy::from_config("round_robin").unwrap(),
+            LbStrategy::RoundRobin
+        );
+        assert_eq!(
+            LbStrategy::from_config("random").unwrap(),
+            LbStrategy::Random
+        );
+        assert_eq!(
+            LbStrategy::from_config("fnv_hash").unwrap(),
+            LbStrategy::FnvHash
+        );
         assert_eq!(
             LbStrategy::from_config("consistent_hash").unwrap(),
             LbStrategy::ConsistentHash
@@ -484,8 +519,14 @@ mod tests {
     fn weighted_targets_expand_correctly() {
         // weight=3 means 3 entries in LB rotation
         let targets = vec![
-            TargetConfig::Weighted { address: "127.0.0.1:3000".to_string(), weight: 3 },
-            TargetConfig::Weighted { address: "127.0.0.1:3001".to_string(), weight: 1 },
+            TargetConfig::Weighted {
+                address: "127.0.0.1:3000".to_string(),
+                weight: 3,
+            },
+            TargetConfig::Weighted {
+                address: "127.0.0.1:3001".to_string(),
+                weight: 1,
+            },
         ];
         // Build should succeed — 4 entries in rotation
         let group = UpstreamGroup::new(
@@ -502,7 +543,7 @@ mod tests {
 
     #[test]
     fn timeouts_from_config() {
-        use crate::config::{UpstreamConfig, TcpKeepaliveConfig};
+        use crate::config::{TcpKeepaliveConfig, UpstreamConfig};
         let uc = UpstreamConfig {
             discovery: "static".to_string(),
             targets: vec![],

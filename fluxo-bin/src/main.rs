@@ -99,13 +99,17 @@ fn main() -> anyhow::Result<()> {
     // Determine the config file path for hot-reload (not available in --upstream mode)
     let config_file_path = if cli.upstream.is_none() {
         let p = Path::new(&cli.config);
-        if p.exists() { Some(p.to_path_buf()) } else { None }
+        if p.exists() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        }
     } else {
         None
     };
 
     // Build the app (compiles routes, initializes load balancers)
-    let mut app = FluxoApp::from_config_with_path(fluxo_config.clone(), config_file_path)?;
+    let mut app = FluxoApp::from_config_with_path(fluxo_config.clone(), config_file_path.clone())?;
 
     // Create Pingora server
     let mut server = Server::new(None)?;
@@ -121,12 +125,9 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("checking ACME certificates...");
         // Run the async cert acquisition — reuse existing runtime if available
         // (Pingora may have already started one), otherwise create a temporary one.
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(app.ensure_certs())?,
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(app.ensure_certs())?;
-            }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() { handle.block_on(app.ensure_certs())? } else {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(app.ensure_certs())?;
         }
     }
 
@@ -191,47 +192,25 @@ fn main() -> anyhow::Result<()> {
 
     tracing::info!("fluxo is ready");
 
-    // SIGHUP handler for config hot-reload (Unix only — nginx-compatible)
-    #[cfg(unix)]
-    {
-        let proxy_for_signal = app.proxy();
-        let config_path_for_signal = cli.config.clone();
+    // Hot-reload config pipeline (FileProvider -> ConfigWatcher -> Proxy)
+    if let Some(path) = config_file_path {
+        let proxy_for_watcher = app.proxy();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+
+        let file_provider = fluxo_core::config::file_provider::FileProvider::new(path);
+        let mut watcher = fluxo_core::config::watcher::ConfigWatcher::new(rx, proxy_for_watcher);
+
+        // Spawn provider loop
         tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut sighup = match signal(SignalKind::hangup()) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("failed to register SIGHUP handler: {e}");
-                    return;
-                }
-            };
-            loop {
-                sighup.recv().await;
-                tracing::info!(path = %config_path_for_signal, "SIGHUP received — reloading config");
-
-                // Two-stage reload (Monolake pattern): precommit → validate → commit or abort
-                let new_config = match fluxo_core::config::load_from_file(
-                    std::path::Path::new(&config_path_for_signal),
-                ) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("config reload ABORTED (parse error): {e}");
-                        continue;
-                    }
-                };
-
-                // Stage 1: Precommit — build new state, validate it compiles
-                match fluxo_core::FluxoProxy::precommit_reload(new_config) {
-                    Ok(new_state) => {
-                        // Stage 2: Commit — atomic swap with pool preservation
-                        proxy_for_signal.reload(new_state);
-                        tracing::info!("config reloaded successfully");
-                    }
-                    Err(e) => {
-                        tracing::error!("config reload ABORTED (validation failed): {e}");
-                    }
-                }
+            use fluxo_core::config::provider::ConfigProvider;
+            if let Err(e) = file_provider.watch(tx).await {
+                tracing::error!("FileProvider exited with error: {e}");
             }
+        });
+
+        // Spawn watcher loop
+        tokio::spawn(async move {
+            watcher.run().await;
         });
     }
 

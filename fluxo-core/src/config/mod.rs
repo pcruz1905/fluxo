@@ -1,7 +1,10 @@
 //! Configuration system — TOML parsing, validation, defaults, and merging.
 
 mod defaults;
+pub mod file_provider;
+pub mod provider;
 mod types;
+pub mod watcher;
 
 pub use types::*;
 
@@ -104,6 +107,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             tls: None,
             routes: vec![RouteConfig {
                 name: Some("default".to_string()),
+                parent: None,
                 match_host: vec![],
                 match_path: vec![],
                 match_method: vec![],
@@ -150,14 +154,12 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
 
     // Validate downstream timeouts
     if let Some(ref t) = config.global.client_body_timeout {
-        parse_duration(t).map_err(|_| {
-            ConfigError::Validation(format!("invalid client_body_timeout: '{t}'"))
-        })?;
+        parse_duration(t)
+            .map_err(|_| ConfigError::Validation(format!("invalid client_body_timeout: '{t}'")))?;
     }
     if let Some(ref t) = config.global.client_write_timeout {
-        parse_duration(t).map_err(|_| {
-            ConfigError::Validation(format!("invalid client_write_timeout: '{t}'"))
-        })?;
+        parse_duration(t)
+            .map_err(|_| ConfigError::Validation(format!("invalid client_write_timeout: '{t}'")))?;
     }
 
     // Validate trusted_proxies are valid CIDRs
@@ -176,7 +178,11 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         // Try numeric range "200-299"
         if let Some((from, to)) = pattern.split_once('-') {
             match (from.parse::<u16>(), to.parse::<u16>()) {
-                (Ok(f), Ok(t)) if f <= t && (100..=599).contains(&f) && (100..=599).contains(&t) => continue,
+                (Ok(f), Ok(t))
+                    if f <= t && (100..=599).contains(&f) && (100..=599).contains(&t) =>
+                {
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -599,7 +605,12 @@ pub fn parse_duration(s: &str) -> Result<Duration, ConfigError> {
 /// Parse a byte-size string like "10mb", "1gb", "512kb", "1024" (bytes) into a `u64`.
 pub fn parse_size(s: &str) -> Result<u64, ConfigError> {
     let s = s.trim().to_lowercase();
-    let err = || ConfigError::Validation(format!("invalid size '{}': expected e.g. '10mb', '1gb', '512kb'", s));
+    let err = || {
+        ConfigError::Validation(format!(
+            "invalid size '{}': expected e.g. '10mb', '1gb', '512kb'",
+            s
+        ))
+    };
 
     if let Some(val) = s.strip_suffix("gb") {
         let n: u64 = val.trim().parse().map_err(|_| err())?;
@@ -621,6 +632,7 @@ pub fn parse_size(s: &str) -> Result<u64, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -639,7 +651,10 @@ targets = ["127.0.0.1:3000"]
         let config = load_from_str(toml).expect("should parse");
         assert_eq!(config.services.len(), 1);
         assert_eq!(config.upstreams.len(), 1);
-        assert_eq!(config.upstreams["backend"].targets[0].address(), "127.0.0.1:3000");
+        assert_eq!(
+            config.upstreams["backend"].targets[0].address(),
+            "127.0.0.1:3000"
+        );
     }
 
     #[test]
@@ -796,13 +811,19 @@ targets = ["127.0.0.1:3000"]
 targets = ["127.0.0.1:3000"]
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err.to_string().contains("cannot use both acme and cert_path"));
+        assert!(
+            err.to_string()
+                .contains("cannot use both acme and cert_path")
+        );
     }
 
     #[test]
     fn config_from_upstream_shorthand() {
         let config = config_from_upstream("127.0.0.1:3000").unwrap();
-        assert_eq!(config.upstreams["default"].targets[0].address(), "127.0.0.1:3000");
+        assert_eq!(
+            config.upstreams["default"].targets[0].address(),
+            "127.0.0.1:3000"
+        );
         assert_eq!(config.services["default"].routes[0].upstream, "default");
     }
 

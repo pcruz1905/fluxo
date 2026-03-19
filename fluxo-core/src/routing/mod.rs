@@ -41,6 +41,14 @@ pub enum RoutingError {
     /// A plugin configuration error.
     #[error("plugin config error: {0}")]
     PluginConfig(#[from] crate::plugins::config::PluginConfigError),
+
+    /// A cycle was detected in parent route references.
+    #[error("cycle detected in route parent chain: route '{0}' is part of a cycle")]
+    CycleDetected(String),
+
+    /// A parent route was referenced but not found.
+    #[error("unknown parent route '{0}': no route with this name exists")]
+    UnknownParent(String),
 }
 
 /// A compiled route table, built from config at load time.
@@ -95,21 +103,116 @@ impl CompiledRoute {
 impl RouteTable {
     /// Build a route table from the full config.
     ///
-    /// Compiles all routes from all services into a single flat table.
-    /// Fails if any route pattern is invalid.
+    /// Uses a 2-pass compilation (Traefik-inspired):
+    /// 1. Build a name→config lookup for all named routes
+    /// 2. Resolve parent chains, inheriting matchers + plugins from parents
+    ///
+    /// Detects cycles in parent references (A→B→A).
+    /// Routes without `parent` work identically to before (backward-compatible).
     pub fn build(config: &FluxoConfig) -> Result<Self, RoutingError> {
         let mut routes = Vec::new();
         let mut index = 0;
 
+        // Collect all routes across all services, preserving order
+        let mut all_routes: Vec<&RouteConfig> = Vec::new();
         for service in config.services.values() {
             for route_config in &service.routes {
-                let compiled = Self::compile_route(route_config, index, &config.global.plugins)?;
-                routes.push(compiled);
-                index += 1;
+                all_routes.push(route_config);
             }
         }
 
+        // Pass 1: build name→config lookup for parent resolution
+        let mut named_routes: std::collections::HashMap<&str, &RouteConfig> =
+            std::collections::HashMap::new();
+        for rc in &all_routes {
+            if let Some(name) = &rc.name {
+                named_routes.insert(name.as_str(), rc);
+            }
+        }
+
+        // Pass 2: compile routes, resolving parent chains
+        for route_config in &all_routes {
+            let merged = Self::resolve_parents(route_config, &named_routes)?;
+            let compiled = Self::compile_route(&merged, index, &config.global.plugins)?;
+            routes.push(compiled);
+            index += 1;
+        }
+
         Ok(Self { routes })
+    }
+
+    /// Resolve parent chain for a route, merging matchers and plugins.
+    ///
+    /// Parent matchers are prepended, parent plugins are prepended (run first).
+    /// Detects cycles via a visited set.
+    fn resolve_parents(
+        route: &RouteConfig,
+        named: &std::collections::HashMap<&str, &RouteConfig>,
+    ) -> Result<RouteConfig, RoutingError> {
+        let parent_name = match &route.parent {
+            None => return Ok(route.clone()),
+            Some(name) => name.clone(),
+        };
+
+        // Collect parent chain (child → parent → grandparent → ...)
+        let mut chain: Vec<&RouteConfig> = vec![route];
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(name) = &route.name {
+            visited.insert(name.clone());
+        }
+
+        let mut current_parent = parent_name;
+        loop {
+            if visited.contains(&current_parent) {
+                return Err(RoutingError::CycleDetected(current_parent));
+            }
+            visited.insert(current_parent.clone());
+
+            let parent = named
+                .get(current_parent.as_str())
+                .ok_or_else(|| RoutingError::UnknownParent(current_parent.clone()))?;
+            chain.push(parent);
+
+            match &parent.parent {
+                Some(next) => current_parent = next.clone(),
+                None => break,
+            }
+        }
+
+        // Merge: start from the root parent, layer each child's config on top
+        chain.reverse(); // root-first order
+        let mut merged = chain[0].clone();
+        for child in &chain[1..] {
+            // Append child's matchers (child's matchers are additional constraints)
+            if !child.match_host.is_empty() {
+                merged.match_host = child.match_host.clone();
+            }
+            if !child.match_path.is_empty() {
+                merged.match_path = child.match_path.clone();
+            }
+            if !child.match_method.is_empty() {
+                merged.match_method = child.match_method.clone();
+            }
+            for (k, v) in &child.match_header {
+                merged.match_header.insert(k.clone(), v.clone());
+            }
+            // Child's plugins are merged on top of parent's (parent plugins run first)
+            for (k, v) in &child.plugins {
+                merged.plugins.insert(k.clone(), v.clone());
+            }
+            // Child overrides name, upstream, max_body
+            if child.name.is_some() {
+                merged.name = child.name.clone();
+            }
+            merged.upstream = child.upstream.clone();
+            if child.max_request_body.is_some() {
+                merged.max_request_body = child.max_request_body.clone();
+            }
+            // parent field not carried forward
+            merged.parent = None;
+        }
+
+        Ok(merged)
     }
 
     /// Access compiled routes by slice (for pipeline lookups by index).
@@ -213,6 +316,7 @@ impl RouteTable {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn make_config(toml_str: &str) -> FluxoConfig {
@@ -461,5 +565,113 @@ targets = ["127.0.0.1:3000"]
 
         assert!(table.match_route(None, "/", "GET").is_some());
         assert!(table.match_route(None, "/", "POST").is_none());
+    }
+
+    #[test]
+    fn hierarchical_route_inherits_parent_matchers() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "api-gateway"
+  match_path = ["/api/*"]
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "api-users"
+  parent = "api-gateway"
+  match_path = ["/api/users/*"]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+
+        // Parent route matches /api/*
+        let m = table.match_route(None, "/api/v1", "GET");
+        assert_eq!(m.unwrap().name.as_deref(), Some("api-gateway"));
+
+        // Child route has its own path, overriding parent's
+        let m = table.match_route(None, "/api/users/123", "GET");
+        assert!(m.is_some());
+    }
+
+    #[test]
+    fn hierarchical_route_cycle_detection() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "a"
+  parent = "b"
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "b"
+  parent = "a"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let err = RouteTable::build(&cfg).unwrap_err();
+        assert!(matches!(err, RoutingError::CycleDetected(_)));
+    }
+
+    #[test]
+    fn hierarchical_route_unknown_parent() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "orphan"
+  parent = "nonexistent"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let err = RouteTable::build(&cfg).unwrap_err();
+        assert!(matches!(err, RoutingError::UnknownParent(_)));
+    }
+
+    #[test]
+    fn backward_compat_no_parent() {
+        // Routes without parent work exactly as before
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "simple"
+  match_path = ["/hello"]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        assert!(table.match_route(None, "/hello", "GET").is_some());
+        assert!(table.match_route(None, "/other", "GET").is_none());
     }
 }

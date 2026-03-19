@@ -54,6 +54,7 @@ pub fn emit_access_log(ctx: &RequestContext, status: u16) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

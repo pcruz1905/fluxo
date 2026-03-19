@@ -244,6 +244,7 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn temp_store() -> (CertStore, tempfile::TempDir) {

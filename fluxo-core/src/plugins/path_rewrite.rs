@@ -21,8 +21,8 @@ pub struct PathRewritePlugin {
 
 impl PathRewritePlugin {
     pub fn try_new(config: PathRewriteConfig) -> Result<Self, String> {
-        let regex =
-            Regex::new(&config.pattern).map_err(|e| format!("invalid regex '{}': {}", config.pattern, e))?;
+        let regex = Regex::new(&config.pattern)
+            .map_err(|e| format!("invalid regex '{}': {}", config.pattern, e))?;
         Ok(Self {
             regex,
             replacement: config.replacement,
@@ -56,6 +56,7 @@ impl PathRewritePlugin {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::context::RequestContext;
 
@@ -119,14 +120,17 @@ mod tests {
             replacement: "/v2/$1".to_string(),
         };
         let plugin = PathRewritePlugin::try_new(config).unwrap();
-        let mut req =
-            pingora_http::RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
+        let mut req = pingora_http::RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
         let ctx = RequestContext::new();
 
         plugin.on_upstream_request(&mut req, &ctx);
         assert_eq!(req.uri.path(), "/v2/users");
         assert_eq!(
-            req.headers.get("X-Replaced-Path").unwrap().to_str().unwrap(),
+            req.headers
+                .get("X-Replaced-Path")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "/api/v1/users"
         );
     }

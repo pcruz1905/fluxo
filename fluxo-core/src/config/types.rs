@@ -62,6 +62,44 @@ pub struct FluxoConfig {
     pub upstreams: HashMap<String, UpstreamConfig>,
 }
 
+impl FluxoConfig {
+    /// Append a namespace (e.g., "@file") to all named resources.
+    /// Used by multi-provider setups to prevent name collisions.
+    pub fn qualify_namespace(&mut self, namespace: &str) {
+        let suffix = format!("@{}", namespace);
+
+        // Qualify upstreams
+        let mut new_upstreams = HashMap::new();
+        for (name, cfg) in std::mem::take(&mut self.upstreams) {
+            new_upstreams.insert(format!("{}{}", name, suffix), cfg);
+        }
+        self.upstreams = new_upstreams;
+
+        // Qualify routes and their upstream/parent references
+        for service in self.services.values_mut() {
+            for route in &mut service.routes {
+                if let Some(name) = &mut route.name {
+                    name.push_str(&suffix);
+                }
+                if let Some(parent) = &mut route.parent {
+                    parent.push_str(&suffix);
+                }
+                route.upstream.push_str(&suffix);
+            }
+        }
+    }
+
+    /// Merge another `FluxoConfig` into this one.
+    /// `global` settings clobber via `extend` (not deeply merged for simplicity yet),
+    /// but `services` and `upstreams` are combined.
+    pub fn merge(&mut self, other: FluxoConfig) {
+        self.services.extend(other.services);
+        self.upstreams.extend(other.upstreams);
+        // Note: Global settings are typically taken from the primary provider (file)
+        // or the last one that sent an update. For simplicity, we only merge services/upstreams.
+    }
+}
+
 /// Global server settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -217,6 +255,13 @@ pub struct TlsConfig {
 pub struct RouteConfig {
     /// Display name for logging.
     pub name: Option<String>,
+
+    /// Name of the parent route whose matchers and plugins are inherited.
+    ///
+    /// Traefik-inspired: child routes inherit all matchers and plugins from
+    /// parent routes. The child's own matchers/plugins are appended.
+    /// Example: a parent "api-gateway" with auth → child "api-users" inherits auth.
+    pub parent: Option<String>,
 
     /// Host patterns to match (exact or wildcard like "*.example.com").
     #[serde(default)]

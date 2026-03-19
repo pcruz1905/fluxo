@@ -39,60 +39,44 @@ pub fn parse_proxy_header(input: &[u8]) -> Result<Option<ProxyProtocolInfo>, Pro
     let result = HeaderResult::parse(input);
 
     match result {
-        HeaderResult::V1(Ok(header)) => {
-            match header.addresses {
-                ppp::v1::Addresses::Tcp4(addrs) => Ok(Some(ProxyProtocolInfo {
-                    source_addr: SocketAddr::new(
-                        IpAddr::V4(addrs.source_address),
-                        addrs.source_port,
-                    ),
-                    dest_addr: SocketAddr::new(
-                        IpAddr::V4(addrs.destination_address),
-                        addrs.destination_port,
-                    ),
-                    version: ProxyProtocolVersion::V1,
-                })),
-                ppp::v1::Addresses::Tcp6(addrs) => Ok(Some(ProxyProtocolInfo {
-                    source_addr: SocketAddr::new(
-                        IpAddr::V6(addrs.source_address),
-                        addrs.source_port,
-                    ),
-                    dest_addr: SocketAddr::new(
-                        IpAddr::V6(addrs.destination_address),
-                        addrs.destination_port,
-                    ),
-                    version: ProxyProtocolVersion::V1,
-                })),
-                ppp::v1::Addresses::Unknown => Ok(None),
-            }
-        }
-        HeaderResult::V2(Ok(header)) => {
-            match header.addresses {
-                ppp::v2::Addresses::IPv4(addrs) => Ok(Some(ProxyProtocolInfo {
-                    source_addr: SocketAddr::new(
-                        IpAddr::V4(addrs.source_address),
-                        addrs.source_port,
-                    ),
-                    dest_addr: SocketAddr::new(
-                        IpAddr::V4(addrs.destination_address),
-                        addrs.destination_port,
-                    ),
-                    version: ProxyProtocolVersion::V2,
-                })),
-                ppp::v2::Addresses::IPv6(addrs) => Ok(Some(ProxyProtocolInfo {
-                    source_addr: SocketAddr::new(
-                        IpAddr::V6(addrs.source_address),
-                        addrs.source_port,
-                    ),
-                    dest_addr: SocketAddr::new(
-                        IpAddr::V6(addrs.destination_address),
-                        addrs.destination_port,
-                    ),
-                    version: ProxyProtocolVersion::V2,
-                })),
-                ppp::v2::Addresses::Unspecified | ppp::v2::Addresses::Unix(_) => Ok(None),
-            }
-        }
+        HeaderResult::V1(Ok(header)) => match header.addresses {
+            ppp::v1::Addresses::Tcp4(addrs) => Ok(Some(ProxyProtocolInfo {
+                source_addr: SocketAddr::new(IpAddr::V4(addrs.source_address), addrs.source_port),
+                dest_addr: SocketAddr::new(
+                    IpAddr::V4(addrs.destination_address),
+                    addrs.destination_port,
+                ),
+                version: ProxyProtocolVersion::V1,
+            })),
+            ppp::v1::Addresses::Tcp6(addrs) => Ok(Some(ProxyProtocolInfo {
+                source_addr: SocketAddr::new(IpAddr::V6(addrs.source_address), addrs.source_port),
+                dest_addr: SocketAddr::new(
+                    IpAddr::V6(addrs.destination_address),
+                    addrs.destination_port,
+                ),
+                version: ProxyProtocolVersion::V1,
+            })),
+            ppp::v1::Addresses::Unknown => Ok(None),
+        },
+        HeaderResult::V2(Ok(header)) => match header.addresses {
+            ppp::v2::Addresses::IPv4(addrs) => Ok(Some(ProxyProtocolInfo {
+                source_addr: SocketAddr::new(IpAddr::V4(addrs.source_address), addrs.source_port),
+                dest_addr: SocketAddr::new(
+                    IpAddr::V4(addrs.destination_address),
+                    addrs.destination_port,
+                ),
+                version: ProxyProtocolVersion::V2,
+            })),
+            ppp::v2::Addresses::IPv6(addrs) => Ok(Some(ProxyProtocolInfo {
+                source_addr: SocketAddr::new(IpAddr::V6(addrs.source_address), addrs.source_port),
+                dest_addr: SocketAddr::new(
+                    IpAddr::V6(addrs.destination_address),
+                    addrs.destination_port,
+                ),
+                version: ProxyProtocolVersion::V2,
+            })),
+            ppp::v2::Addresses::Unspecified | ppp::v2::Addresses::Unix(_) => Ok(None),
+        },
         HeaderResult::V1(Err(ref e)) => {
             if result.is_incomplete() {
                 Err(ProxyProtocolError::Incomplete)
@@ -135,6 +119,7 @@ impl std::error::Error for ProxyProtocolError {}
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 

@@ -92,9 +92,11 @@ struct CircuitState {
 
 impl CircuitState {
     fn new(config: CircuitBreakerConfig) -> Self {
-        let open_duration = crate::config::parse_duration(&config.open_duration)
-            .unwrap_or(Duration::from_secs(30));
-        let window_duration = config.window.as_ref()
+        let open_duration =
+            crate::config::parse_duration(&config.open_duration).unwrap_or(Duration::from_secs(30));
+        let window_duration = config
+            .window
+            .as_ref()
             .and_then(|w| crate::config::parse_duration(w).ok())
             .unwrap_or(open_duration);
         Self {
@@ -254,9 +256,10 @@ impl PassiveHealthTracker {
 
     /// Record a failure for a peer. Returns the new consecutive failure count.
     pub fn record_failure(&self, peer_addr: &str) -> u32 {
-        let entry = self.failures.entry(peer_addr.to_string()).or_insert_with(|| {
-            (AtomicU32::new(0), Mutex::new(None))
-        });
+        let entry = self
+            .failures
+            .entry(peer_addr.to_string())
+            .or_insert_with(|| (AtomicU32::new(0), Mutex::new(None)));
         let count = entry.value().0.fetch_add(1, Ordering::Relaxed) + 1;
         *entry.value().1.lock() = Some(Instant::now());
         count
@@ -290,6 +293,7 @@ impl PassiveHealthTracker {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::config::CircuitBreakerConfig;
     use crate::upstream::UpstreamName;
