@@ -333,7 +333,12 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
 
     // Validate upstream targets and timeouts
     for (name, upstream) in &config.upstreams {
-        if upstream.discovery == "static" && upstream.targets.is_empty() {
+        let is_composite = upstream
+            .upstream_type
+            .as_deref()
+            .is_some_and(|t| t == "weighted" || t == "failover");
+
+        if !is_composite && upstream.discovery == "static" && upstream.targets.is_empty() {
             errors.push(format!(
                 "upstream '{name}' has static discovery but no targets"
             ));
@@ -1540,8 +1545,7 @@ services = [
   [[services.web.routes]]
   upstream = "canary"
 "#;
-        let config = load_from_str(toml).unwrap();
-        let err = validate(&config).unwrap_err();
+        let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("unknown upstream 'nonexistent'"));
     }
 
@@ -1565,8 +1569,7 @@ services = [{ upstream = "a", weight = 1 }]
   [[services.web.routes]]
   upstream = "a"
 "#;
-        let config = load_from_str(toml).unwrap();
-        let err = validate(&config).unwrap_err();
+        let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("cycle detected"));
     }
 
@@ -1590,8 +1593,7 @@ services = [{ upstream = "v1", weight = 1 }]
   [[services.web.routes]]
   upstream = "canary"
 "#;
-        let config = load_from_str(toml).unwrap();
-        let err = validate(&config).unwrap_err();
+        let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("should not have direct targets"));
     }
 }
