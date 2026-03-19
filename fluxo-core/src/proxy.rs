@@ -352,13 +352,13 @@ fn is_trusted_proxy(
     peer_addr: &pingora_core::protocols::l4::socket::SocketAddr,
     trusted: &[ipnet::IpNet],
 ) -> bool {
-    match peer_addr {
-        pingora_core::protocols::l4::socket::SocketAddr::Inet(addr) => {
-            trusted.iter().any(|net| net.contains(&addr.ip()))
-        }
-        #[cfg(unix)]
-        pingora_core::protocols::l4::socket::SocketAddr::Unix(_) => false,
-    }
+    // Extract the IP from the socket address. On Unix, peers may connect via
+    // Unix domain sockets which have no IP — those are never trusted.
+    let ip = match peer_addr.as_inet() {
+        Some(addr) => addr.ip(),
+        None => return false,
+    };
+    trusted.iter().any(|net| net.contains(&ip))
 }
 
 /// Check if a status code should be included in access logs.
@@ -1251,6 +1251,8 @@ impl ProxyHttp for FluxoProxy {
     {
         ctx.error_message = Some(format!("{e}"));
 
+        #[allow(clippy::match_same_arms)]
+        // Explicit arms for documentation: connect errors → 502, timeouts → 504
         let code = match e.etype() {
             pingora_core::ErrorType::HTTPStatus(code) => *code,
             pingora_core::ErrorType::ConnectTimedout
