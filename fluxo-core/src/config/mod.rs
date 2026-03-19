@@ -1484,4 +1484,106 @@ targets = ["127.0.0.1:3000"]
         // Should be a ValidationMultiple
         assert!(matches!(err, ConfigError::ValidationMultiple(_)));
     }
+
+    #[test]
+    fn composite_upstream_weighted_valid() {
+        let toml = r#"
+[global]
+admin = "127.0.0.1:2019"
+
+[upstreams.v1]
+targets = ["127.0.0.1:3001"]
+
+[upstreams.v2]
+targets = ["127.0.0.1:3002"]
+
+[upstreams.canary]
+upstream_type = "weighted"
+services = [
+    { upstream = "v1", weight = 90 },
+    { upstream = "v2", weight = 10 },
+]
+
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "canary"
+"#;
+        let config = load_from_str(toml).unwrap();
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn composite_upstream_rejects_unknown_child() {
+        let toml = r#"
+[global]
+admin = "127.0.0.1:2019"
+
+[upstreams.canary]
+upstream_type = "weighted"
+services = [
+    { upstream = "nonexistent", weight = 1 },
+]
+
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "canary"
+"#;
+        let config = load_from_str(toml).unwrap();
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("unknown upstream 'nonexistent'"));
+    }
+
+    #[test]
+    fn composite_upstream_rejects_cycle() {
+        let toml = r#"
+[global]
+admin = "127.0.0.1:2019"
+
+[upstreams.a]
+upstream_type = "weighted"
+services = [{ upstream = "b", weight = 1 }]
+
+[upstreams.b]
+upstream_type = "failover"
+services = [{ upstream = "a", weight = 1 }]
+
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "a"
+"#;
+        let config = load_from_str(toml).unwrap();
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("cycle detected"));
+    }
+
+    #[test]
+    fn composite_upstream_rejects_targets_with_weighted() {
+        let toml = r#"
+[global]
+admin = "127.0.0.1:2019"
+
+[upstreams.v1]
+targets = ["127.0.0.1:3001"]
+
+[upstreams.canary]
+upstream_type = "weighted"
+targets = ["127.0.0.1:3003"]
+services = [{ upstream = "v1", weight = 1 }]
+
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "canary"
+"#;
+        let config = load_from_str(toml).unwrap();
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("should not have direct targets"));
+    }
 }
