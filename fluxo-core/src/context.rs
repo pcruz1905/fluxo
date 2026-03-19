@@ -1,5 +1,6 @@
 //! Per-request context passed through all Pingora `ProxyHttp` callbacks.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -175,6 +176,19 @@ pub struct RequestContext {
     pub compression_encoding: Option<CompressionEncoding>,
     /// Streaming compressor state — compresses chunks incrementally (no full-body buffering).
     pub compressor: Option<StreamingCompressor>,
+
+    // --- Response buffering state (Nginx proxy_buffering inspired) ---
+    /// Accumulation buffer for upstream response chunks.
+    pub response_buffer: Vec<u8>,
+    /// Max buffer size in bytes (0 = buffering disabled).
+    pub response_buffer_limit: usize,
+    /// Whether buffering is currently active (accumulating chunks).
+    pub response_buffering_active: bool,
+
+    // --- Extensions map (Nginx $variable inspired) ---
+    /// Arbitrary key-value data for inter-plugin communication.
+    /// Plugins can store values in the request phase and read them in the response phase.
+    pub extensions: HashMap<String, serde_json::Value>,
 }
 
 /// A snapshot of the matched route, cheaply cloneable.
@@ -245,6 +259,10 @@ impl RequestContext {
             accept_encoding: None,
             compression_encoding: None,
             compressor: None,
+            response_buffer: Vec::new(),
+            response_buffer_limit: 0,
+            response_buffering_active: false,
+            extensions: HashMap::new(),
         }
     }
 
@@ -290,6 +308,20 @@ impl RequestContext {
         self.accept_encoding = None;
         self.compression_encoding = None;
         self.compressor = None;
+        self.response_buffer.clear();
+        self.response_buffer_limit = 0;
+        self.response_buffering_active = false;
+        self.extensions.clear();
+    }
+
+    /// Store an arbitrary value in the extensions map for inter-plugin communication.
+    pub fn set_extension(&mut self, key: impl Into<String>, val: serde_json::Value) {
+        self.extensions.insert(key.into(), val);
+    }
+
+    /// Retrieve a value from the extensions map.
+    pub fn get_extension(&self, key: &str) -> Option<&serde_json::Value> {
+        self.extensions.get(key)
     }
 }
 
@@ -366,6 +398,10 @@ mod tests {
         assert!(ctx.accept_encoding.is_none());
         assert!(ctx.compression_encoding.is_none());
         assert!(ctx.compressor.is_none());
+        assert!(ctx.response_buffer.is_empty());
+        assert_eq!(ctx.response_buffer_limit, 0);
+        assert!(!ctx.response_buffering_active);
+        assert!(ctx.extensions.is_empty());
     }
 
     #[test]
@@ -437,5 +473,25 @@ mod tests {
         pool.release(ctx1);
         pool.release(ctx2); // should be dropped (pool at capacity)
         assert_eq!(pool.available(), 1);
+    }
+
+    #[test]
+    fn extensions_set_and_get() {
+        let mut ctx = RequestContext::new();
+        ctx.set_extension("request_tag", serde_json::json!("canary-v2"));
+        assert_eq!(
+            ctx.get_extension("request_tag"),
+            Some(&serde_json::json!("canary-v2"))
+        );
+        assert!(ctx.get_extension("nonexistent").is_none());
+    }
+
+    #[test]
+    fn extensions_cleared_on_reset() {
+        let mut ctx = RequestContext::new();
+        ctx.set_extension("key", serde_json::json!(42));
+        assert!(!ctx.extensions.is_empty());
+        ctx.reset();
+        assert!(ctx.extensions.is_empty());
     }
 }

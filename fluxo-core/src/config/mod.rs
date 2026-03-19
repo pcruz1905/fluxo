@@ -24,9 +24,13 @@ pub enum ConfigError {
     #[error("failed to parse TOML: {0}")]
     Parse(#[from] toml::de::Error),
 
-    /// Semantic validation failed.
+    /// Semantic validation failed (single error).
     #[error("validation error: {0}")]
     Validation(String),
+
+    /// Multiple validation errors found.
+    #[error("validation errors:\n{}", .0.iter().map(|e| format!("  - {e}")).collect::<Vec<_>>().join("\n"))]
+    ValidationMultiple(Vec<String>),
 
     /// A route references an upstream that doesn't exist.
     #[error("unknown upstream '{0}' referenced in route")]
@@ -92,6 +96,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             max_h2_streams: None,
             tcp_recv_buf: None,
             h2_ping_interval: None,
+            response_buffer_size: None,
         },
     );
 
@@ -129,44 +134,59 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
 }
 
 /// Validate cross-references and semantic constraints in the config.
+///
+/// Collects ALL validation errors instead of stopping at the first one,
+/// so users can fix everything in a single pass (Traefik-inspired).
 pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
+    let errors = collect_validation_errors(config);
+    if errors.is_empty() {
+        Ok(())
+    } else if errors.len() == 1 {
+        Err(ConfigError::Validation(errors.into_iter().next().unwrap_or_default()))
+    } else {
+        Err(ConfigError::ValidationMultiple(errors))
+    }
+}
+
+/// Collect all validation errors from the config without short-circuiting.
+fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+
     // Validate admin address
-    config
-        .global
-        .admin
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| {
-            ConfigError::Validation(format!(
-                "invalid admin address '{}': {}",
-                config.global.admin, e
-            ))
-        })?;
+    if config.global.admin.parse::<std::net::SocketAddr>().is_err() {
+        errors.push(format!(
+            "invalid admin address '{}'",
+            config.global.admin
+        ));
+    }
 
     // Validate log_level
     let valid_levels = ["trace", "debug", "info", "warn", "error"];
     if !valid_levels.contains(&config.global.log_level.as_str()) {
-        return Err(ConfigError::Validation(format!(
+        errors.push(format!(
             "invalid log_level '{}': must be one of {}",
             config.global.log_level,
             valid_levels.join(", ")
-        )));
+        ));
     }
 
     // Validate downstream timeouts
     if let Some(ref t) = config.global.client_body_timeout {
-        parse_duration(t)
-            .map_err(|_| ConfigError::Validation(format!("invalid client_body_timeout: '{t}'")))?;
+        if parse_duration(t).is_err() {
+            errors.push(format!("invalid client_body_timeout: '{t}'"));
+        }
     }
     if let Some(ref t) = config.global.client_write_timeout {
-        parse_duration(t)
-            .map_err(|_| ConfigError::Validation(format!("invalid client_write_timeout: '{t}'")))?;
+        if parse_duration(t).is_err() {
+            errors.push(format!("invalid client_write_timeout: '{t}'"));
+        }
     }
 
     // Validate trusted_proxies are valid CIDRs
     for cidr in &config.global.trusted_proxies {
-        cidr.parse::<ipnet::IpNet>().map_err(|e| {
-            ConfigError::Validation(format!("invalid trusted_proxy CIDR '{}': {}", cidr, e))
-        })?;
+        if cidr.parse::<ipnet::IpNet>().is_err() {
+            errors.push(format!("invalid trusted_proxy CIDR '{cidr}'"));
+        }
     }
 
     // Validate access_log_exclude patterns
@@ -175,70 +195,66 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         if valid_class_patterns.contains(&pattern.as_str()) {
             continue;
         }
+        let mut valid = false;
         // Try numeric range "200-299"
         if let Some((from, to)) = pattern.split_once('-') {
-            match (from.parse::<u16>(), to.parse::<u16>()) {
-                (Ok(f), Ok(t))
-                    if f <= t && (100..=599).contains(&f) && (100..=599).contains(&t) =>
-                {
-                    continue;
+            if let (Ok(f), Ok(t)) = (from.parse::<u16>(), to.parse::<u16>()) {
+                if f <= t && (100..=599).contains(&f) && (100..=599).contains(&t) {
+                    valid = true;
                 }
-                _ => {}
             }
         }
         // Try exact status code
-        if let Ok(code) = pattern.parse::<u16>() {
-            if (100..=599).contains(&code) {
-                continue;
+        if !valid {
+            if let Ok(code) = pattern.parse::<u16>() {
+                if (100..=599).contains(&code) {
+                    valid = true;
+                }
             }
         }
-        return Err(ConfigError::Validation(format!(
-            "invalid access_log_exclude pattern '{}': must be a status code (200), class (2xx), or range (200-299)",
-            pattern
-        )));
+        if !valid {
+            errors.push(format!(
+                "invalid access_log_exclude pattern '{pattern}': must be a status code (200), class (2xx), or range (200-299)"
+            ));
+        }
     }
 
-    // Every route's upstream must reference a key in config.upstreams
+    // Validate services
     for (service_name, service) in &config.services {
+        // Every route's upstream must reference a key in config.upstreams
         for (i, route) in service.routes.iter().enumerate() {
             if !config.upstreams.contains_key(&route.upstream) {
-                let fallback = format!("route[{}]", i);
+                let fallback = format!("route[{i}]");
                 let route_desc = route.name.as_deref().unwrap_or(&fallback);
-                return Err(ConfigError::UnknownUpstream(format!(
-                    "'{}' in service '{}' route '{}'",
-                    route.upstream, service_name, route_desc
-                )));
+                errors.push(format!(
+                    "unknown upstream '{}' in service '{service_name}' route '{route_desc}'",
+                    route.upstream
+                ));
             }
 
             // Validate max_request_body size string if set
             if let Some(size_str) = &route.max_request_body {
-                parse_size(size_str).map_err(|_| {
-                    ConfigError::Validation(format!(
-                        "service '{}' route {}: invalid max_request_body '{}': \
-                         expected format like '10mb', '1gb', '512kb'",
-                        service_name, i, size_str
-                    ))
-                })?;
+                if parse_size(size_str).is_err() {
+                    errors.push(format!(
+                        "service '{service_name}' route {i}: invalid max_request_body '{size_str}': \
+                         expected format like '10mb', '1gb', '512kb'"
+                    ));
+                }
             }
         }
 
         // Validate listener addresses
         for listener in &service.listeners {
             if listener.address.is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "empty listener address in service '{}'",
-                    service_name
-                )));
+                errors.push(format!(
+                    "empty listener address in service '{service_name}'"
+                ));
+            } else if listener.address.parse::<std::net::SocketAddr>().is_err() {
+                errors.push(format!(
+                    "invalid listener address '{}' in service '{service_name}'",
+                    listener.address
+                ));
             }
-            listener
-                .address
-                .parse::<std::net::SocketAddr>()
-                .map_err(|e| {
-                    ConfigError::Validation(format!(
-                        "invalid listener address '{}' in service '{}': {}",
-                        listener.address, service_name, e
-                    ))
-                })?;
         }
 
         // Validate plugin configuration per route
@@ -246,51 +262,43 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             if let Err(e) =
                 crate::plugins::config::compile_plugins(&route.plugins, &config.global.plugins)
             {
-                return Err(ConfigError::Validation(format!(
-                    "service '{}' route {}: {}",
-                    service_name, i, e
-                )));
+                errors.push(format!(
+                    "service '{service_name}' route {i}: {e}"
+                ));
             }
         }
 
         // Must have at least one listener
         if service.listeners.is_empty() {
-            return Err(ConfigError::Validation(format!(
-                "service '{}' has no listeners",
-                service_name
-            )));
+            errors.push(format!(
+                "service '{service_name}' has no listeners"
+            ));
         }
-    }
 
-    // Validate TLS configuration
-    for (service_name, service) in &config.services {
+        // Validate TLS configuration
         if let Some(tls) = &service.tls {
             if tls.acme {
                 if tls.acme_email.is_none() {
-                    return Err(ConfigError::Validation(format!(
-                        "service '{}': acme = true requires acme_email to be set",
-                        service_name
-                    )));
+                    errors.push(format!(
+                        "service '{service_name}': acme = true requires acme_email to be set"
+                    ));
                 }
                 if tls.cert_path.is_some() || tls.key_path.is_some() {
-                    return Err(ConfigError::Validation(format!(
-                        "service '{}': cannot use both acme and cert_path/key_path",
-                        service_name
-                    )));
+                    errors.push(format!(
+                        "service '{service_name}': cannot use both acme and cert_path/key_path"
+                    ));
                 }
             }
             match (&tls.cert_path, &tls.key_path) {
                 (Some(_), None) => {
-                    return Err(ConfigError::Validation(format!(
-                        "service '{}': cert_path is set but key_path is missing",
-                        service_name
-                    )));
+                    errors.push(format!(
+                        "service '{service_name}': cert_path is set but key_path is missing"
+                    ));
                 }
                 (None, Some(_)) => {
-                    return Err(ConfigError::Validation(format!(
-                        "service '{}': key_path is set but cert_path is missing",
-                        service_name
-                    )));
+                    errors.push(format!(
+                        "service '{service_name}': key_path is set but cert_path is missing"
+                    ));
                 }
                 _ => {}
             }
@@ -300,51 +308,43 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
     // Validate upstream targets and timeouts
     for (name, upstream) in &config.upstreams {
         if upstream.discovery == "static" && upstream.targets.is_empty() {
-            return Err(ConfigError::Validation(format!(
-                "upstream '{}' has static discovery but no targets",
-                name
-            )));
+            errors.push(format!(
+                "upstream '{name}' has static discovery but no targets"
+            ));
         }
 
         // Validate each target address
         for target in &upstream.targets {
-            target
-                .address()
-                .parse::<std::net::SocketAddr>()
-                .map_err(|e| {
-                    ConfigError::Validation(format!(
-                        "upstream '{}': invalid target address '{}': {}",
-                        name,
-                        target.address(),
-                        e
-                    ))
-                })?;
-            if target.weight() == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': target '{}' has weight 0 (must be >= 1)",
-                    name,
+            if target.address().parse::<std::net::SocketAddr>().is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid target address '{}'",
                     target.address()
-                )));
+                ));
+            }
+            if target.weight() == 0 {
+                errors.push(format!(
+                    "upstream '{name}': target '{}' has weight 0 (must be >= 1)",
+                    target.address()
+                ));
             }
         }
 
         // Only "static" discovery supported currently
         if upstream.discovery != "static" {
-            return Err(ConfigError::Validation(format!(
-                "upstream '{}': discovery '{}' is not yet supported. Only 'static' is available.",
-                name, upstream.discovery
-            )));
+            errors.push(format!(
+                "upstream '{name}': discovery '{}' is not yet supported. Only 'static' is available.",
+                upstream.discovery
+            ));
         }
 
         // Validate load balancing strategy
         let valid_strategies = ["round_robin", "random", "fnv_hash", "consistent_hash"];
         if !valid_strategies.contains(&upstream.load_balancing.as_str()) {
-            return Err(ConfigError::Validation(format!(
-                "upstream '{}': unknown load_balancing '{}'. Valid: {}",
-                name,
+            errors.push(format!(
+                "upstream '{name}': unknown load_balancing '{}'. Valid: {}",
                 upstream.load_balancing,
                 valid_strategies.join(", ")
-            )));
+            ));
         }
 
         // Validate timeout strings
@@ -353,183 +353,181 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             ("read_timeout", &upstream.read_timeout),
             ("write_timeout", &upstream.write_timeout),
         ] {
-            parse_duration(value).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid {} '{}': expected format like '5s', '500ms', '2m'",
-                    name, field, value
-                ))
-            })?;
+            if parse_duration(value).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid {field} '{value}': expected format like '5s', '500ms', '2m'"
+                ));
+            }
         }
 
         // Validate retry config
         if let Some(retry) = &upstream.retry {
             if retry.attempts == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': retry.attempts must be >= 1",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': retry.attempts must be >= 1"
+                ));
             }
             let valid_conditions = ["error", "timeout", "5xx"];
             for condition in &retry.on {
                 if !valid_conditions.contains(&condition.as_str()) {
-                    return Err(ConfigError::Validation(format!(
-                        "upstream '{}': invalid retry condition '{}'. Valid: {}",
-                        name,
-                        condition,
+                    errors.push(format!(
+                        "upstream '{name}': invalid retry condition '{condition}'. Valid: {}",
                         valid_conditions.join(", ")
-                    )));
+                    ));
                 }
             }
         }
 
         // Validate passive health check config
         if let Some(ph) = &upstream.passive_health {
-            parse_duration(&ph.fail_timeout).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid passive_health.fail_timeout '{}'",
-                    name, ph.fail_timeout
-                ))
-            })?;
+            if parse_duration(&ph.fail_timeout).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid passive_health.fail_timeout '{}'",
+                    ph.fail_timeout
+                ));
+            }
             if ph.max_fails == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': passive_health.max_fails must be >= 1",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': passive_health.max_fails must be >= 1"
+                ));
             }
         }
 
         // Validate keepalive timeout
-        parse_duration(&upstream.keepalive_timeout).map_err(|_| {
-            ConfigError::Validation(format!(
-                "upstream '{}': invalid keepalive_timeout '{}': expected format like '60s', '30s'",
-                name, upstream.keepalive_timeout
-            ))
-        })?;
+        if parse_duration(&upstream.keepalive_timeout).is_err() {
+            errors.push(format!(
+                "upstream '{name}': invalid keepalive_timeout '{}': expected format like '60s', '30s'",
+                upstream.keepalive_timeout
+            ));
+        }
 
         // Validate total_connection_timeout
         if let Some(ref tct) = upstream.total_connection_timeout {
-            parse_duration(tct).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid total_connection_timeout '{}': expected format like '10s', '500ms'",
-                    name, tct
-                ))
-            })?;
+            if parse_duration(tct).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid total_connection_timeout '{tct}': expected format like '10s', '500ms'"
+                ));
+            }
         }
 
         // Validate tcp_keepalive
         if let Some(ref ka) = upstream.tcp_keepalive {
-            parse_duration(&ka.idle).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid tcp_keepalive.idle '{}'",
-                    name, ka.idle
-                ))
-            })?;
-            parse_duration(&ka.interval).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid tcp_keepalive.interval '{}'",
-                    name, ka.interval
-                ))
-            })?;
+            if parse_duration(&ka.idle).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid tcp_keepalive.idle '{}'",
+                    ka.idle
+                ));
+            }
+            if parse_duration(&ka.interval).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid tcp_keepalive.interval '{}'",
+                    ka.interval
+                ));
+            }
         }
 
         // Validate h2_ping_interval
         if let Some(ref h2pi) = upstream.h2_ping_interval {
-            parse_duration(h2pi).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid h2_ping_interval '{}'",
-                    name, h2pi
-                ))
-            })?;
+            if parse_duration(h2pi).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid h2_ping_interval '{h2pi}'"
+                ));
+            }
+        }
+
+        // Validate response_buffer_size
+        if let Some(ref rbs) = upstream.response_buffer_size {
+            if parse_size(rbs).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid response_buffer_size '{rbs}': expected format like '64kb', '256kb', '1mb'"
+                ));
+            }
         }
 
         // Validate circuit breaker config
         if let Some(cb) = &upstream.circuit_breaker {
             if cb.failure_threshold == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': circuit_breaker.failure_threshold must be >= 1",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': circuit_breaker.failure_threshold must be >= 1"
+                ));
             }
             if cb.success_threshold == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': circuit_breaker.success_threshold must be >= 1",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': circuit_breaker.success_threshold must be >= 1"
+                ));
             }
-            parse_duration(&cb.open_duration).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid circuit_breaker.open_duration '{}'",
-                    name, cb.open_duration
-                ))
-            })?;
+            if parse_duration(&cb.open_duration).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid circuit_breaker.open_duration '{}'",
+                    cb.open_duration
+                ));
+            }
             if cb.error_ratio_threshold < 0.0 || cb.error_ratio_threshold > 1.0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': circuit_breaker.error_ratio_threshold must be between 0.0 and 1.0",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': circuit_breaker.error_ratio_threshold must be between 0.0 and 1.0"
+                ));
             }
             if cb.min_requests == 0 {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': circuit_breaker.min_requests must be >= 1",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': circuit_breaker.min_requests must be >= 1"
+                ));
             }
             if let Some(ref w) = cb.window {
-                parse_duration(w).map_err(|_| {
-                    ConfigError::Validation(format!(
-                        "upstream '{}': invalid circuit_breaker.window '{}'",
-                        name, w
-                    ))
-                })?;
+                if parse_duration(w).is_err() {
+                    errors.push(format!(
+                        "upstream '{name}': invalid circuit_breaker.window '{w}'"
+                    ));
+                }
             }
         }
 
         // Validate sticky session config
         if let Some(sticky) = &upstream.sticky {
             if sticky.cookie_name.is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': sticky.cookie_name must not be empty",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': sticky.cookie_name must not be empty"
+                ));
             }
         }
 
         // Validate health check config
         if let Some(hc) = &upstream.health_check {
             if hc.path.is_empty() {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': health_check.path must not be empty",
-                    name
-                )));
+                errors.push(format!(
+                    "upstream '{name}': health_check.path must not be empty"
+                ));
             }
-            if !hc.path.starts_with('/') {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': health_check.path must start with '/'",
-                    name
-                )));
+            if !hc.path.is_empty() && !hc.path.starts_with('/') {
+                errors.push(format!(
+                    "upstream '{name}': health_check.path must start with '/'"
+                ));
             }
-            let interval = parse_duration(&hc.interval).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid health_check.interval '{}'",
-                    name, hc.interval
-                ))
-            })?;
-            let timeout = parse_duration(&hc.timeout).map_err(|_| {
-                ConfigError::Validation(format!(
-                    "upstream '{}': invalid health_check.timeout '{}'",
-                    name, hc.timeout
-                ))
-            })?;
-            if timeout >= interval {
-                return Err(ConfigError::Validation(format!(
-                    "upstream '{}': health_check.timeout ({}) must be less than interval ({})",
-                    name, hc.timeout, hc.interval
-                )));
+            let interval_ok = parse_duration(&hc.interval);
+            let timeout_ok = parse_duration(&hc.timeout);
+            if interval_ok.is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid health_check.interval '{}'",
+                    hc.interval
+                ));
+            }
+            if timeout_ok.is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid health_check.timeout '{}'",
+                    hc.timeout
+                ));
+            }
+            if let (Ok(interval), Ok(timeout)) = (interval_ok, timeout_ok) {
+                if timeout >= interval {
+                    errors.push(format!(
+                        "upstream '{name}': health_check.timeout ({}) must be less than interval ({})",
+                        hc.timeout, hc.interval
+                    ));
+                }
             }
         }
     }
 
-    Ok(())
+    errors
 }
 
 /// Generate a default example configuration as a TOML string.
@@ -1342,5 +1340,32 @@ targets = ["127.0.0.1:3000"]
 "#;
         let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("max_request_body"));
+    }
+
+    #[test]
+    fn reject_multiple_errors_at_once() {
+        let toml = r#"
+[global]
+admin = "not-an-address"
+log_level = "verbose"
+trusted_proxies = ["bad-cidr"]
+
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        let msg = err.to_string();
+        // All three errors should be reported, not just the first one
+        assert!(msg.contains("invalid admin address"), "missing admin error: {msg}");
+        assert!(msg.contains("invalid log_level"), "missing log_level error: {msg}");
+        assert!(msg.contains("invalid trusted_proxy CIDR"), "missing CIDR error: {msg}");
+        // Should be a ValidationMultiple
+        assert!(matches!(err, ConfigError::ValidationMultiple(_)));
     }
 }

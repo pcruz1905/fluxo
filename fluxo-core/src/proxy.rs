@@ -855,6 +855,16 @@ impl ProxyHttp for FluxoProxy {
                 // (Pingora handles the actual connection lifecycle, but we set the header)
             }
 
+            // --- Response buffering activation (Nginx proxy_buffering) ---
+            if let Some(upstream_config) = state.config.upstreams.get(upstream_name) {
+                if let Some(ref buf_size) = upstream_config.response_buffer_size {
+                    if let Ok(limit) = crate::config::parse_size(buf_size) {
+                        ctx.response_buffer_limit = limit as usize;
+                        ctx.response_buffering_active = true;
+                    }
+                }
+            }
+
             // --- Sticky session cookie ---
             if ctx.sticky_cookie_new {
                 if let Some(ref cookie_val) = ctx.sticky_cookie_value {
@@ -918,6 +928,38 @@ impl ProxyHttp for FluxoProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<std::time::Duration>, Box<Error>> {
+        // --- Response buffering (Nginx proxy_buffering) ---
+        // Buffer upstream chunks to free backend connections early for slow clients.
+        if ctx.response_buffering_active {
+            if let Some(chunk) = body.take() {
+                if ctx.response_buffer.len() + chunk.len() <= ctx.response_buffer_limit {
+                    ctx.response_buffer.extend_from_slice(&chunk);
+                    if end_of_stream {
+                        // Flush entire buffer as one chunk
+                        let buffered = std::mem::take(&mut ctx.response_buffer);
+                        *body = Some(bytes::Bytes::from(buffered));
+                        ctx.response_buffering_active = false;
+                    }
+                    // else: don't emit yet, body stays None — backend can close
+                } else {
+                    // Exceeded limit — flush buffer + this chunk, switch to streaming
+                    let mut combined = std::mem::take(&mut ctx.response_buffer);
+                    combined.extend_from_slice(&chunk);
+                    *body = Some(bytes::Bytes::from(combined));
+                    ctx.response_buffering_active = false;
+                }
+            } else if end_of_stream && !ctx.response_buffer.is_empty() {
+                // End-of-stream with no final chunk — flush what we have
+                let buffered = std::mem::take(&mut ctx.response_buffer);
+                *body = Some(bytes::Bytes::from(buffered));
+                ctx.response_buffering_active = false;
+            }
+            // If still buffering (not end_of_stream, under limit), skip compression pass
+            if ctx.response_buffering_active {
+                return Ok(None);
+            }
+        }
+
         if let Some(b) = body.take() {
             ctx.bytes_sent += b.len() as u64;
 

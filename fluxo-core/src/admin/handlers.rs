@@ -104,7 +104,12 @@ pub fn handle_post_config(proxy: &Arc<FluxoProxy>, body: &[u8]) -> (u16, String,
     };
 
     if let Err(e) = crate::config::validate(&config) {
-        return json_response(400, &serde_json::json!({"error": e.to_string()}));
+        return match &e {
+            crate::config::ConfigError::ValidationMultiple(errors) => {
+                json_response(400, &serde_json::json!({"errors": errors}))
+            }
+            _ => json_response(400, &serde_json::json!({"error": e.to_string()})),
+        };
     }
 
     match FluxoState::try_from_config(config) {

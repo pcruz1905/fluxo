@@ -369,6 +369,12 @@ pub struct UpstreamConfig {
     /// HTTP/2 ping interval for keepalive on idle connections.
     /// Pingora: `h2_ping_interval`. Example: "30s".
     pub h2_ping_interval: Option<String>,
+
+    /// Response buffer size — buffer upstream responses in memory to free backend connections early.
+    /// Nginx equivalent: `proxy_buffer_size` / `proxy_buffering`. Example: "64kb", "256kb".
+    /// When set, response body chunks are accumulated up to this size before being flushed
+    /// to the client. If the response exceeds this size, it switches to streaming mode.
+    pub response_buffer_size: Option<String>,
 }
 
 /// TCP keepalive settings — maps to OS socket options.
