@@ -4,7 +4,7 @@ use crate::context::RequestContext;
 ///
 /// This is the canonical log line — one per request, containing all context
 /// accumulated during the request lifecycle. Designed for structured log
-/// aggregators (Loki, ClickHouse, CloudWatch Insights).
+/// aggregators (Loki, `ClickHouse`, `CloudWatch` Insights).
 pub fn emit_access_log(ctx: &RequestContext, status: u16) {
     let duration_ms = ctx.elapsed().as_millis() as u64;
     let request_id = ctx.request_id.to_string();

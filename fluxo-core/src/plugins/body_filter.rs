@@ -96,9 +96,8 @@ impl BodyFilter for CompressionBodyFilter {
         use crate::context::StreamingCompressor;
 
         // Only compress if the compression plugin chose an encoding
-        let encoding = match ctx.compression_encoding {
-            Some(enc) => enc,
-            None => return,
+        let Some(encoding) = ctx.compression_encoding else {
+            return;
         };
 
         if let Some(b) = body.take() {

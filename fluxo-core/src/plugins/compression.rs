@@ -56,7 +56,7 @@ pub struct CompressionPlugin {
 }
 
 impl CompressionPlugin {
-    pub fn new(config: CompressionConfig) -> Self {
+    pub fn new(config: &CompressionConfig) -> Self {
         let algorithms = config
             .algorithms
             .iter()
@@ -83,7 +83,7 @@ impl CompressionPlugin {
             .headers
             .get("accept-encoding")
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_lowercase());
+            .map(str::to_lowercase);
         PluginAction::Continue
     }
 
@@ -167,7 +167,7 @@ mod tests {
     use super::*;
 
     fn make_plugin(algorithms: &[&str]) -> CompressionPlugin {
-        CompressionPlugin::new(CompressionConfig {
+        CompressionPlugin::new(&CompressionConfig {
             algorithms: algorithms.iter().map(|s| s.to_string()).collect(),
             min_size: 0, // no minimum for tests
         })

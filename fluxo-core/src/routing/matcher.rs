@@ -38,10 +38,7 @@ impl RouteMatcher {
     /// Header matchers always return true here — use `matches_with_headers` for full matching.
     pub fn matches(&self, host: Option<&str>, path: &str, method: &str) -> bool {
         match self {
-            Self::Host(matchers) => match host {
-                Some(h) => matchers.iter().any(|m| m.matches(h)),
-                None => false,
-            },
+            Self::Host(matchers) => host.is_some_and(|h| matchers.iter().any(|m| m.matches(h))),
             Self::Path(matchers) => matchers.iter().any(|m| m.matches(path)),
             Self::Method(m) => m.matches(method),
             Self::Header(_) => true, // header matching requires headers; see matches_with_headers
@@ -57,10 +54,7 @@ impl RouteMatcher {
         headers: &dyn RequestHeaders,
     ) -> bool {
         match self {
-            Self::Host(matchers) => match host {
-                Some(h) => matchers.iter().any(|m| m.matches(h)),
-                None => false,
-            },
+            Self::Host(matchers) => host.is_some_and(|h| matchers.iter().any(|m| m.matches(h))),
             Self::Path(matchers) => matchers.iter().any(|m| m.matches(path)),
             Self::Method(m) => m.matches(method),
             Self::Header(m) => m.matches(headers),
@@ -85,13 +79,12 @@ pub enum HostMatcher {
 impl HostMatcher {
     /// Compile a host pattern from config.
     pub fn compile(pattern: &str) -> Self {
-        if let Some(suffix) = pattern.strip_prefix('*') {
-            HostMatcher::Wildcard {
+        pattern.strip_prefix('*').map_or_else(
+            || Self::Exact(pattern.to_lowercase()),
+            |suffix| Self::Wildcard {
                 suffix: suffix.to_lowercase(),
-            }
-        } else {
-            HostMatcher::Exact(pattern.to_lowercase())
-        }
+            },
+        )
     }
 
     /// Test whether this matcher matches the given host string.
@@ -99,8 +92,8 @@ impl HostMatcher {
         // Strip port if present (e.g., "example.com:443" → "example.com")
         let host_name = host.split(':').next().unwrap_or(host);
         match self {
-            HostMatcher::Exact(expected) => host_name.eq_ignore_ascii_case(expected),
-            HostMatcher::Wildcard { suffix } => {
+            Self::Exact(expected) => host_name.eq_ignore_ascii_case(expected),
+            Self::Wildcard { suffix } => {
                 // suffix is stored lowercase; compare case-insensitively
                 host_name.len() >= suffix.len()
                     && host_name[host_name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
@@ -138,24 +131,24 @@ impl PathMatcher {
                 pattern: pattern.to_string(),
                 source: e,
             })?;
-            Ok(PathMatcher::Glob(glob_pat))
+            Ok(Self::Glob(glob_pat))
         } else if let Some(prefix) = pattern.strip_suffix('*') {
             // "/v1/*" → prefix "/v1/"
-            Ok(PathMatcher::Prefix(prefix.to_string()))
+            Ok(Self::Prefix(prefix.to_string()))
         } else if pattern.ends_with('/') && pattern != "/" {
             // "/v1/" → prefix "/v1/"
-            Ok(PathMatcher::Prefix(pattern.to_string()))
+            Ok(Self::Prefix(pattern.to_string()))
         } else {
-            Ok(PathMatcher::Exact(pattern.to_string()))
+            Ok(Self::Exact(pattern.to_string()))
         }
     }
 
     /// Test whether this matcher matches the given path.
     pub fn matches(&self, path: &str) -> bool {
         match self {
-            PathMatcher::Exact(expected) => path == expected,
-            PathMatcher::Prefix(prefix) => path.starts_with(prefix),
-            PathMatcher::Glob(pattern) => pattern.matches(path),
+            Self::Exact(expected) => path == expected,
+            Self::Prefix(prefix) => path.starts_with(prefix),
+            Self::Glob(pattern) => pattern.matches(path),
         }
     }
 }
@@ -230,13 +223,12 @@ impl HeaderMatcher {
 
     /// Test whether this matcher matches the given request headers.
     pub fn matches(&self, headers: &dyn RequestHeaders) -> bool {
-        match headers.get_header(&self.name) {
-            Some(val) => match &self.value_matcher {
+        headers
+            .get_header(&self.name)
+            .is_some_and(|val| match &self.value_matcher {
                 HeaderValueMatcher::Exact(expected) => val == expected,
                 HeaderValueMatcher::Regex(re) => re.is_match(val),
-            },
-            None => false,
-        }
+            })
     }
 }
 

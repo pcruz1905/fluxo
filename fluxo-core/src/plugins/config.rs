@@ -1,4 +1,4 @@
-//! Plugin configuration parsing — compiles TOML plugin config into BuiltinPlugin instances.
+//! Plugin configuration parsing — compiles TOML plugin config into `BuiltinPlugin` instances.
 
 use std::collections::HashMap;
 
@@ -19,7 +19,8 @@ pub enum PluginConfigError {
 /// Compile plugin instances from route-level and global-level config.
 ///
 /// Route plugins override global plugins of the same name.
-/// Returns plugins in execution-order (ip_restrict first, then request-phase, then response-phase).
+/// Returns plugins in execution-order (`ip_restrict` first, then request-phase, then response-phase).
+#[allow(clippy::implicit_hasher)]
 pub fn compile_plugins(
     route_plugins: &HashMap<String, serde_json::Value>,
     global_plugins: &HashMap<String, serde_json::Value>,
@@ -65,6 +66,7 @@ pub fn compile_plugins(
 }
 
 /// Build a single plugin instance from its name and config value.
+#[allow(clippy::too_many_lines)]
 fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, PluginConfigError> {
     match name {
         "headers" => {
@@ -84,7 +86,7 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     reason: e.to_string(),
                 })?;
             Ok(BuiltinPlugin::RateLimit(
-                super::rate_limit::RateLimitPlugin::new(cfg),
+                super::rate_limit::RateLimitPlugin::new(&cfg),
             ))
         }
         "cors" => {
@@ -107,7 +109,7 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     name: name.to_string(),
                     reason: e.to_string(),
                 })?;
-            let plugin = super::ip_restrict::IpRestrictPlugin::try_new(cfg).map_err(|reason| {
+            let plugin = super::ip_restrict::IpRestrictPlugin::try_new(&cfg).map_err(|reason| {
                 PluginConfigError::InvalidConfig {
                     name: name.to_string(),
                     reason,
@@ -171,7 +173,7 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     reason: e.to_string(),
                 })?;
             Ok(BuiltinPlugin::Compression(
-                super::compression::CompressionPlugin::new(cfg),
+                super::compression::CompressionPlugin::new(&cfg),
             ))
         }
         "basic_auth" => {

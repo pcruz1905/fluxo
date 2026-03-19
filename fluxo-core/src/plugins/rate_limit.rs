@@ -18,7 +18,7 @@ pub struct RateLimitConfig {
     pub requests_per_second: u32,
     /// Burst capacity (max requests allowed in a burst).
     pub burst: u32,
-    /// Maximum number of unique keys (IPs) to track. Default: 10_000.
+    /// Maximum number of unique keys (IPs) to track. Default: `10_000`.
     #[serde(default = "default_max_keys")]
     pub max_keys: u64,
 }
@@ -39,12 +39,12 @@ impl std::fmt::Debug for RateLimitPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RateLimitPlugin")
             .field("quota", &self.quota)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl RateLimitPlugin {
-    pub fn new(config: RateLimitConfig) -> Self {
+    pub fn new(config: &RateLimitConfig) -> Self {
         // SAFETY: .max(1) guarantees the value is at least 1, so NonZeroU32::new never returns None.
         let burst = NonZeroU32::new(config.burst.max(1)).unwrap_or(NonZeroU32::MIN);
         let rps = NonZeroU32::new(config.requests_per_second.max(1)).unwrap_or(NonZeroU32::MIN);
@@ -72,7 +72,7 @@ impl RateLimitPlugin {
             .get_with(key, || Arc::new(RateLimiter::direct(quota)));
 
         match limiter.check() {
-            Ok(_) => super::PluginAction::Continue,
+            Ok(()) => super::PluginAction::Continue,
             Err(not_until) => {
                 let wait = not_until.wait_time_from(governor::clock::DefaultClock::default().now());
                 ctx.plugin_response = Some(crate::context::PluginResponse::RateLimited {
@@ -96,7 +96,7 @@ mod tests {
             burst: 10,
             max_keys: 100,
         };
-        let plugin = RateLimitPlugin::new(config);
+        let plugin = RateLimitPlugin::new(&config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = crate::context::RequestContext::new();
         ctx.client_ip = Some("10.0.0.1".into());
@@ -113,7 +113,7 @@ mod tests {
             burst: 1,
             max_keys: 100,
         };
-        let plugin = RateLimitPlugin::new(config);
+        let plugin = RateLimitPlugin::new(&config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
 
         // First request should pass
@@ -147,7 +147,7 @@ mod tests {
             burst: 1,
             max_keys: 100,
         };
-        let plugin = RateLimitPlugin::new(config);
+        let plugin = RateLimitPlugin::new(&config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
 
         // IP A uses its quota
@@ -171,7 +171,7 @@ mod tests {
             burst: 1,
             max_keys: 100,
         };
-        let plugin = RateLimitPlugin::new(config);
+        let plugin = RateLimitPlugin::new(&config);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
 
         let mut ctx = crate::context::RequestContext::new();

@@ -1,7 +1,7 @@
 //! PROXY protocol V1/V2 parsing utilities.
 //!
 //! Provides helpers to extract the real client IP from a PROXY protocol header
-//! (HAProxy specification). Uses the `ppp` crate for parsing.
+//! (`HAProxy` specification). Uses the `ppp` crate for parsing.
 //!
 //! **Note:** Pingora 0.8 does not expose transport-layer hooks for intercepting
 //! the PROXY protocol header before HTTP parsing. This module provides the parsing

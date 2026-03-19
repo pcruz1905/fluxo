@@ -28,7 +28,7 @@ pub struct UpstreamTlsConfig {
     pub sni: Option<Arc<str>>,
 }
 
-/// TCP keepalive settings — mirrors Pingora's TcpKeepalive.
+/// TCP keepalive settings — mirrors Pingora's `TcpKeepalive`.
 #[derive(Debug, Clone)]
 pub struct TcpKeepaliveSettings {
     pub idle: Duration,
@@ -134,7 +134,7 @@ enum AnyLoadBalancer {
     Random(Arc<LoadBalancer<Random>>),
     FnvHash(Arc<LoadBalancer<pingora_load_balancing::selection::FNVHash>>),
     ConsistentHash(Arc<LoadBalancer<Consistent>>),
-    /// EDF-based weighted scheduler — doesn't use Pingora's LoadBalancer.
+    /// EDF-based weighted scheduler — doesn't use Pingora's `LoadBalancer`.
     Edf(Arc<super::edf::EdfScheduler>),
 }
 
@@ -156,7 +156,7 @@ impl AnyLoadBalancer {
 
         let addr_list = targets
             .iter()
-            .map(|t| t.address())
+            .map(TargetConfig::address)
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -323,7 +323,7 @@ impl std::fmt::Debug for UpstreamGroup {
             .field("strategy", &self.strategy)
             .field("tls", &self.tls)
             .field("timeouts", &self.timeouts)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

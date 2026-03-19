@@ -40,7 +40,7 @@ impl PluginPipeline {
         for plugin in &self.plugins {
             match plugin.on_request(req, ctx) {
                 super::PluginAction::Continue => {}
-                action => return action,
+                action @ super::PluginAction::Handled(_) => return action,
             }
         }
         super::PluginAction::Continue

@@ -1,6 +1,6 @@
 //! Path rewrite plugin — regex-based URL rewriting before forwarding to upstream.
 //!
-//! Equivalent to nginx's `rewrite` directive and Traefik's ReplacePathRegex.
+//! Equivalent to nginx's `rewrite` directive and Traefik's `ReplacePathRegex`.
 
 use regex::Regex;
 use serde::Deserialize;
@@ -41,11 +41,10 @@ impl PathRewritePlugin {
             // Preserve original path in X-Replaced-Path header (Traefik convention)
             let _ = req.insert_header("X-Replaced-Path", &path);
 
-            let new_uri = if let Some(query) = req.uri.query() {
-                format!("{new_path}?{query}")
-            } else {
-                new_path.to_string()
-            };
+            let new_uri = req.uri.query().map_or_else(
+                || new_path.to_string(),
+                |query| format!("{new_path}?{query}"),
+            );
 
             if let Ok(uri) = new_uri.parse() {
                 req.set_uri(uri);

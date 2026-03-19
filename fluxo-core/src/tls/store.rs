@@ -71,7 +71,7 @@ impl CertStore {
         } else {
             let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
                 let home = std::env::var("HOME").unwrap_or_default();
-                format!("{}/.local/share", home)
+                format!("{home}/.local/share")
             });
             PathBuf::from(base).join("fluxo").join("certs")
         }
@@ -154,10 +154,9 @@ impl CertStore {
                 let now = SystemTime::now();
                 let renewal_threshold =
                     std::time::Duration::from_secs(u64::from(days_before) * 86400);
-                match info.not_after.duration_since(now) {
-                    Ok(remaining) => Ok(remaining < renewal_threshold),
-                    Err(_) => Ok(true), // already expired
-                }
+                info.not_after
+                    .duration_since(now)
+                    .map_or(Ok(true), |remaining| Ok(remaining < renewal_threshold))
             }
         }
     }
@@ -198,7 +197,7 @@ fn parse_cert_info(cert_pem: &str, key_pem: &str) -> Result<CertInfo, CertStoreE
         .ok_or_else(|| CertStoreError::X509("no certificate found in PEM".to_string()))?;
 
     let (_, cert) = X509Certificate::from_der(leaf.contents())
-        .map_err(|e| CertStoreError::X509(format!("failed to parse X.509: {}", e)))?;
+        .map_err(|e| CertStoreError::X509(format!("failed to parse X.509: {e}")))?;
 
     // Extract expiry
     let not_after = cert.validity().not_after.to_datetime();

@@ -28,7 +28,7 @@ impl CompressionEncoding {
 }
 
 /// Streaming compressor — compresses chunks incrementally without buffering the full body.
-/// Monolake-inspired: BodyEncodeExt pattern adapted for Pingora's chunk-based body filter.
+/// Monolake-inspired: `BodyEncodeExt` pattern adapted for Pingora's chunk-based body filter.
 pub enum StreamingCompressor {
     Gzip(flate2::write::GzEncoder<Vec<u8>>),
     Brotli(Box<brotli::CompressorWriter<Vec<u8>>>),
@@ -161,7 +161,7 @@ pub struct RequestContext {
     pub sticky_cookie_new: bool,
 
     // --- PROXY protocol state ---
-    /// PROXY protocol info parsed from the connection (if listener has proxy_protocol enabled).
+    /// PROXY protocol info parsed from the connection (if listener has `proxy_protocol` enabled).
     /// Contains the real client source/destination addresses from the PROXY header.
     pub proxy_protocol_info: Option<ProxyProtocolInfo>,
 
@@ -354,7 +354,7 @@ impl RequestContextPool {
 
     /// Acquire a context from the pool, or create a new one if empty.
     pub fn acquire(&self) -> RequestContext {
-        self.pool.lock().pop().unwrap_or_else(RequestContext::new)
+        self.pool.lock().pop().unwrap_or_default()
     }
 
     /// Return a context to the pool. Resets all fields before storing.

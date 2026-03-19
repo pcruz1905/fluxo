@@ -69,7 +69,7 @@ impl EdfScheduler {
     pub fn new(targets: Vec<EdfTarget>) -> Self {
         let mut heap = BinaryHeap::with_capacity(targets.len());
         for (i, target) in targets.iter().enumerate() {
-            let weight = (target.weight as f64).max(1.0);
+            let weight = f64::from(target.weight).max(1.0);
             heap.push(EdfEntry {
                 deadline: 1.0 / weight,
                 index: i,
@@ -85,18 +85,21 @@ impl EdfScheduler {
     ///
     /// O(log n) — pops the min-deadline entry, computes next deadline, pushes back.
     pub fn select(&self) -> Option<(usize, &str)> {
-        let mut heap = self.heap.lock();
-        let entry = heap.pop()?;
-        let target = &self.targets[entry.index];
-        let weight = (target.weight as f64).max(1.0);
+        let idx = {
+            let mut heap = self.heap.lock();
+            let entry = heap.pop()?;
+            let weight = f64::from(self.targets[entry.index].weight).max(1.0);
 
-        // Schedule next deadline for this target
-        heap.push(EdfEntry {
-            deadline: entry.deadline + 1.0 / weight,
-            index: entry.index,
-        });
+            // Schedule next deadline for this target
+            heap.push(EdfEntry {
+                deadline: entry.deadline + 1.0 / weight,
+                index: entry.index,
+            });
 
-        Some((entry.index, &target.address))
+            entry.index
+        };
+
+        Some((idx, &self.targets[idx].address))
     }
 
     /// Get the number of targets.
@@ -114,7 +117,7 @@ impl std::fmt::Debug for EdfScheduler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EdfScheduler")
             .field("targets", &self.targets)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

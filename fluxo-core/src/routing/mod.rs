@@ -185,7 +185,7 @@ impl RouteTable {
             chain.push(parent);
 
             match &parent.parent {
-                Some(next) => current_parent = next.clone(),
+                Some(next) => current_parent.clone_from(next),
                 None => break,
             }
         }
@@ -196,13 +196,13 @@ impl RouteTable {
         for child in &chain[1..] {
             // Append child's matchers (child's matchers are additional constraints)
             if !child.match_host.is_empty() {
-                merged.match_host = child.match_host.clone();
+                merged.match_host.clone_from(&child.match_host);
             }
             if !child.match_path.is_empty() {
-                merged.match_path = child.match_path.clone();
+                merged.match_path.clone_from(&child.match_path);
             }
             if !child.match_method.is_empty() {
-                merged.match_method = child.match_method.clone();
+                merged.match_method.clone_from(&child.match_method);
             }
             for (k, v) in &child.match_header {
                 merged.match_header.insert(k.clone(), v.clone());
@@ -213,11 +213,11 @@ impl RouteTable {
             }
             // Child overrides name, upstream, max_body
             if child.name.is_some() {
-                merged.name = child.name.clone();
+                merged.name.clone_from(&child.name);
             }
-            merged.upstream = child.upstream.clone();
+            merged.upstream.clone_from(&child.upstream);
             if child.max_request_body.is_some() {
-                merged.max_request_body = child.max_request_body.clone();
+                merged.max_request_body.clone_from(&child.max_request_body);
             }
             // parent field not carried forward
             merged.parent = None;

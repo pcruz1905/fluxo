@@ -80,9 +80,8 @@ impl pingora_core::services::background::BackgroundService for CertRenewalServic
 
 impl CertRenewalService {
     async fn check_and_renew(&self) {
-        let primary_domain = match self.config.domains.first() {
-            Some(d) => d,
-            None => return,
+        let Some(primary_domain) = self.config.domains.first() else {
+            return;
         };
 
         let needs_renewal = match self

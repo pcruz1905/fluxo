@@ -155,10 +155,7 @@ pub fn handle_reload(
         match candidates.iter().find(|p| Path::new(p).exists()) {
             Some(p) => p.to_string(),
             None => {
-                return json_response(
-                    404,
-                    &serde_json::json!({"error": "no config file found"}),
-                );
+                return json_response(404, &serde_json::json!({"error": "no config file found"}));
             }
         }
     };

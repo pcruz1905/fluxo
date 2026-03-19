@@ -73,7 +73,7 @@ impl AcmeManager {
         }
 
         // Create new account
-        let contact = format!("mailto:{}", email);
+        let contact = format!("mailto:{email}");
         let (account, credentials): (Account, AccountCredentials) = Account::builder()?
             .create(
                 &NewAccount {

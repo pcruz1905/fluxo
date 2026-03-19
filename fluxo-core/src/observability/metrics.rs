@@ -30,7 +30,7 @@ impl MetricsRegistry {
             Opts::new("fluxo_requests_total", "Total number of processed requests"),
             &["service", "route", "method", "status"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let request_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
@@ -42,19 +42,19 @@ impl MetricsRegistry {
             ]),
             &["service", "route"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let active_requests = IntGauge::new(
             "fluxo_active_requests",
             "Number of currently active requests",
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let bytes_sent_total = IntCounterVec::new(
             Opts::new("fluxo_bytes_sent_total", "Total bytes sent to clients"),
             &["service"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let bytes_received_total = IntCounterVec::new(
             Opts::new(
@@ -63,7 +63,7 @@ impl MetricsRegistry {
             ),
             &["service"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let upstream_requests_total = IntCounterVec::new(
             Opts::new(
@@ -72,7 +72,7 @@ impl MetricsRegistry {
             ),
             &["upstream", "status"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let upstream_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
@@ -84,7 +84,7 @@ impl MetricsRegistry {
             ]),
             &["upstream"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         let upstream_errors_total = IntCounterVec::new(
             Opts::new(
@@ -93,32 +93,32 @@ impl MetricsRegistry {
             ),
             &["upstream", "error_type"],
         )
-        .map_err(|e| format!("metric creation failed: {}", e))?;
+        .map_err(|e| format!("metric creation failed: {e}"))?;
 
         registry
             .register(Box::new(requests_total.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(request_duration_seconds.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(active_requests.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(bytes_sent_total.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(bytes_received_total.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(upstream_requests_total.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(upstream_duration_seconds.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
         registry
             .register(Box::new(upstream_errors_total.clone()))
-            .map_err(|e| format!("collector registration failed: {}", e))?;
+            .map_err(|e| format!("collector registration failed: {e}"))?;
 
         Ok(Self {
             registry,

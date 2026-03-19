@@ -1,6 +1,6 @@
 //! Add prefix plugin — prepend a path prefix before forwarding to upstream.
 //!
-//! Equivalent to Traefik's AddPrefix middleware.
+//! Equivalent to Traefik's `AddPrefix` middleware.
 
 use serde::Deserialize;
 

@@ -1,6 +1,6 @@
 //! Strip prefix plugin — remove path prefix before forwarding to upstream.
 //!
-//! Equivalent to Traefik's StripPrefix middleware and nginx's rewrite.
+//! Equivalent to Traefik's `StripPrefix` middleware and nginx's rewrite.
 
 use serde::Deserialize;
 

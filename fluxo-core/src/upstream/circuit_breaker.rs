@@ -1,6 +1,6 @@
 //! Circuit breaker — per-upstream failure tracking with 3-state machine.
 //!
-//! States: Closed (normal) → Open (reject all) → HalfOpen (probe) → Closed.
+//! States: Closed (normal) → Open (reject all) → `HalfOpen` (probe) → Closed.
 //!
 //! Inspired by Traefik's circuit breaker and Netflix Hystrix.
 
@@ -25,9 +25,9 @@ pub enum CircuitStatus {
 }
 
 /// Sliding window for tracking request outcomes over time.
-/// Used for error ratio calculation (Traefik-style NetworkErrorRatio).
+/// Used for error ratio calculation (Traefik-style `NetworkErrorRatio`).
 struct SlidingWindow {
-    /// Ring buffer of (timestamp, is_failure) entries.
+    /// Ring buffer of (timestamp, `is_failure`) entries.
     entries: Vec<(Instant, bool)>,
     /// Window duration — only entries within this window count.
     window: Duration,
@@ -46,7 +46,7 @@ impl SlidingWindow {
         self.entries.push((now, failure));
         // Evict expired entries periodically
         if self.entries.len() > 200 {
-            let cutoff = now - self.window;
+            let cutoff = now.checked_sub(self.window).unwrap_or(now);
             self.entries.retain(|(t, _)| *t > cutoff);
         }
     }
@@ -54,7 +54,7 @@ impl SlidingWindow {
     /// Error ratio in [0.0, 1.0]. Returns 0.0 if no data.
     fn error_ratio(&self) -> f64 {
         let now = Instant::now();
-        let cutoff = now - self.window;
+        let cutoff = now.checked_sub(self.window).unwrap_or(now);
         let mut total = 0u32;
         let mut failures = 0u32;
         for (t, is_fail) in &self.entries {
@@ -68,12 +68,13 @@ impl SlidingWindow {
         if total == 0 {
             0.0
         } else {
-            failures as f64 / total as f64
+            f64::from(failures) / f64::from(total)
         }
     }
 
     fn total_in_window(&self) -> u32 {
-        let cutoff = Instant::now() - self.window;
+        let now = Instant::now();
+        let cutoff = now.checked_sub(self.window).unwrap_or(now);
         self.entries.iter().filter(|(t, _)| *t > cutoff).count() as u32
     }
 }
@@ -237,7 +238,7 @@ impl CircuitBreakerTracker {
 
 /// Passive health tracker — tracks consecutive failures per peer address.
 pub struct PassiveHealthTracker {
-    /// Map of peer address → (consecutive_failures, last_failure_time)
+    /// Map of peer address → (`consecutive_failures`, `last_failure_time`)
     failures: DashMap<String, (AtomicU32, Mutex<Option<Instant>>)>,
 }
 
@@ -262,6 +263,7 @@ impl PassiveHealthTracker {
             .or_insert_with(|| (AtomicU32::new(0), Mutex::new(None)));
         let count = entry.value().0.fetch_add(1, Ordering::Relaxed) + 1;
         *entry.value().1.lock() = Some(Instant::now());
+        drop(entry);
         count
     }
 
@@ -272,13 +274,14 @@ impl PassiveHealthTracker {
         }
     }
 
-    /// Check if a peer is considered unhealthy (failures >= max_fails within fail_timeout).
+    /// Check if a peer is considered unhealthy (failures >= `max_fails` within `fail_timeout`).
     pub fn is_unhealthy(&self, peer_addr: &str, max_fails: u32, fail_timeout: Duration) -> bool {
         if let Some(entry) = self.failures.get(peer_addr) {
             let count = entry.value().0.load(Ordering::Relaxed);
             if count >= max_fails {
                 // Check if within the fail_timeout window
-                if let Some(last) = *entry.value().1.lock() {
+                let last = *entry.value().1.lock();
+                if let Some(last) = last {
                     if last.elapsed() < fail_timeout {
                         return true;
                     }

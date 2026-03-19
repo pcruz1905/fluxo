@@ -76,7 +76,7 @@ impl BasicAuthPlugin {
                 .ok()
             })
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(|creds| {
+            .is_some_and(|creds| {
                 // Split on first ':' — passwords may contain colons
                 let colon = creds.find(':').unwrap_or(creds.len());
                 let username = &creds[..colon];
@@ -86,8 +86,7 @@ impl BasicAuthPlugin {
                     ""
                 };
                 self.check_credentials(username, password)
-            })
-            .unwrap_or(false);
+            });
 
         if authorized {
             PluginAction::Continue
@@ -101,22 +100,22 @@ impl BasicAuthPlugin {
 
     /// Verify username and password against the configured users map.
     fn check_credentials(&self, username: &str, password: &str) -> bool {
-        match self.users.get(username) {
-            Some(stored) => {
-                if let Some(hex_hash) = stored.strip_prefix("{SHA256}") {
+        self.users.get(username).is_some_and(|stored| {
+            stored.strip_prefix("{SHA256}").map_or_else(
+                || {
+                    // Plain text comparison (constant-time)
+                    constant_time_eq(password.as_bytes(), stored.as_bytes())
+                },
+                |hex_hash| {
                     // SHA-256 comparison
                     use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
                     hasher.update(password.as_bytes());
                     let result = format!("{:x}", hasher.finalize());
                     constant_time_eq(result.as_bytes(), hex_hash.as_bytes())
-                } else {
-                    // Plain text comparison (constant-time)
-                    constant_time_eq(password.as_bytes(), stored.as_bytes())
-                }
-            }
-            None => false,
-        }
+                },
+            )
+        })
     }
 }
 

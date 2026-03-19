@@ -52,32 +52,31 @@ impl CorsPlugin {
         if req.method != http::Method::OPTIONS {
             return super::PluginAction::Continue;
         }
-        let origin = match req.headers.get("origin").and_then(|v| v.to_str().ok()) {
-            Some(o) => o,
-            None => return super::PluginAction::Continue,
+        let Some(origin) = req.headers.get("origin").and_then(|v| v.to_str().ok()) else {
+            return super::PluginAction::Continue;
         };
 
         // Build preflight response headers as the body for static response
         let allow_origin = self.resolve_origin(origin);
-        let mut headers = format!("Access-Control-Allow-Origin: {allow_origin}");
+        let mut _headers = format!("Access-Control-Allow-Origin: {allow_origin}");
 
         if !self.config.allowed_methods.is_empty() {
-            headers.push_str(&format!(
+            _headers.push_str(&format!(
                 "\r\nAccess-Control-Allow-Methods: {}",
                 self.config.allowed_methods.join(", ")
             ));
         }
         if !self.config.allowed_headers.is_empty() {
-            headers.push_str(&format!(
+            _headers.push_str(&format!(
                 "\r\nAccess-Control-Allow-Headers: {}",
                 self.config.allowed_headers.join(", ")
             ));
         }
         if let Some(max_age) = self.config.max_age {
-            headers.push_str(&format!("\r\nAccess-Control-Max-Age: {max_age}"));
+            _headers.push_str(&format!("\r\nAccess-Control-Max-Age: {max_age}"));
         }
         if self.config.allow_credentials {
-            headers.push_str("\r\nAccess-Control-Allow-Credentials: true");
+            _headers.push_str("\r\nAccess-Control-Allow-Credentials: true");
         }
 
         // Store origin for the proxy to use when building the response
