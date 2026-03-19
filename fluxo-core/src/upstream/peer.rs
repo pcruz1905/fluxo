@@ -598,6 +598,8 @@ mod tests {
             tcp_recv_buf: Some(65536),
             h2_ping_interval: Some("30s".to_string()),
             response_buffer_size: None,
+            upstream_type: None,
+            services: vec![],
         };
         let t = UpstreamTimeouts::from_config(&uc);
         assert_eq!(t.connect, Duration::from_secs(3));

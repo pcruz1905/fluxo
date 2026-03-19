@@ -575,6 +575,72 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                 }
             }
         }
+
+        // Validate composite upstream config
+        if let Some(ref ut) = upstream.upstream_type {
+            let valid_types = ["static", "weighted", "failover"];
+            if !valid_types.contains(&ut.as_str()) {
+                errors.push(format!(
+                    "upstream '{name}': invalid upstream_type '{}'. Valid: {}",
+                    ut,
+                    valid_types.join(", ")
+                ));
+            }
+            if (ut == "weighted" || ut == "failover") && upstream.services.is_empty() {
+                errors.push(format!(
+                    "upstream '{name}': upstream_type '{ut}' requires at least one service"
+                ));
+            }
+            if (ut == "weighted" || ut == "failover") && !upstream.targets.is_empty() {
+                errors.push(format!(
+                    "upstream '{name}': composite upstream_type '{ut}' should not have direct targets"
+                ));
+            }
+        }
+        for svc in &upstream.services {
+            if !config.upstreams.contains_key(&svc.upstream) {
+                errors.push(format!(
+                    "upstream '{name}': service references unknown upstream '{}'",
+                    svc.upstream
+                ));
+            }
+            if svc.weight == 0 {
+                errors.push(format!(
+                    "upstream '{name}': service '{}' has weight 0 (must be >= 1)",
+                    svc.upstream
+                ));
+            }
+        }
+    }
+
+    // Detect cycles in composite upstreams via DFS
+    {
+        use std::collections::{HashMap, HashSet};
+        fn has_cycle(
+            name: &str,
+            upstreams: &HashMap<String, UpstreamConfig>,
+            visiting: &mut HashSet<String>,
+        ) -> Option<String> {
+            if !visiting.insert(name.to_string()) {
+                return Some(format!("upstream cycle detected involving '{name}'"));
+            }
+            if let Some(u) = upstreams.get(name) {
+                for svc in &u.services {
+                    if let Some(err) = has_cycle(&svc.upstream, upstreams, visiting) {
+                        return Some(err);
+                    }
+                }
+            }
+            visiting.remove(name);
+            None
+        }
+        for name in config.upstreams.keys() {
+            let mut visiting = HashSet::new();
+            if let Some(err) = has_cycle(name, &config.upstreams, &mut visiting) {
+                errors.push(err);
+                break; // One cycle error is enough
+            }
+        }
     }
 
     errors

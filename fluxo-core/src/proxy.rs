@@ -29,6 +29,24 @@ use crate::upstream::circuit_breaker::{
 };
 use crate::upstream::peer::UpstreamGroup;
 
+/// A composite upstream that delegates to child upstreams.
+#[derive(Debug, Clone)]
+pub struct CompositeUpstream {
+    /// "weighted" or "failover"
+    pub mode: CompositeMode,
+    /// Child upstream references with weights.
+    pub children: Vec<(UpstreamName, u32)>,
+}
+
+/// Mode for composite upstream routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositeMode {
+    /// Weighted round-robin across child upstreams.
+    Weighted,
+    /// Try children in order, skip those with open circuit breakers.
+    Failover,
+}
+
 /// The pre-computed, immutable state derived from a `FluxoConfig`.
 ///
 /// Stored in `ArcSwap` and shared across all worker threads.
@@ -37,8 +55,10 @@ pub struct FluxoState {
     pub config: FluxoConfig,
     /// Pre-built route table.
     pub router: RouteTable,
-    /// Pre-built upstream groups.
+    /// Pre-built upstream groups (non-composite).
     pub upstreams: HashMap<UpstreamName, UpstreamGroup>,
+    /// Composite upstream definitions (weighted / failover).
+    pub composites: HashMap<UpstreamName, CompositeUpstream>,
     /// ACME HTTP-01 challenge tokens.
     pub challenge_state: Arc<ChallengeState>,
     /// Whether any service has TLS configured (precomputed).
@@ -79,6 +99,7 @@ impl FluxoState {
     pub fn try_from_config(config: FluxoConfig) -> Result<Self, FluxoError> {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
+        let composites = build_composite_upstreams(&config);
         let has_tls = has_tls_configured(&config);
         let trusted_proxies = parse_trusted_proxies(&config);
         let (client_body_timeout, client_write_timeout) = parse_downstream_timeouts(&config);
@@ -91,6 +112,7 @@ impl FluxoState {
             config,
             router,
             upstreams,
+            composites,
             challenge_state: Arc::new(ChallengeState::new()),
             has_tls,
             trusted_proxies,
@@ -104,6 +126,7 @@ impl FluxoState {
     pub fn build(config: FluxoConfig) -> Result<FluxoBuild, FluxoError> {
         let router = RouteTable::build(&config)?;
         let upstreams = build_upstream_groups(&config)?;
+        let composites = build_composite_upstreams(&config);
 
         let health_check_services: Vec<Box<dyn pingora_core::services::ServiceWithDependents>> =
             upstreams
@@ -124,6 +147,7 @@ impl FluxoState {
                 config,
                 router,
                 upstreams,
+                composites,
                 challenge_state: Arc::new(ChallengeState::new()),
                 has_tls,
                 trusted_proxies,
@@ -146,6 +170,15 @@ fn build_upstream_groups(
     let mut groups = HashMap::new();
 
     for (name, upstream_config) in &config.upstreams {
+        // Skip composite upstreams — they don't have their own load balancer
+        let is_composite = upstream_config
+            .upstream_type
+            .as_deref()
+            .is_some_and(|t| t == "weighted" || t == "failover");
+        if is_composite {
+            continue;
+        }
+
         let upstream_name = UpstreamName::from(name.as_str());
         let strategy = LbStrategy::from_config(&upstream_config.load_balancing)?;
 
@@ -203,6 +236,81 @@ fn build_upstream_groups(
     }
 
     Ok(groups)
+}
+
+/// Build composite upstream definitions from config.
+fn build_composite_upstreams(config: &FluxoConfig) -> HashMap<UpstreamName, CompositeUpstream> {
+    let mut composites = HashMap::new();
+    for (name, upstream_config) in &config.upstreams {
+        let mode = match upstream_config.upstream_type.as_deref() {
+            Some("weighted") => CompositeMode::Weighted,
+            Some("failover") => CompositeMode::Failover,
+            _ => continue,
+        };
+        let children: Vec<(UpstreamName, u32)> = upstream_config
+            .services
+            .iter()
+            .map(|s| (UpstreamName::from(s.upstream.as_str()), s.weight))
+            .collect();
+        composites.insert(
+            UpstreamName::from(name.as_str()),
+            CompositeUpstream { mode, children },
+        );
+    }
+    composites
+}
+
+/// Resolve a potentially composite upstream to an actual (non-composite) upstream name.
+/// For weighted mode: randomly select a child based on weights.
+/// For failover mode: pick the first child whose circuit breaker is not open.
+/// Returns None if the upstream is not composite (caller should use original name).
+fn resolve_composite_upstream(
+    name: &UpstreamName,
+    composites: &HashMap<UpstreamName, CompositeUpstream>,
+    upstreams: &HashMap<UpstreamName, UpstreamGroup>,
+    circuit_breakers: &CircuitBreakerTracker,
+) -> Option<UpstreamName> {
+    let composite = composites.get(name)?;
+
+    match composite.mode {
+        CompositeMode::Weighted => {
+            let total_weight: u32 = composite.children.iter().map(|(_, w)| *w).sum();
+            if total_weight == 0 {
+                return None;
+            }
+            let mut r = fastrand::u32(0..total_weight);
+            for (child_name, weight) in &composite.children {
+                if r < *weight {
+                    // Recursively resolve (child might also be composite)
+                    return Some(
+                        resolve_composite_upstream(child_name, composites, upstreams, circuit_breakers)
+                            .unwrap_or_else(|| child_name.clone()),
+                    );
+                }
+                r -= weight;
+            }
+            // Fallback: last child
+            composite
+                .children
+                .last()
+                .map(|(name, _)| name.clone())
+        }
+        CompositeMode::Failover => {
+            for (child_name, _) in &composite.children {
+                // Skip children with open circuit breakers
+                if let Some(CircuitStatus::Open) = circuit_breakers.check(child_name) {
+                    continue;
+                }
+                // Recursively resolve
+                return Some(
+                    resolve_composite_upstream(child_name, composites, upstreams, circuit_breakers)
+                        .unwrap_or_else(|| child_name.clone()),
+                );
+            }
+            // All children have open circuit breakers — return first anyway (will fail with 503)
+            composite.children.first().map(|(name, _)| name.clone())
+        }
+    }
 }
 
 fn has_tls_configured(config: &FluxoConfig) -> bool {
@@ -752,24 +860,35 @@ impl ProxyHttp for FluxoProxy {
             )
         })?;
 
+        // --- Resolve composite upstreams (Traefik-inspired service composition) ---
+        // If the route points to a composite upstream, resolve it to an actual child upstream.
+        let resolved_upstream = resolve_composite_upstream(
+            &route.upstream,
+            &state.composites,
+            &state.upstreams,
+            &self.static_state.circuit_breakers,
+        );
+        let effective_upstream = resolved_upstream.as_ref().unwrap_or(&route.upstream);
+
         // --- Circuit breaker check ---
-        if let Some(CircuitStatus::Open) = self.static_state.circuit_breakers.check(&route.upstream)
+        if let Some(CircuitStatus::Open) =
+            self.static_state.circuit_breakers.check(effective_upstream)
         {
             return Err(Error::explain(
                 pingora_core::ErrorType::HTTPStatus(503),
-                format!("circuit breaker open for upstream '{}'", route.upstream),
+                format!("circuit breaker open for upstream '{}'", effective_upstream),
             ));
         }
 
-        let upstream_group = state.upstreams.get(&route.upstream).ok_or_else(|| {
+        let upstream_group = state.upstreams.get(effective_upstream).ok_or_else(|| {
             Error::explain(
                 pingora_core::ErrorType::InternalError,
-                format!("upstream '{}' not found in state", route.upstream),
+                format!("upstream '{}' not found in state", effective_upstream),
             )
         })?;
 
         // --- Sticky session: address-based cookie (Traefik-style SHA256) ---
-        let upstream_name_str = route.upstream.0.to_string();
+        let upstream_name_str = effective_upstream.0.to_string();
         let sticky_config = state
             .config
             .upstreams
