@@ -80,6 +80,10 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             write_timeout: defaults::write_timeout(),
             retry: None,
             passive_health: None,
+            sticky: None,
+            circuit_breaker: None,
+            keepalive_timeout: defaults::keepalive_timeout(),
+            keepalive_pool_size: defaults::keepalive_pool_size(),
         },
     );
 
@@ -143,6 +147,20 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
         cidr.parse::<ipnet::IpNet>().map_err(|e| {
             ConfigError::Validation(format!("invalid trusted_proxy CIDR '{}': {}", cidr, e))
         })?;
+    }
+
+    // Validate access_log_exclude patterns
+    let valid_log_patterns = ["1xx", "2xx", "3xx", "4xx", "5xx"];
+    for pattern in &config.global.access_log_exclude {
+        if !valid_log_patterns.contains(&pattern.as_str()) {
+            // Try to parse as exact status code
+            if pattern.parse::<u16>().is_err() {
+                return Err(ConfigError::Validation(format!(
+                    "invalid access_log_exclude pattern '{}': must be a status code (200) or range (2xx)",
+                    pattern
+                )));
+            }
+        }
     }
 
     // Every route's upstream must reference a key in config.upstreams
@@ -340,6 +358,46 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             if ph.max_fails == 0 {
                 return Err(ConfigError::Validation(format!(
                     "upstream '{}': passive_health.max_fails must be >= 1",
+                    name
+                )));
+            }
+        }
+
+        // Validate keepalive timeout
+        parse_duration(&upstream.keepalive_timeout).map_err(|_| {
+            ConfigError::Validation(format!(
+                "upstream '{}': invalid keepalive_timeout '{}': expected format like '60s', '30s'",
+                name, upstream.keepalive_timeout
+            ))
+        })?;
+
+        // Validate circuit breaker config
+        if let Some(cb) = &upstream.circuit_breaker {
+            if cb.failure_threshold == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': circuit_breaker.failure_threshold must be >= 1",
+                    name
+                )));
+            }
+            if cb.success_threshold == 0 {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': circuit_breaker.success_threshold must be >= 1",
+                    name
+                )));
+            }
+            parse_duration(&cb.open_duration).map_err(|_| {
+                ConfigError::Validation(format!(
+                    "upstream '{}': invalid circuit_breaker.open_duration '{}'",
+                    name, cb.open_duration
+                ))
+            })?;
+        }
+
+        // Validate sticky session config
+        if let Some(sticky) = &upstream.sticky {
+            if sticky.cookie_name.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "upstream '{}': sticky.cookie_name must not be empty",
                     name
                 )));
             }

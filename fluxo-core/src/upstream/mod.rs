@@ -1,5 +1,6 @@
 //! Upstream management — groups, peer selection, and health tracking.
 
+pub mod circuit_breaker;
 pub mod peer;
 
 use std::fmt;

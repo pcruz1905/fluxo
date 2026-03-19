@@ -76,3 +76,37 @@ pub fn passive_max_fails() -> u32 {
 pub fn passive_fail_timeout() -> String {
     "30s".to_string()
 }
+
+// --- Sticky session defaults ---
+
+pub fn sticky_cookie_name() -> String {
+    "FLUXO_STICKY".to_string()
+}
+
+pub fn sticky_cookie_http_only() -> bool {
+    true
+}
+
+// --- Circuit breaker defaults ---
+
+pub fn cb_failure_threshold() -> u32 {
+    5
+}
+
+pub fn cb_success_threshold() -> u32 {
+    3
+}
+
+pub fn cb_open_duration() -> String {
+    "30s".to_string()
+}
+
+// --- Keepalive defaults ---
+
+pub fn keepalive_timeout() -> String {
+    "60s".to_string()
+}
+
+pub fn keepalive_pool_size() -> usize {
+    128
+}

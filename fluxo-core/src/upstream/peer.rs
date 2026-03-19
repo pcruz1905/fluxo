@@ -37,6 +37,8 @@ pub struct UpstreamTimeouts {
     pub read: Duration,
     /// Timeout for writing to the upstream.
     pub write: Duration,
+    /// Idle timeout for keepalive connections.
+    pub idle: Duration,
 }
 
 impl Default for UpstreamTimeouts {
@@ -45,6 +47,7 @@ impl Default for UpstreamTimeouts {
             connect: Duration::from_secs(5),
             read: Duration::from_secs(60),
             write: Duration::from_secs(60),
+            idle: Duration::from_secs(60),
         }
     }
 }
@@ -59,6 +62,8 @@ impl UpstreamTimeouts {
             read: parse_duration(&c.read_timeout)
                 .unwrap_or(Duration::from_secs(60)),
             write: parse_duration(&c.write_timeout)
+                .unwrap_or(Duration::from_secs(60)),
+            idle: parse_duration(&c.keepalive_timeout)
                 .unwrap_or(Duration::from_secs(60)),
         }
     }
@@ -106,7 +111,7 @@ impl AnyLoadBalancer {
             .flat_map(|t| {
                 let addr = t.address().to_string();
                 let weight = (t.weight() as usize).max(1);
-                std::iter::repeat(addr).take(weight)
+                std::iter::repeat_n(addr, weight)
             })
             .collect();
 
@@ -287,6 +292,7 @@ impl UpstreamGroup {
         peer.options.connection_timeout = Some(self.timeouts.connect);
         peer.options.read_timeout = Some(self.timeouts.read);
         peer.options.write_timeout = Some(self.timeouts.write);
+        peer.options.idle_timeout = Some(self.timeouts.idle);
 
         Ok(Box::new(peer))
     }
@@ -420,10 +426,15 @@ mod tests {
             write_timeout: "30s".to_string(),
             retry: None,
             passive_health: None,
+            sticky: None,
+            circuit_breaker: None,
+            keepalive_timeout: "120s".to_string(),
+            keepalive_pool_size: 64,
         };
         let t = UpstreamTimeouts::from_config(&uc);
         assert_eq!(t.connect, Duration::from_secs(3));
         assert_eq!(t.read, Duration::from_secs(45));
         assert_eq!(t.write, Duration::from_secs(30));
+        assert_eq!(t.idle, Duration::from_secs(120));
     }
 }

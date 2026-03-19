@@ -107,6 +107,12 @@ pub struct GlobalConfig {
     /// Example: `{ 502 = "<html>Bad Gateway</html>" }`
     #[serde(default)]
     pub error_pages: HashMap<u16, String>,
+
+    /// Access log filter — exclude certain status codes from access logs.
+    /// Supports ranges like "2xx", "3xx" or exact codes like "200", "404".
+    /// Example: `["2xx", "3xx"]` to suppress successful request logs.
+    #[serde(default)]
+    pub access_log_exclude: Vec<String>,
 }
 
 impl Default for GlobalConfig {
@@ -123,6 +129,7 @@ impl Default for GlobalConfig {
             trusted_proxies: Vec::new(),
             plugins: HashMap::new(),
             error_pages: HashMap::new(),
+            access_log_exclude: Vec::new(),
         }
     }
 }
@@ -251,6 +258,24 @@ pub struct UpstreamConfig {
     /// Passive health check — mark a backend unhealthy after consecutive proxy failures.
     /// Nginx equivalent: `max_fails` / `fail_timeout`.
     pub passive_health: Option<PassiveHealthConfig>,
+
+    /// Sticky session configuration — cookie-based session affinity.
+    /// Traefik equivalent: sticky sessions.
+    pub sticky: Option<StickySessionConfig>,
+
+    /// Circuit breaker — stop sending traffic to failing upstreams.
+    /// Traefik equivalent: circuit breaker middleware.
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
+
+    /// Keepalive idle timeout for upstream connections.
+    /// Nginx equivalent: `keepalive_timeout`. Default: "60s".
+    #[serde(default = "defaults::keepalive_timeout")]
+    pub keepalive_timeout: String,
+
+    /// Maximum idle keepalive connections per upstream.
+    /// Nginx equivalent: `keepalive`. Default: 128.
+    #[serde(default = "defaults::keepalive_pool_size")]
+    pub keepalive_pool_size: usize,
 }
 
 /// Retry configuration for upstream failures.
@@ -279,6 +304,42 @@ pub struct PassiveHealthConfig {
     /// Nginx equivalent: `fail_timeout`. Default: "30s".
     #[serde(default = "defaults::passive_fail_timeout")]
     pub fail_timeout: String,
+}
+
+/// Sticky session configuration — cookie-based backend affinity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickySessionConfig {
+    /// Name of the affinity cookie. Default: "FLUXO_STICKY".
+    #[serde(default = "defaults::sticky_cookie_name")]
+    pub cookie_name: String,
+
+    /// Cookie TTL in seconds. 0 = session cookie (deleted when browser closes).
+    #[serde(default)]
+    pub cookie_ttl: u64,
+
+    /// Whether to set the Secure flag on the cookie.
+    #[serde(default)]
+    pub cookie_secure: bool,
+
+    /// Whether to set the HttpOnly flag on the cookie. Default: true.
+    #[serde(default = "defaults::sticky_cookie_http_only")]
+    pub cookie_http_only: bool,
+}
+
+/// Circuit breaker configuration — stop traffic to failing upstreams.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    /// Consecutive failures before opening the circuit. Default: 5.
+    #[serde(default = "defaults::cb_failure_threshold")]
+    pub failure_threshold: u32,
+
+    /// Successful requests in half-open state before closing the circuit. Default: 3.
+    #[serde(default = "defaults::cb_success_threshold")]
+    pub success_threshold: u32,
+
+    /// How long the circuit stays open before transitioning to half-open. Default: "30s".
+    #[serde(default = "defaults::cb_open_duration")]
+    pub open_duration: String,
 }
 
 /// Active health check settings.

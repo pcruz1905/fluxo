@@ -4,18 +4,21 @@
 //! Each route compiles its configured plugins into a `PluginPipeline` at config
 //! load time. During request processing, proxy.rs calls the pipeline at each phase.
 
+pub mod add_prefix;
 pub mod basic_auth;
 pub mod compression;
 pub mod config;
 pub mod cors;
 pub mod headers;
 pub mod ip_restrict;
+pub mod path_rewrite;
 pub mod pipeline;
 pub mod rate_limit;
 pub mod redirect;
 pub mod request_id;
 pub mod security_headers;
 pub mod static_response;
+pub mod strip_prefix;
 
 pub use pipeline::PluginPipeline;
 
@@ -42,6 +45,9 @@ pub enum BuiltinPlugin {
     StaticResponse(static_response::StaticResponsePlugin),
     Compression(compression::CompressionPlugin),
     BasicAuth(basic_auth::BasicAuthPlugin),
+    StripPrefix(strip_prefix::StripPrefixPlugin),
+    AddPrefix(add_prefix::AddPrefixPlugin),
+    PathRewrite(path_rewrite::PathRewritePlugin),
 }
 
 impl BuiltinPlugin {
@@ -72,6 +78,9 @@ impl BuiltinPlugin {
         match self {
             Self::RequestId(p) => p.on_upstream_request(upstream_req, ctx),
             Self::Headers(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::StripPrefix(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::AddPrefix(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::PathRewrite(p) => p.on_upstream_request(upstream_req, ctx),
             _ => {}
         }
     }

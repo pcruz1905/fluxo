@@ -22,6 +22,7 @@ use crate::routing::RouteTable;
 use crate::routing::matcher::RequestHeaders;
 use crate::tls::ChallengeState;
 use crate::upstream::UpstreamName;
+use crate::upstream::circuit_breaker::{CircuitBreakerTracker, CircuitStatus, PassiveHealthTracker};
 use crate::upstream::peer::UpstreamGroup;
 
 /// The pre-computed, immutable state derived from a `FluxoConfig`.
@@ -196,6 +197,27 @@ fn compress_body(data: &[u8], encoding: CompressionEncoding) -> Result<Vec<u8>, 
     }
 }
 
+/// Check if a status code should be included in access logs.
+fn should_log_status(status: u16, excludes: &[String]) -> bool {
+    for pattern in excludes {
+        match pattern.as_str() {
+            "1xx" if (100..200).contains(&status) => return false,
+            "2xx" if (200..300).contains(&status) => return false,
+            "3xx" if (300..400).contains(&status) => return false,
+            "4xx" if (400..500).contains(&status) => return false,
+            "5xx" if (500..600).contains(&status) => return false,
+            exact => {
+                if let Ok(code) = exact.parse::<u16>() {
+                    if code == status {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Adapter to let Pingora request headers implement our `RequestHeaders` trait.
 struct PingoraHeaders<'a>(&'a pingora_http::RequestHeader);
 
@@ -211,15 +233,40 @@ impl<'a> RequestHeaders for PingoraHeaders<'a> {
 #[derive(Clone)]
 pub struct FluxoProxy {
     state: Arc<ArcSwap<FluxoState>>,
+    /// Circuit breaker state — persists across config reloads.
+    circuit_breakers: Arc<CircuitBreakerTracker>,
+    /// Passive health tracker — tracks per-peer failure counts.
+    passive_health: Arc<PassiveHealthTracker>,
 }
 
 impl FluxoProxy {
     pub fn new(state: FluxoState) -> Self {
-        Self { state: Arc::new(ArcSwap::from(Arc::new(state))) }
+        let cb = Arc::new(CircuitBreakerTracker::new());
+        // Register circuit breakers for upstreams that have them configured
+        for (name, upstream_config) in &state.config.upstreams {
+            if let Some(cb_config) = &upstream_config.circuit_breaker {
+                cb.register(UpstreamName::from(name.as_str()), cb_config.clone());
+            }
+        }
+        Self {
+            state: Arc::new(ArcSwap::from(Arc::new(state))),
+            circuit_breakers: cb,
+            passive_health: Arc::new(PassiveHealthTracker::new()),
+        }
     }
 
     pub fn from_state(state: Arc<FluxoState>) -> Self {
-        Self { state: Arc::new(ArcSwap::from(state)) }
+        let cb = Arc::new(CircuitBreakerTracker::new());
+        for (name, upstream_config) in &state.config.upstreams {
+            if let Some(cb_config) = &upstream_config.circuit_breaker {
+                cb.register(UpstreamName::from(name.as_str()), cb_config.clone());
+            }
+        }
+        Self {
+            state: Arc::new(ArcSwap::from(state)),
+            circuit_breakers: cb,
+            passive_health: Arc::new(PassiveHealthTracker::new()),
+        }
     }
 
     pub fn challenge_state(&self) -> Arc<ChallengeState> {
@@ -236,6 +283,13 @@ impl FluxoProxy {
 
     /// Atomically replace the running config with a new one (zero-downtime reload).
     pub fn reload(&self, new_state: FluxoState) {
+        // Register circuit breakers for any new/changed upstreams
+        for (name, upstream_config) in &new_state.config.upstreams {
+            if let Some(cb_config) = &upstream_config.circuit_breaker {
+                self.circuit_breakers
+                    .register(UpstreamName::from(name.as_str()), cb_config.clone());
+            }
+        }
         self.state.store(Arc::new(new_state));
     }
 
@@ -476,7 +530,27 @@ impl ProxyHttp for FluxoProxy {
             ctx.tls_version = Some(ssl.version.to_string());
         }
 
+        // --- Sticky session cookie ---
+        let req_header = session.req_header();
+        if let Some(cookie_header) = req_header.headers.get("cookie").and_then(|v| v.to_str().ok()) {
+            // Check all upstreams for sticky config to find cookie name
+            for upstream_config in state.config.upstreams.values() {
+                if let Some(sticky) = &upstream_config.sticky {
+                    let prefix = format!("{}=", sticky.cookie_name);
+                    if let Some(value) = cookie_header
+                        .split(';')
+                        .map(|s| s.trim())
+                        .find(|s| s.starts_with(&prefix))
+                    {
+                        ctx.sticky_cookie_value = Some(value[prefix.len()..].to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
         // --- Route matching ---
+        let req_header = session.req_header();
         let pingora_hdrs = PingoraHeaders(req_header);
         match state.router.match_route_with_headers(host, path, method, &pingora_hdrs) {
             Some(route) => {
@@ -515,6 +589,14 @@ impl ProxyHttp for FluxoProxy {
             )
         })?;
 
+        // --- Circuit breaker check ---
+        if let Some(CircuitStatus::Open) = self.circuit_breakers.check(&route.upstream) {
+            return Err(Error::explain(
+                pingora_core::ErrorType::HTTPStatus(503),
+                format!("circuit breaker open for upstream '{}'", route.upstream),
+            ));
+        }
+
         let upstream_group = state.upstreams.get(&route.upstream).ok_or_else(|| {
             Error::explain(
                 pingora_core::ErrorType::InternalError,
@@ -522,7 +604,23 @@ impl ProxyHttp for FluxoProxy {
             )
         })?;
 
-        let peer = upstream_group.select_peer().map_err(|e| {
+        // --- Sticky session: use cookie value as hash key ---
+        let peer = if let Some(ref cookie_val) = ctx.sticky_cookie_value {
+            upstream_group.select_peer_with_key(cookie_val.as_bytes())
+        } else {
+            // Check if this upstream has sticky sessions configured
+            let upstream_config = state.config.upstreams.get(&route.upstream.0.to_string());
+            if upstream_config.is_some_and(|c| c.sticky.is_some()) {
+                // Generate a new sticky key for this request
+                let key = format!("{:016x}", fastrand::u64(..));
+                ctx.sticky_cookie_value = Some(key.clone());
+                ctx.sticky_cookie_new = true;
+                upstream_group.select_peer_with_key(key.as_bytes())
+            } else {
+                upstream_group.select_peer()
+            }
+        }
+        .map_err(|e| {
             Error::explain(
                 pingora_core::ErrorType::ConnectError,
                 format!("failed to select peer from '{}': {}", route.upstream, e),
@@ -567,9 +665,36 @@ impl ProxyHttp for FluxoProxy {
         Self::CTX: Send + Sync,
     {
         let state = self.state.load();
-        if let Some(route) = &ctx.matched_route {
-            let pipeline = &state.router.routes()[route.index].pipeline;
+
+        // Extract route info before mutable borrow of ctx
+        let route_info = ctx.matched_route.as_ref().map(|r| (r.index, r.upstream.0.to_string()));
+
+        if let Some((route_index, ref upstream_name)) = route_info {
+            let pipeline = &state.router.routes()[route_index].pipeline;
             pipeline.run_response(upstream_response, ctx);
+
+            // --- Sticky session cookie ---
+            if ctx.sticky_cookie_new {
+                if let Some(ref cookie_val) = ctx.sticky_cookie_value {
+                    if let Some(upstream_config) = state.config.upstreams.get(upstream_name) {
+                        if let Some(sticky) = &upstream_config.sticky {
+                            let mut cookie = format!("{}={}", sticky.cookie_name, cookie_val);
+                            if sticky.cookie_ttl > 0 {
+                                cookie.push_str(&format!("; Max-Age={}", sticky.cookie_ttl));
+                            }
+                            cookie.push_str("; Path=/");
+                            if sticky.cookie_http_only {
+                                cookie.push_str("; HttpOnly");
+                            }
+                            if sticky.cookie_secure {
+                                cookie.push_str("; Secure");
+                            }
+                            cookie.push_str("; SameSite=Lax");
+                            let _ = upstream_response.insert_header("Set-Cookie", &cookie);
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -672,6 +797,14 @@ impl ProxyHttp for FluxoProxy {
             "proxy error"
         );
 
+        // --- Circuit breaker + passive health failure tracking ---
+        if let Some(route) = &ctx.matched_route {
+            self.circuit_breakers.record_failure(&route.upstream);
+            if let Some(peer) = &ctx.selected_peer {
+                self.passive_health.record_failure(&peer.address.to_string());
+            }
+        }
+
         // Use custom error page if configured for this status code
         let state = self.state.load();
         let sent = if let Some(body) = state.config.global.error_pages.get(&code) {
@@ -709,7 +842,22 @@ impl ProxyHttp for FluxoProxy {
             .map(|resp| resp.status.as_u16())
             .unwrap_or(0);
 
-        crate::observability::access_log::emit_access_log(ctx, status);
+        // --- Circuit breaker + passive health success tracking ---
+        if error.is_none() {
+            if let Some(route) = &ctx.matched_route {
+                self.circuit_breakers.record_success(&route.upstream);
+                if let Some(peer) = &ctx.selected_peer {
+                    self.passive_health.record_success(&peer.address.to_string());
+                }
+            }
+        }
+
+        // --- Access log filtering ---
+        if !should_log_status(status, &state.config.global.access_log_exclude) {
+            // Skip access log emission for excluded status codes
+        } else {
+            crate::observability::access_log::emit_access_log(ctx, status);
+        }
 
         let route = ctx
             .matched_route

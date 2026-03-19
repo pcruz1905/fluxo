@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite)"
     )]
     UnknownPlugin(String),
 
@@ -40,6 +40,9 @@ pub fn compile_plugins(
         "redirect",
         "static_response",
         "request_id",
+        "strip_prefix",  // Path manipulation before forwarding
+        "add_prefix",
+        "path_rewrite",
         "headers",
         "cors",
         "security_headers",
@@ -186,6 +189,53 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
             Ok(BuiltinPlugin::BasicAuth(
                 super::basic_auth::BasicAuthPlugin::new(cfg),
             ))
+        }
+        "strip_prefix" => {
+            let cfg: super::strip_prefix::StripPrefixConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            if cfg.prefixes.is_empty() {
+                return Err(PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: "strip_prefix.prefixes must not be empty".to_string(),
+                });
+            }
+            Ok(BuiltinPlugin::StripPrefix(
+                super::strip_prefix::StripPrefixPlugin::new(cfg),
+            ))
+        }
+        "add_prefix" => {
+            let cfg: super::add_prefix::AddPrefixConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            if cfg.prefix.is_empty() {
+                return Err(PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: "add_prefix.prefix must not be empty".to_string(),
+                });
+            }
+            Ok(BuiltinPlugin::AddPrefix(
+                super::add_prefix::AddPrefixPlugin::new(cfg),
+            ))
+        }
+        "path_rewrite" => {
+            let cfg: super::path_rewrite::PathRewriteConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin =
+                super::path_rewrite::PathRewritePlugin::try_new(cfg).map_err(|reason| {
+                    PluginConfigError::InvalidConfig {
+                        name: name.to_string(),
+                        reason,
+                    }
+                })?;
+            Ok(BuiltinPlugin::PathRewrite(plugin))
         }
         _ => Err(PluginConfigError::UnknownPlugin(name.to_string())),
     }

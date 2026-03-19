@@ -99,7 +99,7 @@ mod tests {
         };
         let plugin = HeadersPlugin::new(config);
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        let mut ctx = crate::context::RequestContext::new();
+        let ctx = crate::context::RequestContext::new();
         plugin.on_upstream_request(&mut req, &ctx);
         assert_eq!(
             req.headers.get("X-Proxy").unwrap().to_str().unwrap(),
@@ -116,7 +116,7 @@ mod tests {
         let plugin = HeadersPlugin::new(config);
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         req.insert_header("Cookie", "session=abc").unwrap();
-        let mut ctx = crate::context::RequestContext::new();
+        let ctx = crate::context::RequestContext::new();
         plugin.on_upstream_request(&mut req, &ctx);
         assert!(req.headers.get("Cookie").is_none());
     }

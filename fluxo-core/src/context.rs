@@ -76,6 +76,12 @@ pub struct RequestContext {
     pub error_message: Option<String>,
     pub retry_count: u32,
 
+    // --- Sticky session state ---
+    /// The sticky session cookie value read from the incoming request (if any).
+    pub sticky_cookie_value: Option<String>,
+    /// Whether a new sticky cookie needs to be set on the response.
+    pub sticky_cookie_new: bool,
+
     // --- Compression state ---
     /// The `Accept-Encoding` header value from the client request.
     /// Captured by the compression plugin's `on_request` phase.
@@ -148,6 +154,8 @@ impl RequestContext {
             upstream_response_ms: None,
             error_message: None,
             retry_count: 0,
+            sticky_cookie_value: None,
+            sticky_cookie_new: false,
             accept_encoding: None,
             compression_encoding: None,
             response_body_buffer: Vec::new(),
@@ -187,6 +195,8 @@ mod tests {
         assert!(ctx.upstream_response_ms.is_none());
         assert!(ctx.error_message.is_none());
         assert_eq!(ctx.retry_count, 0);
+        assert!(ctx.sticky_cookie_value.is_none());
+        assert!(!ctx.sticky_cookie_new);
         assert!(ctx.accept_encoding.is_none());
         assert!(ctx.compression_encoding.is_none());
         assert!(ctx.response_body_buffer.is_empty());
