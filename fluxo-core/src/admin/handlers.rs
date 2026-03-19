@@ -30,7 +30,23 @@ pub fn json_response_pretty<T: serde::Serialize>(status: u16, value: &T) -> (u16
 }
 
 /// GET /health — process health info
+///
+/// Returns 503 when the server is draining (graceful shutdown in progress),
+/// allowing load balancers to remove this instance before connections drain.
 pub fn handle_health(proxy: &FluxoProxy) -> (u16, String, &'static str) {
+    let is_draining = proxy
+        .static_state
+        .draining
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    if is_draining {
+        let body = serde_json::json!({
+            "status": "draining",
+            "version": env!("CARGO_PKG_VERSION"),
+        });
+        return json_response_pretty(503, &body);
+    }
+
     let state = proxy.state_snapshot();
     let service_count = state.config.services.len();
     let upstream_count = state.config.upstreams.len();

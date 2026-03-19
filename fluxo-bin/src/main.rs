@@ -113,6 +113,26 @@ fn main() -> anyhow::Result<()> {
 
     // Create Pingora server
     let mut server = Server::new(None)?;
+
+    // Configure graceful shutdown (Traefik-inspired two-phase drain)
+    // ServerConf is behind Arc, so we build a new one with the shutdown settings.
+    let mut conf = pingora::server::configuration::ServerConf::default();
+    if let Some(ref drain_delay) = fluxo_config.global.shutdown_drain_delay {
+        if let Ok(d) = config::parse_duration(drain_delay) {
+            conf.grace_period_seconds = Some(d.as_secs());
+        }
+    }
+    if let Some(ref timeout) = fluxo_config.global.shutdown_timeout {
+        if let Ok(d) = config::parse_duration(timeout) {
+            conf.graceful_shutdown_timeout_seconds = Some(d.as_secs());
+        }
+    }
+    // Preserve thread count from our config
+    if fluxo_config.global.threads > 0 {
+        conf.threads = fluxo_config.global.threads;
+    }
+    server.configuration = std::sync::Arc::new(conf);
+
     server.bootstrap();
 
     // Ensure ACME certificates are available (blocking on first run)
@@ -192,6 +212,30 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(admin = %app.config().global.admin, "admin API registered");
 
     tracing::info!("fluxo is ready");
+
+    // Set draining flag on shutdown signal (lets /health return 503 during drain)
+    let draining = app.proxy().static_state.draining.clone();
+    tokio::spawn(async move {
+        // Wait for shutdown notification via Pingora's shutdown watch
+        // Since Pingora handles signals internally, we listen for SIGTERM ourselves
+        // to set the draining flag before Pingora starts its grace period.
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut term = signal(SignalKind::terminate()).expect("failed to register SIGTERM");
+            let mut int = signal(SignalKind::interrupt()).expect("failed to register SIGINT");
+            tokio::select! {
+                _ = term.recv() => {},
+                _ = int.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        tracing::info!("shutdown signal received, setting drain flag");
+        draining.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
 
     // Hot-reload config pipeline (FileProvider -> ConfigWatcher -> Proxy)
     if let Some(path) = config_file_path {

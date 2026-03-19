@@ -182,6 +182,18 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
         }
     }
 
+    // Validate graceful shutdown config
+    if let Some(ref t) = config.global.shutdown_timeout {
+        if parse_duration(t).is_err() {
+            errors.push(format!("invalid shutdown_timeout: '{t}'"));
+        }
+    }
+    if let Some(ref t) = config.global.shutdown_drain_delay {
+        if parse_duration(t).is_err() {
+            errors.push(format!("invalid shutdown_drain_delay: '{t}'"));
+        }
+    }
+
     // Validate trusted_proxies are valid CIDRs
     for cidr in &config.global.trusted_proxies {
         if cidr.parse::<ipnet::IpNet>().is_err() {

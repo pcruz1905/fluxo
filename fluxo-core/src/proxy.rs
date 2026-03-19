@@ -63,6 +63,9 @@ pub struct FluxoStaticState {
     pub circuit_breakers: Arc<CircuitBreakerTracker>,
     pub passive_health: Arc<PassiveHealthTracker>,
     pub context_pool: Arc<RequestContextPool>,
+    /// Set to true during graceful shutdown drain phase.
+    /// Admin /health returns 503 when draining, letting LB health checks fail.
+    pub draining: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Result of building a FluxoState, including background health-check services.
@@ -314,6 +317,7 @@ impl FluxoProxy {
             circuit_breakers: cb,
             passive_health: Arc::new(PassiveHealthTracker::new()),
             context_pool: Arc::new(RequestContextPool::new(1024)),
+            draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
 
         Ok(Self {

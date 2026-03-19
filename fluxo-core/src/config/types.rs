@@ -160,6 +160,15 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub intercept_errors: bool,
 
+    /// Graceful shutdown timeout — total time to drain in-flight requests after SIGTERM.
+    /// Pingora: `graceful_shutdown_timeout_seconds`. Default: "30s".
+    pub shutdown_timeout: Option<String>,
+
+    /// Delay before starting drain — lets load balancer health checks fail first.
+    /// Pingora: `grace_period_seconds`. Default: "5s".
+    /// Traefik equivalent: `requestAcceptGraceTimeout`.
+    pub shutdown_drain_delay: Option<String>,
+
     /// Access log filter — exclude certain status codes from access logs.
     /// Supports ranges like "2xx", "3xx", "200-299" or exact codes like "200", "404".
     /// Example: `["2xx", "3xx"]` to suppress successful request logs.
@@ -189,6 +198,8 @@ impl Default for GlobalConfig {
             plugins: HashMap::new(),
             error_pages: HashMap::new(),
             intercept_errors: false,
+            shutdown_timeout: None,
+            shutdown_drain_delay: None,
             client_body_timeout: None,
             client_write_timeout: None,
             access_log_exclude: Vec::new(),
