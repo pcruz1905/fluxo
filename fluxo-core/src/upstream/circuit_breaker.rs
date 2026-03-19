@@ -485,25 +485,34 @@ mod tests {
     fn circuit_custom_window_duration() {
         let tracker = CircuitBreakerTracker::new();
         let name = UpstreamName::from("window-test");
+        // High thresholds so ratio is the only path to opening
         let config = CircuitBreakerConfig {
             failure_threshold: 100,
             success_threshold: 2,
             open_duration: "30s".to_string(),
             error_ratio_threshold: 0.5,
-            min_requests: 5,
+            min_requests: 10,
             window: Some("1ms".to_string()), // very short window
         };
         tracker.register(name.clone(), config);
 
-        // Record failures
-        for _ in 0..10 {
+        // Record 5 successes then 5 failures — ratio would be 0.5 (not > 0.5)
+        // so circuit stays closed. Also total = 10 == min_requests.
+        for _ in 0..5 {
+            tracker.record_success(&name);
+        }
+        for _ in 0..5 {
             tracker.record_failure(&name);
         }
-        // Wait for the window to expire
+        assert_eq!(tracker.check(&name), Some(CircuitStatus::Closed));
+
+        // Wait for window to expire, then add failures
         std::thread::sleep(Duration::from_millis(5));
-        // All entries expired — ratio is 0.0, so should stay closed
-        // (new failure alone won't hit threshold of 100)
-        tracker.record_failure(&name);
+        // Now old entries are expired. New failures: total_in_window < min_requests (10)
+        for _ in 0..5 {
+            tracker.record_failure(&name);
+        }
+        // 5 failures in window, ratio 1.0 but < min_requests, so stays closed
         assert_eq!(tracker.check(&name), Some(CircuitStatus::Closed));
     }
 }
