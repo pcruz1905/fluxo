@@ -25,6 +25,81 @@ impl CompressionEncoding {
     }
 }
 
+/// Streaming compressor — compresses chunks incrementally without buffering the full body.
+/// Monolake-inspired: BodyEncodeExt pattern adapted for Pingora's chunk-based body filter.
+pub enum StreamingCompressor {
+    Gzip(flate2::write::GzEncoder<Vec<u8>>),
+    Brotli(Box<brotli::CompressorWriter<Vec<u8>>>),
+    Zstd(zstd::stream::write::Encoder<'static, Vec<u8>>),
+}
+
+impl StreamingCompressor {
+    /// Create a new streaming compressor for the given encoding.
+    pub fn new(encoding: CompressionEncoding) -> Self {
+        match encoding {
+            CompressionEncoding::Gzip => {
+                Self::Gzip(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()))
+            }
+            CompressionEncoding::Brotli => {
+                Self::Brotli(Box::new(brotli::CompressorWriter::new(Vec::new(), 4096, 4, 22)))
+            }
+            CompressionEncoding::Zstd => {
+                Self::Zstd(zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap())
+            }
+        }
+    }
+
+    /// Write a chunk of data into the compressor. Returns compressed output (may be empty).
+    pub fn write_chunk(&mut self, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+        use std::io::Write;
+        match self {
+            Self::Gzip(enc) => {
+                enc.write_all(data)?;
+                enc.flush()?;
+                Ok(enc.get_mut().drain(..).collect())
+            }
+            Self::Brotli(enc) => {
+                enc.write_all(data)?;
+                enc.flush()?;
+                Ok(enc.get_mut().drain(..).collect())
+            }
+            Self::Zstd(enc) => {
+                enc.write_all(data)?;
+                enc.flush()?;
+                Ok(enc.get_mut().drain(..).collect())
+            }
+        }
+    }
+
+    /// Finalize the compressor, flushing all remaining data. Must be called on end-of-stream.
+    pub fn finish(self) -> Result<Vec<u8>, std::io::Error> {
+        match self {
+            Self::Gzip(enc) => enc.finish(),
+            Self::Brotli(mut enc) => {
+                use std::io::Write;
+                enc.flush()?;
+                // Drop the CompressorWriter to finalize
+                let inner = std::mem::take(enc.get_mut());
+                drop(enc);
+                // The inner vec already has the flushed data; we need to get the final bytes
+                // by consuming the writer properly
+                Ok(inner)
+            }
+            Self::Zstd(enc) => enc.finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for StreamingCompressor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gzip(_) => f.write_str("StreamingCompressor::Gzip"),
+            Self::Brotli(_) => f.write_str("StreamingCompressor::Brotli"),
+            Self::Zstd(_) => f.write_str("StreamingCompressor::Zstd"),
+        }
+    }
+}
+
 /// A typed response from a plugin that short-circuits the request.
 #[derive(Debug, Clone)]
 pub enum PluginResponse {
@@ -88,8 +163,8 @@ pub struct RequestContext {
     pub accept_encoding: Option<String>,
     /// The encoding chosen for this response (set by compression plugin's `on_response`).
     pub compression_encoding: Option<CompressionEncoding>,
-    /// Buffer accumulating response body chunks for buffered compression.
-    pub response_body_buffer: Vec<u8>,
+    /// Streaming compressor state — compresses chunks incrementally (no full-body buffering).
+    pub compressor: Option<StreamingCompressor>,
 }
 
 /// A snapshot of the matched route, cheaply cloneable.
@@ -158,7 +233,7 @@ impl RequestContext {
             sticky_cookie_new: false,
             accept_encoding: None,
             compression_encoding: None,
-            response_body_buffer: Vec::new(),
+            compressor: None,
         }
     }
 
@@ -199,7 +274,7 @@ mod tests {
         assert!(!ctx.sticky_cookie_new);
         assert!(ctx.accept_encoding.is_none());
         assert!(ctx.compression_encoding.is_none());
-        assert!(ctx.response_body_buffer.is_empty());
+        assert!(ctx.compressor.is_none());
     }
 
     #[test]

@@ -4,7 +4,6 @@
 //! upstream manager, and plugin pipeline from within each callback.
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -15,7 +14,7 @@ use pingora_proxy::{ProxyHttp, Session};
 use tracing::{info, warn};
 
 use crate::config::FluxoConfig;
-use crate::context::{CompressionEncoding, MatchedRoute, RequestContext, SelectedPeer};
+use crate::context::{MatchedRoute, RequestContext, SelectedPeer, StreamingCompressor};
 use crate::error::FluxoError;
 use crate::plugins::PluginAction;
 use crate::routing::RouteTable;
@@ -177,25 +176,6 @@ fn is_trusted_proxy(
     trusted.iter().any(|net| net.contains(&addr.ip()))
 }
 
-/// Compress `data` with the given algorithm.
-fn compress_body(data: &[u8], encoding: CompressionEncoding) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    match encoding {
-        CompressionEncoding::Gzip => {
-            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            enc.write_all(data)?;
-            Ok(enc.finish()?)
-        }
-        CompressionEncoding::Brotli => {
-            let mut out = Vec::new();
-            {
-                let mut w = brotli::CompressorWriter::new(&mut out, 4096, 6, 22);
-                w.write_all(data)?;
-            }
-            Ok(out)
-        }
-        CompressionEncoding::Zstd => Ok(zstd::encode_all(data, 3)?),
-    }
-}
 
 /// Check if a status code should be included in access logs.
 /// Supports: class patterns "2xx", exact codes "404", ranges "200-299".
@@ -760,32 +740,51 @@ impl ProxyHttp for FluxoProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<Option<std::time::Duration>, Box<Error>> {
-        // Take the chunk (if any) from the body slot
         if let Some(b) = body.take() {
             ctx.bytes_sent += b.len() as u64;
-            if ctx.compression_encoding.is_some() {
-                // Buffer for deferred compression
-                ctx.response_body_buffer.extend_from_slice(&b);
+
+            if let Some(encoding) = ctx.compression_encoding {
+                // Lazily initialize the streaming compressor on first chunk
+                if ctx.compressor.is_none() {
+                    ctx.compressor = Some(StreamingCompressor::new(encoding));
+                }
+                // Compress this chunk incrementally — no full-body buffering
+                if let Some(ref mut compressor) = ctx.compressor {
+                    match compressor.write_chunk(&b) {
+                        Ok(compressed) if !compressed.is_empty() => {
+                            *body = Some(bytes::Bytes::from(compressed));
+                        }
+                        Ok(_) => {} // Compressor buffered internally, nothing to emit yet
+                        Err(_) => {
+                            // Compression failed — pass through uncompressed
+                            *body = Some(b);
+                        }
+                    }
+                }
             } else {
                 // No compression — pass through immediately
                 *body = Some(b);
             }
         }
 
-        // On end-of-stream, compress all buffered data and emit
+        // On end-of-stream, finalize the compressor to flush remaining data
         if end_of_stream {
-            if let Some(encoding) = ctx.compression_encoding {
-                if !ctx.response_body_buffer.is_empty() {
-                    match compress_body(&ctx.response_body_buffer, encoding) {
-                        Ok(compressed) => {
-                            *body = Some(bytes::Bytes::from(compressed));
-                        }
-                        Err(_) => {
-                            // Compression failed — emit uncompressed
-                            *body = Some(bytes::Bytes::copy_from_slice(&ctx.response_body_buffer));
+            if let Some(compressor) = ctx.compressor.take() {
+                match compressor.finish() {
+                    Ok(final_bytes) if !final_bytes.is_empty() => {
+                        // Append final compressed bytes
+                        match body {
+                            Some(existing) => {
+                                let mut combined = existing.to_vec();
+                                combined.extend_from_slice(&final_bytes);
+                                *body = Some(bytes::Bytes::from(combined));
+                            }
+                            None => {
+                                *body = Some(bytes::Bytes::from(final_bytes));
+                            }
                         }
                     }
-                    ctx.response_body_buffer.clear();
+                    _ => {}
                 }
             }
         }
