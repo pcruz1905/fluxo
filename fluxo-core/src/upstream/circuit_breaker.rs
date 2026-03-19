@@ -24,6 +24,60 @@ pub enum CircuitStatus {
     HalfOpen,
 }
 
+/// Sliding window for tracking request outcomes over time.
+/// Used for error ratio calculation (Traefik-style NetworkErrorRatio).
+struct SlidingWindow {
+    /// Ring buffer of (timestamp, is_failure) entries.
+    entries: Vec<(Instant, bool)>,
+    /// Window duration — only entries within this window count.
+    window: Duration,
+}
+
+impl SlidingWindow {
+    fn new(window: Duration) -> Self {
+        Self {
+            entries: Vec::with_capacity(256),
+            window,
+        }
+    }
+
+    fn record(&mut self, failure: bool) {
+        let now = Instant::now();
+        self.entries.push((now, failure));
+        // Evict expired entries periodically
+        if self.entries.len() > 200 {
+            let cutoff = now - self.window;
+            self.entries.retain(|(t, _)| *t > cutoff);
+        }
+    }
+
+    /// Error ratio in [0.0, 1.0]. Returns 0.0 if no data.
+    fn error_ratio(&self) -> f64 {
+        let now = Instant::now();
+        let cutoff = now - self.window;
+        let mut total = 0u32;
+        let mut failures = 0u32;
+        for (t, is_fail) in &self.entries {
+            if *t > cutoff {
+                total += 1;
+                if *is_fail {
+                    failures += 1;
+                }
+            }
+        }
+        if total == 0 {
+            0.0
+        } else {
+            failures as f64 / total as f64
+        }
+    }
+
+    fn total_in_window(&self) -> u32 {
+        let cutoff = Instant::now() - self.window;
+        self.entries.iter().filter(|(t, _)| *t > cutoff).count() as u32
+    }
+}
+
 /// Per-upstream circuit breaker state.
 struct CircuitState {
     status: CircuitStatus,
@@ -32,6 +86,8 @@ struct CircuitState {
     last_failure: Option<Instant>,
     config: CircuitBreakerConfig,
     open_duration: Duration,
+    /// Sliding window for error ratio tracking.
+    window: SlidingWindow,
 }
 
 impl CircuitState {
@@ -43,6 +99,8 @@ impl CircuitState {
             failure_count: 0,
             success_count: 0,
             last_failure: None,
+            // Sliding window matches the open_duration for ratio calculation
+            window: SlidingWindow::new(open_duration),
             config,
             open_duration,
         }
@@ -67,8 +125,14 @@ impl CircuitState {
         }
     }
 
+    /// Current error ratio from the sliding window.
+    fn error_ratio(&self) -> f64 {
+        self.window.error_ratio()
+    }
+
     /// Record a successful request.
     fn record_success(&mut self) {
+        self.window.record(false);
         match self.status {
             CircuitStatus::HalfOpen => {
                 self.success_count += 1;
@@ -80,7 +144,7 @@ impl CircuitState {
                 }
             }
             CircuitStatus::Closed => {
-                // Reset failure count on success
+                // Reset consecutive failure count on success
                 self.failure_count = 0;
             }
             CircuitStatus::Open => {}
@@ -89,11 +153,16 @@ impl CircuitState {
 
     /// Record a failed request.
     fn record_failure(&mut self) {
+        self.window.record(true);
         self.last_failure = Some(Instant::now());
         match self.status {
             CircuitStatus::Closed => {
                 self.failure_count += 1;
-                if self.failure_count >= self.config.failure_threshold {
+                // Open circuit if consecutive failures OR error ratio exceeds threshold
+                // Minimum 10 requests in window before ratio-based trip
+                let ratio_trip = self.window.total_in_window() >= 10
+                    && self.window.error_ratio() > 0.5;
+                if self.failure_count >= self.config.failure_threshold || ratio_trip {
                     self.status = CircuitStatus::Open;
                 }
             }
@@ -152,6 +221,14 @@ impl CircuitBreakerTracker {
         if let Some(entry) = self.states.get(name) {
             entry.value().lock().record_failure();
         }
+    }
+
+    /// Get the current error ratio for an upstream (0.0-1.0).
+    /// Returns `None` if no circuit breaker is configured.
+    pub fn error_ratio(&self, name: &UpstreamName) -> Option<f64> {
+        self.states
+            .get(name)
+            .map(|entry| entry.value().lock().error_ratio())
     }
 }
 

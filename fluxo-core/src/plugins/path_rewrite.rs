@@ -38,6 +38,9 @@ impl PathRewritePlugin {
         let new_path = self.regex.replace(&path, &self.replacement);
 
         if new_path != path {
+            // Preserve original path in X-Replaced-Path header (Traefik convention)
+            let _ = req.insert_header("X-Replaced-Path", &path);
+
             let new_uri = if let Some(query) = req.uri.query() {
                 format!("{new_path}?{query}")
             } else {
@@ -107,6 +110,39 @@ mod tests {
             replacement: "".to_string(),
         };
         assert!(PathRewritePlugin::try_new(config).is_err());
+    }
+
+    #[test]
+    fn rewrite_sets_x_replaced_path_header() {
+        let config = PathRewriteConfig {
+            pattern: r"^/api/v1/(.*)".to_string(),
+            replacement: "/v2/$1".to_string(),
+        };
+        let plugin = PathRewritePlugin::try_new(config).unwrap();
+        let mut req =
+            pingora_http::RequestHeader::build("GET", b"/api/v1/users", None).unwrap();
+        let ctx = RequestContext::new();
+
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/v2/users");
+        assert_eq!(
+            req.headers.get("X-Replaced-Path").unwrap().to_str().unwrap(),
+            "/api/v1/users"
+        );
+    }
+
+    #[test]
+    fn no_match_does_not_set_x_replaced_path() {
+        let config = PathRewriteConfig {
+            pattern: r"^/admin/(.*)".to_string(),
+            replacement: "/internal/$1".to_string(),
+        };
+        let plugin = PathRewritePlugin::try_new(config).unwrap();
+        let mut req = pingora_http::RequestHeader::build("GET", b"/api/users", None).unwrap();
+        let ctx = RequestContext::new();
+
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert!(req.headers.get("X-Replaced-Path").is_none());
     }
 
     #[test]

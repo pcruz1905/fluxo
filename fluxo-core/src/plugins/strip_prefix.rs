@@ -36,8 +36,14 @@ impl StripPrefixPlugin {
 
         for prefix in &self.config.prefixes {
             if let Some(stripped) = path.strip_prefix(prefix.as_str()) {
-                let new_path = if stripped.is_empty() || !stripped.starts_with('/') {
-                    format!("/{stripped}")
+                // Boundary check: prefix must end at a path segment boundary.
+                // "/stat" should NOT strip from "/status" — only from "/stat" or "/stat/..."
+                if !stripped.is_empty() && !stripped.starts_with('/') {
+                    continue;
+                }
+
+                let new_path = if stripped.is_empty() {
+                    "/".to_string()
                 } else {
                     stripped.to_string()
                 };
@@ -112,6 +118,36 @@ mod tests {
 
         plugin.on_upstream_request(&mut req, &ctx);
         assert_eq!(req.uri.path(), "/items");
+    }
+
+    #[test]
+    fn strip_prefix_respects_path_boundary() {
+        // "/stat" should NOT strip from "/status" (Traefik behavior)
+        let config = StripPrefixConfig {
+            prefixes: vec!["/stat".to_string()],
+            forward_prefix: true,
+        };
+        let plugin = StripPrefixPlugin::new(config);
+        let mut req = pingora_http::RequestHeader::build("GET", b"/status", None).unwrap();
+        let ctx = RequestContext::new();
+
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/status"); // unchanged — not a boundary match
+    }
+
+    #[test]
+    fn strip_prefix_matches_at_boundary() {
+        // "/stat" SHOULD strip from "/stat/us" (boundary at "/")
+        let config = StripPrefixConfig {
+            prefixes: vec!["/stat".to_string()],
+            forward_prefix: false,
+        };
+        let plugin = StripPrefixPlugin::new(config);
+        let mut req = pingora_http::RequestHeader::build("GET", b"/stat/us", None).unwrap();
+        let ctx = RequestContext::new();
+
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/us");
     }
 
     #[test]

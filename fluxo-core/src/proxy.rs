@@ -198,6 +198,7 @@ fn compress_body(data: &[u8], encoding: CompressionEncoding) -> Result<Vec<u8>, 
 }
 
 /// Check if a status code should be included in access logs.
+/// Supports: class patterns "2xx", exact codes "404", ranges "200-299".
 fn should_log_status(status: u16, excludes: &[String]) -> bool {
     for pattern in excludes {
         match pattern.as_str() {
@@ -206,8 +207,17 @@ fn should_log_status(status: u16, excludes: &[String]) -> bool {
             "3xx" if (300..400).contains(&status) => return false,
             "4xx" if (400..500).contains(&status) => return false,
             "5xx" if (500..600).contains(&status) => return false,
-            exact => {
-                if let Ok(code) = exact.parse::<u16>() {
+            other => {
+                // Range: "200-299"
+                if let Some((from_s, to_s)) = other.split_once('-') {
+                    if let (Ok(from), Ok(to)) = (from_s.parse::<u16>(), to_s.parse::<u16>()) {
+                        if status >= from && status <= to {
+                            return false;
+                        }
+                    }
+                }
+                // Exact code
+                if let Ok(code) = other.parse::<u16>() {
                     if code == status {
                         return false;
                     }
@@ -604,21 +614,28 @@ impl ProxyHttp for FluxoProxy {
             )
         })?;
 
-        // --- Sticky session: use cookie value as hash key ---
-        let peer = if let Some(ref cookie_val) = ctx.sticky_cookie_value {
-            upstream_group.select_peer_with_key(cookie_val.as_bytes())
-        } else {
-            // Check if this upstream has sticky sessions configured
-            let upstream_config = state.config.upstreams.get(&route.upstream.0.to_string());
-            if upstream_config.is_some_and(|c| c.sticky.is_some()) {
-                // Generate a new sticky key for this request
-                let key = format!("{:016x}", fastrand::u64(..));
-                ctx.sticky_cookie_value = Some(key.clone());
-                ctx.sticky_cookie_new = true;
-                upstream_group.select_peer_with_key(key.as_bytes())
-            } else {
-                upstream_group.select_peer()
+        // --- Sticky session: address-based cookie (Traefik-style SHA256) ---
+        let upstream_name_str = route.upstream.0.to_string();
+        let sticky_config = state.config.upstreams.get(&upstream_name_str)
+            .and_then(|c| c.sticky.as_ref());
+
+        let peer = if let (Some(cookie_val), Some(_)) = (&ctx.sticky_cookie_value, sticky_config) {
+            // Existing cookie — find the backend whose hash matches
+            let matched = upstream_group.select_peer_by_sticky_hash(cookie_val);
+            match matched {
+                Some(p) => Ok(p),
+                None => {
+                    // Backend was removed — fall through to normal selection, set new cookie
+                    ctx.sticky_cookie_new = true;
+                    upstream_group.select_peer()
+                }
             }
+        } else if sticky_config.is_some() {
+            // No cookie yet — select normally, will set cookie in response_filter
+            ctx.sticky_cookie_new = true;
+            upstream_group.select_peer()
+        } else {
+            upstream_group.select_peer()
         }
         .map_err(|e| {
             Error::explain(
@@ -629,6 +646,13 @@ impl ProxyHttp for FluxoProxy {
 
         if let Some(addr) = peer.address().as_inet() {
             ctx.selected_peer = Some(SelectedPeer { address: *addr, tls: peer.is_tls() });
+
+            // Store address hash as cookie value (Traefik: truncated SHA256)
+            if ctx.sticky_cookie_new {
+                use sha2::{Digest, Sha256};
+                let hash = format!("{:x}", Sha256::digest(addr.to_string().as_bytes()));
+                ctx.sticky_cookie_value = Some(hash[..16].to_string());
+            }
         }
 
         info!(
@@ -852,10 +876,12 @@ impl ProxyHttp for FluxoProxy {
             }
         }
 
-        // --- Access log filtering ---
-        if !should_log_status(status, &state.config.global.access_log_exclude) {
-            // Skip access log emission for excluded status codes
-        } else {
+        // --- Access log filtering (Traefik-style: status + min duration) ---
+        let min_dur = state.config.global.access_log_min_duration_ms;
+        let elapsed_ms = ctx.elapsed().as_millis() as u64;
+        let status_excluded = !should_log_status(status, &state.config.global.access_log_exclude);
+        let too_fast = min_dur > 0 && elapsed_ms < min_dur;
+        if !status_excluded && !too_fast {
             crate::observability::access_log::emit_access_log(ctx, status);
         }
 

@@ -276,6 +276,35 @@ impl UpstreamGroup {
         self.select_peer_with_key(b"")
     }
 
+    /// Select a peer whose address matches the given sticky cookie hash.
+    ///
+    /// Iterates all backends to find one whose SHA256 hash prefix matches.
+    /// Returns `None` if no match found (backend removed/changed).
+    pub fn select_peer_by_sticky_hash(&self, cookie_hash: &str) -> Option<Box<HttpPeer>> {
+        use sha2::{Digest, Sha256};
+
+        // Try all backends (up to 256 iterations to handle weighted duplicates)
+        for _ in 0..256 {
+            if let Some(backend) = self.lb.select(b"", 256) {
+                let addr_str = format!("{}", backend.addr);
+                let hash = format!("{:x}", Sha256::digest(addr_str.as_bytes()));
+                if hash.starts_with(cookie_hash) {
+                    let mut peer = HttpPeer::new(
+                        backend.addr,
+                        self.tls.enabled,
+                        self.tls.sni.as_deref().unwrap_or_default().to_string(),
+                    );
+                    peer.options.connection_timeout = Some(self.timeouts.connect);
+                    peer.options.read_timeout = Some(self.timeouts.read);
+                    peer.options.write_timeout = Some(self.timeouts.write);
+                    peer.options.idle_timeout = Some(self.timeouts.idle);
+                    return Some(Box::new(peer));
+                }
+            }
+        }
+        None
+    }
+
     /// Select a peer using a hash key (for hash-based strategies).
     pub fn select_peer_with_key(&self, key: &[u8]) -> Result<Box<HttpPeer>, UpstreamError> {
         let backend = self

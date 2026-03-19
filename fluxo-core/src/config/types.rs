@@ -109,10 +109,17 @@ pub struct GlobalConfig {
     pub error_pages: HashMap<u16, String>,
 
     /// Access log filter — exclude certain status codes from access logs.
-    /// Supports ranges like "2xx", "3xx" or exact codes like "200", "404".
+    /// Supports ranges like "2xx", "3xx", "200-299" or exact codes like "200", "404".
     /// Example: `["2xx", "3xx"]` to suppress successful request logs.
     #[serde(default)]
     pub access_log_exclude: Vec<String>,
+
+    /// Minimum request duration (ms) for access log inclusion.
+    /// Requests faster than this are excluded. Useful for noisy health checks.
+    /// Example: `100` to only log requests taking >= 100ms.
+    /// Default: 0 (log everything).
+    #[serde(default)]
+    pub access_log_min_duration_ms: u64,
 }
 
 impl Default for GlobalConfig {
@@ -130,6 +137,7 @@ impl Default for GlobalConfig {
             plugins: HashMap::new(),
             error_pages: HashMap::new(),
             access_log_exclude: Vec::new(),
+            access_log_min_duration_ms: 0,
         }
     }
 }

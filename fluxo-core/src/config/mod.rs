@@ -150,17 +150,28 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
     }
 
     // Validate access_log_exclude patterns
-    let valid_log_patterns = ["1xx", "2xx", "3xx", "4xx", "5xx"];
+    let valid_class_patterns = ["1xx", "2xx", "3xx", "4xx", "5xx"];
     for pattern in &config.global.access_log_exclude {
-        if !valid_log_patterns.contains(&pattern.as_str()) {
-            // Try to parse as exact status code
-            if pattern.parse::<u16>().is_err() {
-                return Err(ConfigError::Validation(format!(
-                    "invalid access_log_exclude pattern '{}': must be a status code (200) or range (2xx)",
-                    pattern
-                )));
+        if valid_class_patterns.contains(&pattern.as_str()) {
+            continue;
+        }
+        // Try numeric range "200-299"
+        if let Some((from, to)) = pattern.split_once('-') {
+            match (from.parse::<u16>(), to.parse::<u16>()) {
+                (Ok(f), Ok(t)) if f <= t && (100..=599).contains(&f) && (100..=599).contains(&t) => continue,
+                _ => {}
             }
         }
+        // Try exact status code
+        if let Ok(code) = pattern.parse::<u16>() {
+            if (100..=599).contains(&code) {
+                continue;
+            }
+        }
+        return Err(ConfigError::Validation(format!(
+            "invalid access_log_exclude pattern '{}': must be a status code (200), class (2xx), or range (200-299)",
+            pattern
+        )));
     }
 
     // Every route's upstream must reference a key in config.upstreams
