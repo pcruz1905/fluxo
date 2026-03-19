@@ -42,6 +42,10 @@ pub struct FluxoState {
     pub has_tls: bool,
     /// Trusted proxy CIDRs — XFF is only trusted when peer matches one of these.
     pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// Pre-parsed downstream read timeout (client_body_timeout).
+    pub client_body_timeout: Option<std::time::Duration>,
+    /// Pre-parsed downstream write timeout (client_write_timeout).
+    pub client_write_timeout: Option<std::time::Duration>,
 }
 
 /// Result of building a FluxoState, including background health-check services.
@@ -57,6 +61,7 @@ impl FluxoState {
         let upstreams = build_upstream_groups(&config)?;
         let has_tls = has_tls_configured(&config);
         let trusted_proxies = parse_trusted_proxies(&config);
+        let (client_body_timeout, client_write_timeout) = parse_downstream_timeouts(&config);
         Ok(Self {
             config,
             router,
@@ -65,6 +70,8 @@ impl FluxoState {
             metrics: Arc::new(crate::observability::MetricsRegistry::new()),
             has_tls,
             trusted_proxies,
+            client_body_timeout,
+            client_write_timeout,
         })
     }
 
@@ -78,6 +85,7 @@ impl FluxoState {
 
         let has_tls = has_tls_configured(&config);
         let trusted_proxies = parse_trusted_proxies(&config);
+        let (client_body_timeout, client_write_timeout) = parse_downstream_timeouts(&config);
         Ok(FluxoBuild {
             state: Self {
                 config,
@@ -87,6 +95,8 @@ impl FluxoState {
                 metrics: Arc::new(crate::observability::MetricsRegistry::new()),
                 has_tls,
                 trusted_proxies,
+                client_body_timeout,
+                client_write_timeout,
             },
             health_check_services,
         })
@@ -157,6 +167,22 @@ fn has_tls_configured(config: &FluxoConfig) -> bool {
             .as_ref()
             .is_some_and(|tls| tls.acme || (tls.cert_path.is_some() && tls.key_path.is_some()))
     })
+}
+
+fn parse_downstream_timeouts(
+    config: &FluxoConfig,
+) -> (Option<std::time::Duration>, Option<std::time::Duration>) {
+    let body = config
+        .global
+        .client_body_timeout
+        .as_deref()
+        .and_then(|s| crate::config::parse_duration(s).ok());
+    let write = config
+        .global
+        .client_write_timeout
+        .as_deref()
+        .and_then(|s| crate::config::parse_duration(s).ok());
+    (body, write)
 }
 
 fn parse_trusted_proxies(config: &FluxoConfig) -> Vec<ipnet::IpNet> {
@@ -450,6 +476,27 @@ impl ProxyHttp for FluxoProxy {
         RequestContext::new()
     }
 
+    async fn early_request_filter(
+        &self,
+        session: &mut Session,
+        _ctx: &mut Self::CTX,
+    ) -> Result<(), Box<Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let state = self.state.load();
+        // Apply downstream timeouts (Monolake-inspired granularity)
+        if state.client_body_timeout.is_some() || state.client_write_timeout.is_some() {
+            session
+                .as_downstream_mut()
+                .set_read_timeout(state.client_body_timeout);
+            session
+                .as_downstream_mut()
+                .set_write_timeout(state.client_write_timeout);
+        }
+        Ok(())
+    }
+
     async fn request_filter(
         &self,
         session: &mut Session,
@@ -535,8 +582,12 @@ impl ProxyHttp for FluxoProxy {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        // Client IP — only trust XFF if peer is in trusted_proxies
+        // Client IP — prefer PROXY protocol source → XFF (if trusted) → peer addr
         let peer_addr = session.as_downstream().client_addr();
+        let proxy_proto_ip = ctx
+            .proxy_protocol_info
+            .as_ref()
+            .map(|pp| pp.source_addr.ip().to_string());
         let xff_ip =
             if peer_addr.is_some_and(|addr| is_trusted_proxy(addr, &state.trusted_proxies)) {
                 req_header
@@ -547,7 +598,9 @@ impl ProxyHttp for FluxoProxy {
             } else {
                 None
             };
-        ctx.client_ip = xff_ip.or_else(|| peer_addr.map(|a| a.to_string()));
+        ctx.client_ip = proxy_proto_ip
+            .or(xff_ip)
+            .or_else(|| peer_addr.map(|a| a.to_string()));
 
         if let Some(ssl) = session
             .as_downstream()

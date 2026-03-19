@@ -11,6 +11,7 @@ pub mod error;
 pub mod observability;
 pub mod plugins;
 pub mod proxy;
+pub mod proxy_protocol;
 pub mod routing;
 pub mod tls;
 pub mod upstream;

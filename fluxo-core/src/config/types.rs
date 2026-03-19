@@ -98,6 +98,15 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
 
+    /// Downstream read timeout — how long to wait for the client to send data.
+    /// Nginx equivalent: `client_body_timeout`. Default: none (use Pingora default).
+    /// Example: "60s".
+    pub client_body_timeout: Option<String>,
+
+    /// Downstream write timeout — how long to wait for data to be written to the client.
+    /// Default: none (use Pingora default). Example: "60s".
+    pub client_write_timeout: Option<String>,
+
     /// Global plugin configuration (applies to all routes, can be overridden per-route).
     #[serde(default)]
     pub plugins: HashMap<String, serde_json::Value>,
@@ -136,6 +145,8 @@ impl Default for GlobalConfig {
             trusted_proxies: Vec::new(),
             plugins: HashMap::new(),
             error_pages: HashMap::new(),
+            client_body_timeout: None,
+            client_write_timeout: None,
             access_log_exclude: Vec::new(),
             access_log_min_duration_ms: 0,
         }
@@ -162,10 +173,19 @@ pub struct ServiceConfig {
 pub struct ListenerConfig {
     /// Listen address (e.g., "0.0.0.0:443").
     pub address: String,
-
     /// Whether to offer HTTP/2 via ALPN.
     #[serde(default)]
     pub offer_h2: bool,
+
+    /// Enable PROXY protocol (HAProxy) on this listener.
+    /// When enabled, the first bytes of each connection are expected to be
+    /// a PROXY protocol V1 or V2 header containing the real client IP.
+    ///
+    /// **Note:** Requires Pingora transport-layer integration (not yet available
+    /// in Pingora 0.8). The parsing infrastructure is ready — enable this
+    /// when a custom transport wrapper or future Pingora version supports it.
+    #[serde(default)]
+    pub proxy_protocol: bool,
 }
 
 /// TLS settings for a service.

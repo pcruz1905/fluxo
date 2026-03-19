@@ -99,6 +99,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             listeners: vec![ListenerConfig {
                 address: "0.0.0.0:80".to_string(),
                 offer_h2: false,
+                proxy_protocol: false,
             }],
             tls: None,
             routes: vec![RouteConfig {
@@ -145,6 +146,18 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
             config.global.log_level,
             valid_levels.join(", ")
         )));
+    }
+
+    // Validate downstream timeouts
+    if let Some(ref t) = config.global.client_body_timeout {
+        parse_duration(t).map_err(|_| {
+            ConfigError::Validation(format!("invalid client_body_timeout: '{t}'"))
+        })?;
+    }
+    if let Some(ref t) = config.global.client_write_timeout {
+        parse_duration(t).map_err(|_| {
+            ConfigError::Validation(format!("invalid client_write_timeout: '{t}'"))
+        })?;
     }
 
     // Validate trusted_proxies are valid CIDRs
@@ -528,6 +541,7 @@ pub fn default_config_toml() -> String {
   [[services.web.listeners]]
   address = "0.0.0.0:80"
   # offer_h2 = false
+  # proxy_protocol = false   # Enable HAProxy PROXY protocol V1/V2
 
   # [services.web.tls]
   # cert_path = "/etc/fluxo/cert.pem"

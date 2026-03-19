@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::proxy_protocol::ProxyProtocolInfo;
 use crate::upstream::UpstreamName;
 
 /// Encoding algorithm for response body compression.
@@ -157,6 +158,11 @@ pub struct RequestContext {
     /// Whether a new sticky cookie needs to be set on the response.
     pub sticky_cookie_new: bool,
 
+    // --- PROXY protocol state ---
+    /// PROXY protocol info parsed from the connection (if listener has proxy_protocol enabled).
+    /// Contains the real client source/destination addresses from the PROXY header.
+    pub proxy_protocol_info: Option<ProxyProtocolInfo>,
+
     // --- Compression state ---
     /// The `Accept-Encoding` header value from the client request.
     /// Captured by the compression plugin's `on_request` phase.
@@ -231,6 +237,7 @@ impl RequestContext {
             retry_count: 0,
             sticky_cookie_value: None,
             sticky_cookie_new: false,
+            proxy_protocol_info: None,
             accept_encoding: None,
             compression_encoding: None,
             compressor: None,
@@ -272,6 +279,7 @@ mod tests {
         assert_eq!(ctx.retry_count, 0);
         assert!(ctx.sticky_cookie_value.is_none());
         assert!(!ctx.sticky_cookie_new);
+        assert!(ctx.proxy_protocol_info.is_none());
         assert!(ctx.accept_encoding.is_none());
         assert!(ctx.compression_encoding.is_none());
         assert!(ctx.compressor.is_none());
