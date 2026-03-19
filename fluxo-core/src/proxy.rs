@@ -283,17 +283,19 @@ fn resolve_composite_upstream(
                 if r < *weight {
                     // Recursively resolve (child might also be composite)
                     return Some(
-                        resolve_composite_upstream(child_name, composites, upstreams, circuit_breakers)
-                            .unwrap_or_else(|| child_name.clone()),
+                        resolve_composite_upstream(
+                            child_name,
+                            composites,
+                            upstreams,
+                            circuit_breakers,
+                        )
+                        .unwrap_or_else(|| child_name.clone()),
                     );
                 }
                 r -= weight;
             }
             // Fallback: last child
-            composite
-                .children
-                .last()
-                .map(|(name, _)| name.clone())
+            composite.children.last().map(|(name, _)| name.clone())
         }
         CompositeMode::Failover => {
             for (child_name, _) in &composite.children {
@@ -407,10 +409,12 @@ pub struct FluxoProxy {
 
 impl FluxoProxy {
     pub fn new(state: FluxoState) -> Result<Self, crate::error::FluxoError> {
-        let metrics = Arc::new(
-            crate::observability::MetricsRegistry::new()
-                .map_err(|e| crate::error::FluxoError::Config(crate::config::ConfigError::Validation(format!("Metrics init failed: {}", e))))?,
-        );
+        let metrics = Arc::new(crate::observability::MetricsRegistry::new().map_err(|e| {
+            crate::error::FluxoError::Config(crate::config::ConfigError::Validation(format!(
+                "Metrics init failed: {}",
+                e
+            )))
+        })?);
         let cb = Arc::new(CircuitBreakerTracker::new());
 
         // Register circuit breakers for upstreams that have them configured
@@ -923,23 +927,22 @@ impl ProxyHttp for FluxoProxy {
                 ctx.retry_count = attempt;
             }
 
-            let result = if let (Some(cookie_val), Some(_)) =
-                (&ctx.sticky_cookie_value, sticky_config)
-            {
-                let matched = upstream_group.select_peer_by_sticky_hash(cookie_val);
-                match matched {
-                    Some(p) => Ok(p),
-                    None => {
-                        ctx.sticky_cookie_new = true;
-                        upstream_group.select_peer()
+            let result =
+                if let (Some(cookie_val), Some(_)) = (&ctx.sticky_cookie_value, sticky_config) {
+                    let matched = upstream_group.select_peer_by_sticky_hash(cookie_val);
+                    match matched {
+                        Some(p) => Ok(p),
+                        None => {
+                            ctx.sticky_cookie_new = true;
+                            upstream_group.select_peer()
+                        }
                     }
-                }
-            } else if sticky_config.is_some() {
-                ctx.sticky_cookie_new = true;
-                upstream_group.select_peer()
-            } else {
-                upstream_group.select_peer()
-            };
+                } else if sticky_config.is_some() {
+                    ctx.sticky_cookie_new = true;
+                    upstream_group.select_peer()
+                } else {
+                    upstream_group.select_peer()
+                };
 
             match result {
                 Ok(p) => {
@@ -958,7 +961,10 @@ impl ProxyHttp for FluxoProxy {
                 .unwrap_or_else(|| "no healthy backends".to_string());
             Error::explain(
                 pingora_core::ErrorType::ConnectError,
-                format!("failed to select peer from '{}': {}", route.upstream, err_msg),
+                format!(
+                    "failed to select peer from '{}': {}",
+                    route.upstream, err_msg
+                ),
             )
         })?;
 
@@ -995,7 +1001,9 @@ impl ProxyHttp for FluxoProxy {
         let state = self.state.load();
         if let Some(route) = &ctx.matched_route {
             let compiled = &state.router.routes()[route.index];
-            compiled.pipeline.run_upstream_request(upstream_request, ctx);
+            compiled
+                .pipeline
+                .run_upstream_request(upstream_request, ctx);
 
             // --- Traffic mirroring (Traefik-inspired) ---
             // Fire-and-forget: clone headers, send to mirror upstream in background.
@@ -1060,7 +1068,8 @@ impl ProxyHttp for FluxoProxy {
                     ctx.error_page_override = Some(page_body.clone());
                     upstream_response.remove_header("content-length");
                     upstream_response.remove_header("content-encoding");
-                    let _ = upstream_response.insert_header("content-type", "text/html; charset=utf-8");
+                    let _ =
+                        upstream_response.insert_header("content-type", "text/html; charset=utf-8");
                 }
             }
 
@@ -1389,11 +1398,8 @@ async fn send_mirror_request(
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
 
-    let stream = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        TcpStream::connect(addr),
-    )
-    .await??;
+    let stream =
+        tokio::time::timeout(std::time::Duration::from_secs(5), TcpStream::connect(addr)).await??;
 
     let method = header.method.as_str();
     let path = header

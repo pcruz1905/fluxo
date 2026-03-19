@@ -126,9 +126,18 @@ mod tests {
     #[test]
     fn equal_weights_round_robin() {
         let scheduler = EdfScheduler::new(vec![
-            EdfTarget { address: "a".into(), weight: 1 },
-            EdfTarget { address: "b".into(), weight: 1 },
-            EdfTarget { address: "c".into(), weight: 1 },
+            EdfTarget {
+                address: "a".into(),
+                weight: 1,
+            },
+            EdfTarget {
+                address: "b".into(),
+                weight: 1,
+            },
+            EdfTarget {
+                address: "c".into(),
+                weight: 1,
+            },
         ]);
 
         // With equal weights, should cycle through all targets
@@ -144,8 +153,14 @@ mod tests {
     #[test]
     fn weighted_distribution() {
         let scheduler = EdfScheduler::new(vec![
-            EdfTarget { address: "a".into(), weight: 3 },
-            EdfTarget { address: "b".into(), weight: 1 },
+            EdfTarget {
+                address: "a".into(),
+                weight: 3,
+            },
+            EdfTarget {
+                address: "b".into(),
+                weight: 1,
+            },
         ]);
 
         let mut counts = [0u32; 2];
@@ -160,9 +175,10 @@ mod tests {
 
     #[test]
     fn single_target() {
-        let scheduler = EdfScheduler::new(vec![
-            EdfTarget { address: "only".into(), weight: 5 },
-        ]);
+        let scheduler = EdfScheduler::new(vec![EdfTarget {
+            address: "only".into(),
+            weight: 5,
+        }]);
 
         for _ in 0..10 {
             let (idx, addr) = scheduler.select().unwrap();
@@ -181,8 +197,14 @@ mod tests {
     #[test]
     fn large_weight_difference() {
         let scheduler = EdfScheduler::new(vec![
-            EdfTarget { address: "heavy".into(), weight: 100 },
-            EdfTarget { address: "light".into(), weight: 1 },
+            EdfTarget {
+                address: "heavy".into(),
+                weight: 100,
+            },
+            EdfTarget {
+                address: "light".into(),
+                weight: 1,
+            },
         ]);
 
         let mut counts = [0u32; 2];

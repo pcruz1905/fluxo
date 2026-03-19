@@ -145,7 +145,9 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("checking ACME certificates...");
         // Run the async cert acquisition — reuse existing runtime if available
         // (Pingora may have already started one), otherwise create a temporary one.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() { handle.block_on(app.ensure_certs())? } else {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(app.ensure_certs())?
+        } else {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(app.ensure_certs())?;
         }
@@ -170,8 +172,12 @@ fn main() -> anyhow::Result<()> {
                 match &service_config.tls {
                     Some(tls) if tls.cert_path.is_some() && tls.key_path.is_some() => {
                         // SAFETY: guarded by is_some() checks above
-                        let Some(cert) = tls.cert_path.as_ref() else { continue };
-                        let Some(key) = tls.key_path.as_ref() else { continue };
+                        let Some(cert) = tls.cert_path.as_ref() else {
+                            continue;
+                        };
+                        let Some(key) = tls.key_path.as_ref() else {
+                            continue;
+                        };
                         svc.add_tls(&listener.address, cert, key)?;
                         tracing::info!(
                             service = service_name,

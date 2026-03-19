@@ -33,11 +33,7 @@ impl ChallengeState {
 
     /// Look up a challenge token. Returns the key authorization if found.
     pub fn get(&self, token: &str) -> Option<String> {
-        self.tokens
-            .read()
-            .ok()?
-            .get(token)
-            .cloned()
+        self.tokens.read().ok()?.get(token).cloned()
     }
 
     /// Remove a challenge token after validation completes.

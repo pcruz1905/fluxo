@@ -21,8 +21,6 @@ pub struct MetricsRegistry {
     upstream_errors_total: IntCounterVec,
 }
 
-
-
 impl MetricsRegistry {
     /// Create a new metrics registry with all Fluxo metrics pre-registered.
     pub fn new() -> Result<Self, String> {

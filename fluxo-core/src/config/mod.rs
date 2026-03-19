@@ -145,7 +145,9 @@ pub fn validate(config: &FluxoConfig) -> Result<(), ConfigError> {
     if errors.is_empty() {
         Ok(())
     } else if errors.len() == 1 {
-        Err(ConfigError::Validation(errors.into_iter().next().unwrap_or_default()))
+        Err(ConfigError::Validation(
+            errors.into_iter().next().unwrap_or_default(),
+        ))
     } else {
         Err(ConfigError::ValidationMultiple(errors))
     }
@@ -157,10 +159,7 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
 
     // Validate admin address
     if config.global.admin.parse::<std::net::SocketAddr>().is_err() {
-        errors.push(format!(
-            "invalid admin address '{}'",
-            config.global.admin
-        ));
+        errors.push(format!("invalid admin address '{}'", config.global.admin));
     }
 
     // Validate log_level
@@ -293,17 +292,13 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
             if let Err(e) =
                 crate::plugins::config::compile_plugins(&route.plugins, &config.global.plugins)
             {
-                errors.push(format!(
-                    "service '{service_name}' route {i}: {e}"
-                ));
+                errors.push(format!("service '{service_name}' route {i}: {e}"));
             }
         }
 
         // Must have at least one listener
         if service.listeners.is_empty() {
-            errors.push(format!(
-                "service '{service_name}' has no listeners"
-            ));
+            errors.push(format!("service '{service_name}' has no listeners"));
         }
 
         // Validate TLS configuration
@@ -369,7 +364,13 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
         }
 
         // Validate load balancing strategy
-        let valid_strategies = ["round_robin", "random", "fnv_hash", "consistent_hash", "weighted_edf"];
+        let valid_strategies = [
+            "round_robin",
+            "random",
+            "fnv_hash",
+            "consistent_hash",
+            "weighted_edf",
+        ];
         if !valid_strategies.contains(&upstream.load_balancing.as_str()) {
             errors.push(format!(
                 "upstream '{name}': unknown load_balancing '{}'. Valid: {}",
@@ -394,9 +395,7 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
         // Validate retry config
         if let Some(retry) = &upstream.retry {
             if retry.attempts == 0 {
-                errors.push(format!(
-                    "upstream '{name}': retry.attempts must be >= 1"
-                ));
+                errors.push(format!("upstream '{name}': retry.attempts must be >= 1"));
             }
             let valid_conditions = ["error", "timeout", "5xx"];
             for condition in &retry.on {
@@ -1478,9 +1477,18 @@ targets = ["127.0.0.1:3000"]
         let err = load_from_str(toml).unwrap_err();
         let msg = err.to_string();
         // All three errors should be reported, not just the first one
-        assert!(msg.contains("invalid admin address"), "missing admin error: {msg}");
-        assert!(msg.contains("invalid log_level"), "missing log_level error: {msg}");
-        assert!(msg.contains("invalid trusted_proxy CIDR"), "missing CIDR error: {msg}");
+        assert!(
+            msg.contains("invalid admin address"),
+            "missing admin error: {msg}"
+        );
+        assert!(
+            msg.contains("invalid log_level"),
+            "missing log_level error: {msg}"
+        );
+        assert!(
+            msg.contains("invalid trusted_proxy CIDR"),
+            "missing CIDR error: {msg}"
+        );
         // Should be a ValidationMultiple
         assert!(matches!(err, ConfigError::ValidationMultiple(_)));
     }

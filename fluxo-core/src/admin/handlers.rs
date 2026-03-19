@@ -4,7 +4,6 @@ use std::sync::Arc;
 use crate::observability::MetricsRegistry;
 use crate::proxy::{FluxoProxy, FluxoState};
 
-
 /// Helper to safely serialize JSON and ensure a valid response even on serialization panic/failure.
 pub fn json_response<T: serde::Serialize>(status: u16, value: &T) -> (u16, String, &'static str) {
     match serde_json::to_string(value) {
@@ -18,7 +17,10 @@ pub fn json_response<T: serde::Serialize>(status: u16, value: &T) -> (u16, Strin
 }
 
 /// Helper for pretty-printed JSON responses.
-pub fn json_response_pretty<T: serde::Serialize>(status: u16, value: &T) -> (u16, String, &'static str) {
+pub fn json_response_pretty<T: serde::Serialize>(
+    status: u16,
+    value: &T,
+) -> (u16, String, &'static str) {
     match serde_json::to_string_pretty(value) {
         Ok(body) => (status, body, "application/json"),
         Err(e) => (
@@ -115,7 +117,10 @@ pub fn handle_post_config(proxy: &Arc<FluxoProxy>, body: &[u8]) -> (u16, String,
     let config: crate::config::FluxoConfig = match serde_json::from_slice(body) {
         Ok(c) => c,
         Err(e) => {
-            return json_response(400, &serde_json::json!({"error": format!("invalid JSON: {e}")}));
+            return json_response(
+                400,
+                &serde_json::json!({"error": format!("invalid JSON: {e}")}),
+            );
         }
     };
 
@@ -150,7 +155,10 @@ pub fn handle_reload(
             match candidates.iter().find(|p| Path::new(p).exists()) {
                 Some(p) => p.to_string(),
                 None => {
-                    return json_response(404, &serde_json::json!({"error": "no config file found"}));
+                    return json_response(
+                        404,
+                        &serde_json::json!({"error": "no config file found"}),
+                    );
                 }
             }
         }
@@ -160,7 +168,10 @@ pub fn handle_reload(
         Ok(config) => match FluxoState::try_from_config(config) {
             Ok(new_state) => {
                 proxy.reload(new_state);
-                json_response(200, &serde_json::json!({"status": "reloaded", "path": path}))
+                json_response(
+                    200,
+                    &serde_json::json!({"status": "reloaded", "path": path}),
+                )
             }
             Err(e) => json_response(500, &serde_json::json!({"error": e.to_string()})),
         },

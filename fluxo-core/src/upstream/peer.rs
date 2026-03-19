@@ -195,7 +195,9 @@ impl AnyLoadBalancer {
                         weight: t.weight(),
                     })
                     .collect();
-                Ok(Self::Edf(Arc::new(super::edf::EdfScheduler::new(edf_targets))))
+                Ok(Self::Edf(Arc::new(super::edf::EdfScheduler::new(
+                    edf_targets,
+                ))))
             }
         }
     }

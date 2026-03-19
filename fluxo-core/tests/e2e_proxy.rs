@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use hyper::StatusCode;
 use pingora_core::server::Server;
 use pingora_core::server::configuration::Opt;
 use pingora_proxy::http_proxy_service;
 
 use fluxo_core::config::{
-    FluxoConfig, RouteConfig, ServiceConfig, UpstreamConfig, TargetConfig, ListenerConfig,
+    FluxoConfig, ListenerConfig, RouteConfig, ServiceConfig, TargetConfig, UpstreamConfig,
 };
 use fluxo_core::proxy::{FluxoProxy, FluxoState};
 
@@ -41,11 +41,11 @@ async fn start_mock_upstream() -> SocketAddr {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    
+
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    
+
     addr
 }
 
@@ -56,7 +56,7 @@ async fn test_end_to_end_proxy_complete_suite() {
 
     // 2. Build the Global Test Configuration
     let mut config = FluxoConfig::default();
-    
+
     // Add the mock upstream
     config.upstreams.insert(
         "mock_backend".to_string(),
@@ -98,20 +98,26 @@ async fn test_end_to_end_proxy_complete_suite() {
     };
 
     // --- CORE PLUGINS ---
-    
+
     // Static & Redirect
     svc.routes.push(RouteConfig {
         name: Some("static".to_string()),
         match_host: vec!["static.test".to_string()],
         upstream: "mock_backend".to_string(),
-        plugins: HashMap::from([("static_response".to_string(), serde_json::json!({"status": 201, "body": "static"}))]),
+        plugins: HashMap::from([(
+            "static_response".to_string(),
+            serde_json::json!({"status": 201, "body": "static"}),
+        )]),
         ..Default::default()
     });
     svc.routes.push(RouteConfig {
         name: Some("redirect".to_string()),
         match_host: vec!["redirect.test".to_string()],
         upstream: "mock_backend".to_string(),
-        plugins: HashMap::from([("redirect".to_string(), serde_json::json!({"url": "http://new.test", "status": 301}))]),
+        plugins: HashMap::from([(
+            "redirect".to_string(),
+            serde_json::json!({"url": "http://new.test", "status": 301}),
+        )]),
         ..Default::default()
     });
 
@@ -121,8 +127,14 @@ async fn test_end_to_end_proxy_complete_suite() {
         match_host: vec!["prefix.test".to_string()],
         upstream: "mock_backend".to_string(),
         plugins: HashMap::from([
-            ("strip_prefix".to_string(), serde_json::json!({"prefixes": ["/api"]})),
-            ("add_prefix".to_string(), serde_json::json!({"prefix": "/prefixed"}))
+            (
+                "strip_prefix".to_string(),
+                serde_json::json!({"prefixes": ["/api"]}),
+            ),
+            (
+                "add_prefix".to_string(),
+                serde_json::json!({"prefix": "/prefixed"}),
+            ),
         ]),
         ..Default::default()
     });
@@ -134,7 +146,10 @@ async fn test_end_to_end_proxy_complete_suite() {
         name: Some("rate_limit".to_string()),
         match_host: vec!["limit.test".to_string()],
         upstream: "mock_backend".to_string(),
-        plugins: HashMap::from([("rate_limit".to_string(), serde_json::json!({"requests_per_second": 1, "burst": 1}))]),
+        plugins: HashMap::from([(
+            "rate_limit".to_string(),
+            serde_json::json!({"requests_per_second": 1, "burst": 1}),
+        )]),
         ..Default::default()
     });
 
@@ -143,7 +158,10 @@ async fn test_end_to_end_proxy_complete_suite() {
         name: Some("compression".to_string()),
         match_host: vec!["compress.test".to_string()],
         upstream: "mock_backend".to_string(),
-        plugins: HashMap::from([("compression".to_string(), serde_json::json!({"algorithms": ["gzip"], "min_size": 100}))]),
+        plugins: HashMap::from([(
+            "compression".to_string(),
+            serde_json::json!({"algorithms": ["gzip"], "min_size": 100}),
+        )]),
         ..Default::default()
     });
 
@@ -152,7 +170,10 @@ async fn test_end_to_end_proxy_complete_suite() {
         name: Some("ip_deny".to_string()),
         match_host: vec!["deny.test".to_string()],
         upstream: "mock_backend".to_string(),
-        plugins: HashMap::from([("ip_restrict".to_string(), serde_json::json!({"deny": ["0.0.0.0/0"]}))]),
+        plugins: HashMap::from([(
+            "ip_restrict".to_string(),
+            serde_json::json!({"deny": ["0.0.0.0/0"]}),
+        )]),
         ..Default::default()
     });
 
@@ -182,7 +203,7 @@ async fn test_end_to_end_proxy_complete_suite() {
 
     let build = FluxoState::build(config).expect("failed to build proxy state");
     let proxy = FluxoProxy::new(build.state).expect("failed to init proxy");
-    
+
     let mut proxy_service = http_proxy_service(&server.configuration, proxy);
     proxy_service.add_tcp(&proxy_addr);
     server.add_service(proxy_service);
@@ -203,30 +224,58 @@ async fn test_end_to_end_proxy_complete_suite() {
     // === EXECUTE TESTS ===
 
     // Test: Basic Routing
-    let resp = client.get(&proxy_url).header("Host", "static.test").send().await.unwrap();
+    let resp = client
+        .get(&proxy_url)
+        .header("Host", "static.test")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
 
     // Test: Rate Limiting
-    let resp1 = client.get(&proxy_url).header("Host", "limit.test").send().await.unwrap();
+    let resp1 = client
+        .get(&proxy_url)
+        .header("Host", "limit.test")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp1.status(), 200);
-    let resp2 = client.get(&proxy_url).header("Host", "limit.test").send().await.unwrap();
+    let resp2 = client
+        .get(&proxy_url)
+        .header("Host", "limit.test")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp2.status(), 429);
 
     // Test: Compression
-    let resp = client.get(format!("{}/large", proxy_url))
+    let resp = client
+        .get(format!("{}/large", proxy_url))
         .header("Host", "compress.test")
         .header("Accept-Encoding", "gzip")
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     // reqwest handles decoding, but we can check if it was encoded
     assert_eq!(resp.headers().get("content-encoding").unwrap(), "gzip");
 
     // Test: IP Restriction
-    let resp = client.get(&proxy_url).header("Host", "deny.test").send().await.unwrap();
+    let resp = client
+        .get(&proxy_url)
+        .header("Host", "deny.test")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 403);
 
     // Test: Upstream Offline (502)
-    let resp = client.get(&proxy_url).header("Host", "offline.test").send().await.unwrap();
+    let resp = client
+        .get(&proxy_url)
+        .header("Host", "offline.test")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 502);
 
     println!("All behavioral tests passed!");

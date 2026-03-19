@@ -43,15 +43,12 @@ impl StreamingCompressor {
                 Vec::new(),
                 flate2::Compression::fast(),
             ))),
-            CompressionEncoding::Brotli => Some(Self::Brotli(Box::new(brotli::CompressorWriter::new(
-                Vec::new(),
-                4096,
-                4,
-                22,
-            )))),
-            CompressionEncoding::Zstd => {
-                zstd::stream::write::Encoder::new(Vec::new(), 1).ok().map(Self::Zstd)
-            }
+            CompressionEncoding::Brotli => Some(Self::Brotli(Box::new(
+                brotli::CompressorWriter::new(Vec::new(), 4096, 4, 22),
+            ))),
+            CompressionEncoding::Zstd => zstd::stream::write::Encoder::new(Vec::new(), 1)
+                .ok()
+                .map(Self::Zstd),
         }
     }
 
