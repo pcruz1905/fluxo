@@ -259,7 +259,7 @@ pub fn handle_not_found() -> (u16, String, &'static str) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -329,5 +329,204 @@ mod tests {
         let (status, resp, _) = handle_cache_purge(body).await;
         assert_eq!(status, 200);
         assert!(resp.contains(r#""purged":false"#));
+    }
+
+    // --- Admin handler unit tests ---
+
+    fn make_proxy(config: crate::config::FluxoConfig) -> Arc<FluxoProxy> {
+        let state =
+            FluxoState::try_from_config(config).expect("default config should build state");
+        Arc::new(FluxoProxy::new(state).expect("proxy should init"))
+    }
+
+    #[test]
+    fn health_returns_200_when_healthy() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, ct) = handle_health(&proxy);
+        assert_eq!(status, 200);
+        assert_eq!(ct, "application/json");
+        assert!(body.contains("healthy"));
+        assert!(body.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn health_returns_503_when_draining() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        proxy
+            .static_state
+            .draining
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (status, body, _) = handle_health(&proxy);
+        assert_eq!(status, 503);
+        assert!(body.contains("draining"));
+    }
+
+    #[test]
+    fn config_returns_running_config() {
+        let mut config = crate::config::FluxoConfig::default();
+        config.upstreams.insert(
+            "web".to_string(),
+            crate::config::UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "127.0.0.1:3000".to_string(),
+                )],
+                load_balancing: "round_robin".to_string(),
+                ..Default::default()
+            },
+        );
+        let proxy = make_proxy(config);
+        let (status, body, _) = handle_config(&proxy);
+        assert_eq!(status, 200);
+        assert!(body.contains("web"));
+        assert!(body.contains("127.0.0.1:3000"));
+    }
+
+    #[test]
+    fn upstreams_lists_targets() {
+        let mut config = crate::config::FluxoConfig::default();
+        config.upstreams.insert(
+            "backend".to_string(),
+            crate::config::UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "10.0.0.1:8080".to_string(),
+                )],
+                load_balancing: "round_robin".to_string(),
+                ..Default::default()
+            },
+        );
+        let proxy = make_proxy(config);
+        let (status, body, _) = handle_upstreams(&proxy);
+        assert_eq!(status, 200);
+        assert!(body.contains("backend"));
+        assert!(body.contains("10.0.0.1:8080"));
+        assert!(body.contains(r#""weight": 1"#));
+    }
+
+    #[test]
+    fn upstreams_empty_config() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_upstreams(&proxy);
+        assert_eq!(status, 200);
+        assert_eq!(body.trim(), "{}");
+    }
+
+    #[test]
+    fn post_config_invalid_json() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_post_config(&proxy, b"not json at all");
+        assert_eq!(status, 400);
+        assert!(body.contains("invalid JSON"));
+    }
+
+    #[test]
+    fn post_config_invalid_config() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        // Valid JSON but route references nonexistent upstream
+        let bad_config = serde_json::json!({
+            "services": {
+                "web": {
+                    "listeners": [{"address": "0.0.0.0:8080"}],
+                    "routes": [{"upstream": "nonexistent", "match_host": ["test.com"]}]
+                }
+            }
+        });
+        let bytes = serde_json::to_vec(&bad_config).unwrap();
+        let (status, body, _) = handle_post_config(&proxy, &bytes);
+        assert_eq!(status, 400);
+        assert!(body.contains("nonexistent"));
+    }
+
+    #[test]
+    fn post_config_valid_json() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        // Minimal valid config — empty is valid
+        let valid_config = serde_json::json!({});
+        let bytes = serde_json::to_vec(&valid_config).unwrap();
+        let (status, body, _) = handle_post_config(&proxy, &bytes);
+        assert_eq!(status, 200);
+        assert!(body.contains("reloaded"));
+    }
+
+    #[test]
+    fn reload_without_config_file() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_reload(&proxy, None);
+        // No default config files exist in test environment
+        assert_eq!(status, 404);
+        assert!(body.contains("no config file found"));
+    }
+
+    #[test]
+    fn reload_with_nonexistent_path() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_reload(&proxy, Some("/nonexistent/fluxo.toml"));
+        assert_eq!(status, 500);
+        assert!(body.contains("error"));
+    }
+
+    #[test]
+    fn reload_from_temp_file() {
+        use std::io::Write;
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            r#"
+[upstreams.reloaded_backend]
+targets = ["127.0.0.1:9999"]
+load_balancing = "round_robin"
+"#
+        )
+        .unwrap();
+
+        let path = tmp.path().to_str().unwrap();
+        let (status, body, _) = handle_reload(&proxy, Some(path));
+        assert_eq!(status, 200);
+        assert!(body.contains("reloaded"));
+
+        // Verify the new config is active
+        let state = proxy.state_snapshot();
+        assert!(state.config.upstreams.contains_key("reloaded_backend"));
+    }
+
+    #[test]
+    fn reload_with_invalid_toml() {
+        use std::io::Write;
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "this is not valid toml [[[").unwrap();
+
+        let path = tmp.path().to_str().unwrap();
+        let (status, body, _) = handle_reload(&proxy, Some(path));
+        assert_eq!(status, 500);
+        assert!(body.contains("error"));
+    }
+
+    #[test]
+    fn reload_with_invalid_config() {
+        use std::io::Write;
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        // Valid TOML but route references nonexistent upstream
+        writeln!(
+            tmp,
+            r#"
+[services.web]
+listeners = [{{ address = "0.0.0.0:8080" }}]
+
+[[services.web.routes]]
+upstream = "does_not_exist"
+match_host = ["test.com"]
+"#
+        )
+        .unwrap();
+
+        let path = tmp.path().to_str().unwrap();
+        let (status, body, _) = handle_reload(&proxy, Some(path));
+        assert_eq!(status, 500);
+        assert!(body.contains("error"));
     }
 }

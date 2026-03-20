@@ -1699,4 +1699,46 @@ mod tests {
         let b = std::ptr::from_ref(global_cache_storage());
         assert_eq!(a, b);
     }
+
+    #[test]
+    fn parse_max_age_malformed_value() {
+        assert_eq!(parse_max_age("max-age=abc"), None);
+        assert_eq!(parse_max_age("max-age="), None);
+    }
+
+    #[test]
+    fn parse_max_age_zero() {
+        assert_eq!(
+            parse_max_age("max-age=0"),
+            Some(std::time::Duration::from_secs(0))
+        );
+    }
+
+    #[test]
+    fn parse_max_age_case_insensitive() {
+        assert_eq!(
+            parse_max_age("Max-Age=300"),
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_max_age("MAX-AGE=300"),
+            Some(std::time::Duration::from_secs(300))
+        );
+    }
+
+    #[test]
+    fn parse_max_age_s_maxage_only() {
+        assert_eq!(
+            parse_max_age("s-maxage=120"),
+            Some(std::time::Duration::from_secs(120))
+        );
+    }
+
+    #[test]
+    fn parse_max_age_very_large_value() {
+        assert_eq!(
+            parse_max_age("max-age=999999999"),
+            Some(std::time::Duration::from_secs(999_999_999))
+        );
+    }
 }

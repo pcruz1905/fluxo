@@ -617,4 +617,100 @@ mod tests {
         assert_eq!(t.tcp_recv_buf, Some(65536));
         assert_eq!(t.h2_ping_interval, Some(Duration::from_secs(30)));
     }
+
+    #[test]
+    fn sticky_hash_finds_matching_backend() {
+        use sha2::{Digest, Sha256};
+
+        let targets = simple_targets(&["127.0.0.1:4000", "127.0.0.1:4001", "127.0.0.1:4002"]);
+        let group = UpstreamGroup::new(
+            UpstreamName::from("sticky"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        // Compute the expected hash for one of the backends
+        let addr = "127.0.0.1:4001";
+        let hash = format!("{:x}", Sha256::digest(addr.as_bytes()));
+        let prefix = &hash[..8];
+
+        let peer = group.select_peer_by_sticky_hash(prefix);
+        assert!(peer.is_some(), "should find a matching peer");
+        let peer = peer.unwrap();
+        assert_eq!(format!("{}", peer.address()), addr);
+    }
+
+    #[test]
+    fn sticky_hash_returns_none_for_unknown() {
+        let targets = simple_targets(&["127.0.0.1:5000", "127.0.0.1:5001"]);
+        let group = UpstreamGroup::new(
+            UpstreamName::from("sticky"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        let peer = group.select_peer_by_sticky_hash("ffffffff");
+        assert!(peer.is_none(), "no backend should match arbitrary hash");
+    }
+
+    #[test]
+    fn sticky_hash_with_single_backend() {
+        use sha2::{Digest, Sha256};
+
+        let targets = simple_targets(&["127.0.0.1:6000"]);
+        let group = UpstreamGroup::new(
+            UpstreamName::from("sticky"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        let addr = "127.0.0.1:6000";
+        let hash = format!("{:x}", Sha256::digest(addr.as_bytes()));
+        let prefix = &hash[..8];
+
+        let peer = group.select_peer_by_sticky_hash(prefix);
+        assert!(peer.is_some());
+        assert_eq!(format!("{}", peer.unwrap().address()), addr);
+    }
+
+    #[test]
+    fn sticky_hash_applies_timeouts() {
+        use sha2::{Digest, Sha256};
+
+        let targets = simple_targets(&["127.0.0.1:7000"]);
+        let timeouts = UpstreamTimeouts {
+            connect: Duration::from_secs(2),
+            read: Duration::from_secs(10),
+            write: Duration::from_secs(10),
+            idle: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let group = UpstreamGroup::new(
+            UpstreamName::from("sticky"),
+            &targets,
+            LbStrategy::RoundRobin,
+            Default::default(),
+            timeouts,
+        )
+        .unwrap();
+
+        let addr = "127.0.0.1:7000";
+        let hash = format!("{:x}", Sha256::digest(addr.as_bytes()));
+        let prefix = &hash[..8];
+
+        let peer = group.select_peer_by_sticky_hash(prefix).unwrap();
+        assert_eq!(
+            peer.options.connection_timeout,
+            Some(Duration::from_secs(2))
+        );
+    }
 }
