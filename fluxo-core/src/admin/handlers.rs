@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use pingora_cache::Storage;
+
 use crate::observability::MetricsRegistry;
 use crate::proxy::{FluxoProxy, FluxoState};
 
@@ -175,17 +177,67 @@ pub fn handle_reload(
     }
 }
 
-/// POST /cache/purge — cache purge stub.
-/// v0.1: `MemCache` does not support selective purge. Returns a success stub.
-pub fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
-    let _request: Result<serde_json::Value, _> = serde_json::from_slice(body);
-    json_response(
-        200,
-        &serde_json::json!({
-            "status": "ok",
-            "message": "cache purge is a v0.2 feature — MemCache does not support selective purge"
-        }),
-    )
+/// POST /cache/purge — purge cached entries by key.
+///
+/// Accepts JSON body with fields to build the cache key:
+/// ```json
+/// { "host": "example.com", "path": "/api/users", "method": "GET" }
+/// ```
+/// - `host` (required): the Host header value
+/// - `path` (required): the request path (include query string if the route caches it)
+/// - `method` (optional, default "GET"): the HTTP method
+///
+/// Returns `{"purged": true}` if the entry was found and removed,
+/// `{"purged": false}` if no matching entry existed.
+pub async fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
+    let request: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({"error": format!("invalid JSON: {e}")}),
+            );
+        }
+    };
+
+    let Some(host) = request.get("host").and_then(|v| v.as_str()) else {
+        return json_response(
+            400,
+            &serde_json::json!({"error": "missing required field: host"}),
+        );
+    };
+
+    let Some(path) = request.get("path").and_then(|v| v.as_str()) else {
+        return json_response(
+            400,
+            &serde_json::json!({"error": "missing required field: path"}),
+        );
+    };
+
+    let method = request
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("GET");
+
+    // Build cache key matching the logic in cache_key_callback
+    let primary = format!("{method}{host}{path}");
+    let key = pingora_cache::CacheKey::new("", primary, "");
+    let compact = key.to_compact();
+
+    let storage = crate::proxy::global_cache_storage();
+    let span = pingora_cache::trace::Span::inactive();
+    let handle = span.handle();
+
+    match storage
+        .purge(&compact, pingora_cache::PurgeType::Invalidation, &handle)
+        .await
+    {
+        Ok(purged) => json_response(200, &serde_json::json!({"purged": purged})),
+        Err(e) => json_response(
+            500,
+            &serde_json::json!({"error": format!("purge failed: {e}")}),
+        ),
+    }
 }
 
 /// Fallback for unknown routes
@@ -245,5 +297,37 @@ mod tests {
         assert!(body.contains(r#"le="0.1""#));
         assert!(body.contains(r#"le="1""#));
         assert!(body.contains(r#"le="10""#));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_missing_host_returns_400() {
+        let body = br#"{"path": "/foo"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("missing required field: host"));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_missing_path_returns_400() {
+        let body = br#"{"host": "example.com"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("missing required field: path"));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_invalid_json_returns_400() {
+        let body = b"not json";
+        let (status, resp, _) = handle_cache_purge(body).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_nonexistent_key_returns_false() {
+        let body = br#"{"host": "no-such-host.test", "path": "/nonexistent"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        assert_eq!(status, 200);
+        assert!(resp.contains(r#""purged":false"#));
     }
 }

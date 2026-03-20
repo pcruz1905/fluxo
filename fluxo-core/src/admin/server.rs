@@ -83,7 +83,7 @@ impl AdminService {
                             .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
                     }
                 };
-                handlers::handle_cache_purge(&body_bytes)
+                handlers::handle_cache_purge(&body_bytes).await
             }
             _ => handlers::handle_not_found(),
         };

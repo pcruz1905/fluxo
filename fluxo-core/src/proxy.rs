@@ -36,7 +36,7 @@ use crate::upstream::peer::UpstreamGroup;
 
 /// Global in-memory cache storage (Pingora requires `&'static` lifetime).
 /// Using `MemCache` for v0.1 — production would use disk-backed storage.
-fn global_cache_storage() -> &'static MemCache {
+pub(crate) fn global_cache_storage() -> &'static MemCache {
     static STORAGE: OnceLock<MemCache> = OnceLock::new();
     STORAGE.get_or_init(MemCache::new)
 }
