@@ -56,3 +56,49 @@ ppp = { workspace = true }
 axum = "0.8.8"
 reqwest = { version = "0.13.2", features = ["json", "rustls", "brotli", "gzip", "deflate"] }
 tempfile = { workspace = true }
+
+# All E2E tests use harness = false so std::process::exit(0) runs after tests,
+# preventing Pingora's run_forever() threads from keeping the process alive.
+[[test]]
+name = "e2e_proxy"
+harness = false
+
+[[test]]
+name = "e2e_basic_auth"
+harness = false
+
+[[test]]
+name = "e2e_security_headers"
+harness = false
+
+[[test]]
+name = "e2e_request_id"
+harness = false
+
+[[test]]
+name = "e2e_headers"
+harness = false
+
+[[test]]
+name = "e2e_path_rewrite"
+harness = false
+
+[[test]]
+name = "e2e_cors"
+harness = false
+
+[[test]]
+name = "e2e_cache"
+harness = false
+
+[[test]]
+name = "e2e_circuit_breaker"
+harness = false
+
+[[test]]
+name = "e2e_weighted_lb"
+harness = false
+
+[[test]]
+name = "e2e_error_pages"
+harness = false

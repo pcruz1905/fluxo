@@ -2,12 +2,46 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::type_complexity,
     dead_code
 )]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Custom test runner (harness = false)
+// ---------------------------------------------------------------------------
+// Pingora's `run_forever()` spawns threads that never exit, which prevents
+// the process from terminating after tests complete.  All E2E tests use
+// `harness = false` and this runner, which calls `std::process::exit(0)`
+// once every test has passed.
+
+/// Run a list of named async test functions and exit the process.
+///
+/// Usage (in each E2E test file):
+/// ```ignore
+/// fn main() { helpers::run_tests(&[("test_name", test_name)]); }
+/// ```
+pub fn run_tests(tests: &[(&str, fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>)]) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let mut passed = 0;
+
+    for (name, test_fn) in tests {
+        print!("test {name} ... ");
+        rt.block_on(test_fn());
+        println!("ok");
+        passed += 1;
+    }
+
+    println!("\ntest result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n");
+    std::process::exit(0);
+}
 
 use axum::routing::get;
 use axum::Router;
@@ -161,16 +195,16 @@ pub async fn start_proxy(config: FluxoConfig) -> (String, reqwest::Client) {
     (proxy_url, client)
 }
 
-/// Wait for a server to become ready by retrying requests until one succeeds.
+/// Wait for a server to become ready.
+///
+/// Pingora needs time to bootstrap workers after binding.
+/// We first wait for TCP accept, then give workers time to initialize.
 async fn wait_for_server(url: &str, timeout: Duration) {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .unwrap();
     let start = std::time::Instant::now();
+    let addr = url.trim_start_matches("http://");
     loop {
-        if client.get(url).send().await.is_ok() {
-            return;
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            break;
         }
         assert!(
             start.elapsed() <= timeout,
@@ -178,4 +212,6 @@ async fn wait_for_server(url: &str, timeout: Duration) {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // Give Pingora workers time to initialize after the socket is bound
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }

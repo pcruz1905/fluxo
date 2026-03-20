@@ -49,7 +49,18 @@ async fn start_mock_upstream() -> SocketAddr {
     addr
 }
 
-#[tokio::test]
+fn main() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    print!("test test_end_to_end_proxy_complete_suite ... ");
+    rt.block_on(test_end_to_end_proxy_complete_suite());
+    println!("ok");
+    println!("\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n");
+    std::process::exit(0);
+}
+
 #[allow(clippy::too_many_lines)]
 async fn test_end_to_end_proxy_complete_suite() {
     // 1. Start Mock Upstream
