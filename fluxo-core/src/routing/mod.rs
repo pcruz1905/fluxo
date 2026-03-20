@@ -79,6 +79,8 @@ pub struct CompiledRoute {
     pub max_body_bytes: Option<u64>,
     /// Traffic mirror config — fire-and-forget request copies to a shadow upstream.
     pub mirror: Option<CompiledMirror>,
+    /// HTTP cache config (Pingora-native caching).
+    pub cache: Option<CompiledCache>,
 }
 
 /// Pre-compiled mirror configuration for a route.
@@ -88,6 +90,25 @@ pub struct CompiledMirror {
     pub upstream: UpstreamName,
     /// Percentage of requests to mirror (0-100).
     pub percent: u8,
+}
+
+/// Pre-compiled cache configuration for a route.
+#[derive(Debug)]
+pub struct CompiledCache {
+    /// Default TTL when upstream doesn't set Cache-Control.
+    pub default_ttl: std::time::Duration,
+    /// Max cacheable response body size.
+    pub max_file_size: u64,
+    /// Stale-while-revalidate duration in seconds.
+    pub stale_while_revalidate: u32,
+    /// Stale-if-error duration in seconds.
+    pub stale_if_error: u32,
+    /// Allowed HTTP methods (uppercase).
+    pub methods: Vec<String>,
+    /// Whether query string is part of the cache key.
+    pub include_query: bool,
+    /// Force caching regardless of upstream Cache-Control.
+    pub force_cache: bool,
 }
 
 impl CompiledRoute {
@@ -288,6 +309,25 @@ impl RouteTable {
             mirror: config.mirror.as_ref().map(|m| CompiledMirror {
                 upstream: UpstreamName::from(m.upstream.as_str()),
                 percent: m.percent,
+            }),
+            cache: config.cache.as_ref().and_then(|c| {
+                let default_ttl = crate::config::parse_duration(&c.default_ttl).ok()?;
+                let max_file_size = crate::config::parse_size(&c.max_file_size).ok()?;
+                let swr = crate::config::parse_duration(&c.stale_while_revalidate)
+                    .ok()
+                    .map_or(0, |d| d.as_secs() as u32);
+                let sie = crate::config::parse_duration(&c.stale_if_error)
+                    .ok()
+                    .map_or(0, |d| d.as_secs() as u32);
+                Some(CompiledCache {
+                    default_ttl,
+                    max_file_size,
+                    stale_while_revalidate: swr,
+                    stale_if_error: sie,
+                    methods: c.methods.clone(),
+                    include_query: c.include_query,
+                    force_cache: c.force_cache,
+                })
             }),
         })
     }

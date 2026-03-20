@@ -175,6 +175,19 @@ pub fn handle_reload(
     }
 }
 
+/// POST /cache/purge — cache purge stub.
+/// v0.1: `MemCache` does not support selective purge. Returns a success stub.
+pub fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
+    let _request: Result<serde_json::Value, _> = serde_json::from_slice(body);
+    json_response(
+        200,
+        &serde_json::json!({
+            "status": "ok",
+            "message": "cache purge is a v0.2 feature — MemCache does not support selective purge"
+        }),
+    )
+}
+
 /// Fallback for unknown routes
 pub fn handle_not_found() -> (u16, String, &'static str) {
     let body = serde_json::json!({
@@ -186,6 +199,7 @@ pub fn handle_not_found() -> (u16, String, &'static str) {
             "GET /upstreams",
             "POST /config",
             "POST /reload",
+            "POST /cache/purge",
         ]
     });
     json_response(404, &body)

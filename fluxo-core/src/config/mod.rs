@@ -123,6 +123,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
                 max_request_body: None,
                 plugins: Default::default(),
                 mirror: None,
+                cache: None,
             }],
         },
     );
@@ -253,6 +254,35 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                     errors.push(format!(
                         "service '{service_name}' route {i}: invalid max_request_body '{size_str}': \
                          expected format like '10mb', '1gb', '512kb'"
+                    ));
+                }
+            }
+
+            // Validate cache config
+            if let Some(ref cache) = route.cache {
+                let route_desc = route.name.as_deref().unwrap_or("unnamed");
+                if parse_duration(&cache.default_ttl).is_err() {
+                    errors.push(format!(
+                        "service '{service_name}' route '{route_desc}': invalid cache default_ttl '{}'",
+                        cache.default_ttl
+                    ));
+                }
+                if parse_size(&cache.max_file_size).is_err() {
+                    errors.push(format!(
+                        "service '{service_name}' route '{route_desc}': invalid cache max_file_size '{}'",
+                        cache.max_file_size
+                    ));
+                }
+                if parse_duration(&cache.stale_while_revalidate).is_err() {
+                    errors.push(format!(
+                        "service '{service_name}' route '{route_desc}': invalid cache stale_while_revalidate '{}'",
+                        cache.stale_while_revalidate
+                    ));
+                }
+                if parse_duration(&cache.stale_if_error).is_err() {
+                    errors.push(format!(
+                        "service '{service_name}' route '{route_desc}': invalid cache stale_if_error '{}'",
+                        cache.stale_if_error
                     ));
                 }
             }
@@ -1595,5 +1625,89 @@ services = [{ upstream = "v1", weight = 1 }]
 "#;
         let err = load_from_str(toml).unwrap_err();
         assert!(err.to_string().contains("should not have direct targets"));
+    }
+
+    #[test]
+    fn cache_config_valid() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "cached-api"
+  match_path = ["/api/*"]
+  upstream = "backend"
+  [services.web.routes.cache]
+  default_ttl = "5m"
+  max_file_size = "10mb"
+  stale_while_revalidate = "60s"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).unwrap();
+        let route = &config.services["web"].routes[0];
+        assert!(route.cache.is_some());
+        let cache = route.cache.as_ref().unwrap();
+        assert_eq!(cache.default_ttl, "5m");
+        assert_eq!(cache.max_file_size, "10mb");
+        assert_eq!(cache.stale_while_revalidate, "60s");
+    }
+
+    #[test]
+    fn cache_config_defaults() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+  [services.web.routes.cache]
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).unwrap();
+        let cache = config.services["web"].routes[0].cache.as_ref().unwrap();
+        assert_eq!(cache.default_ttl, "300s");
+        assert_eq!(cache.max_file_size, "50mb");
+        assert_eq!(cache.methods, vec!["GET", "HEAD"]);
+        assert!(cache.include_query);
+        assert!(!cache.force_cache);
+    }
+
+    #[test]
+    fn cache_config_invalid_ttl() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+  [services.web.routes.cache]
+  default_ttl = "invalid"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid cache default_ttl"));
+    }
+
+    #[test]
+    fn route_without_cache_is_valid() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let config = load_from_str(toml).unwrap();
+        assert!(config.services["web"].routes[0].cache.is_none());
     }
 }

@@ -8,9 +8,14 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use pingora_cache::key::CacheKey;
+use pingora_cache::meta::CacheMeta;
+use pingora_cache::storage::HitHandler;
+use pingora_cache::{ForcedFreshness, MemCache, NoCacheReason, RespCacheable};
 use pingora_core::Error;
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_proxy::{ProxyHttp, Session};
+use std::sync::OnceLock;
 use tracing::{debug, info, warn};
 
 use crate::config::FluxoConfig;
@@ -28,6 +33,35 @@ use crate::upstream::circuit_breaker::{
     CircuitBreakerTracker, CircuitStatus, PassiveHealthTracker,
 };
 use crate::upstream::peer::UpstreamGroup;
+
+/// Global in-memory cache storage (Pingora requires `&'static` lifetime).
+/// Using `MemCache` for v0.1 — production would use disk-backed storage.
+fn global_cache_storage() -> &'static MemCache {
+    static STORAGE: OnceLock<MemCache> = OnceLock::new();
+    STORAGE.get_or_init(MemCache::new)
+}
+
+/// Parse max-age or s-maxage from a Cache-Control header value.
+fn parse_max_age(cc: &str) -> Option<std::time::Duration> {
+    // Prefer s-maxage (shared cache directive) over max-age
+    for directive in cc.split(',').map(str::trim) {
+        let lower = directive.to_lowercase();
+        if let Some(val) = lower.strip_prefix("s-maxage=") {
+            if let Ok(secs) = val.trim().parse::<u64>() {
+                return Some(std::time::Duration::from_secs(secs));
+            }
+        }
+    }
+    for directive in cc.split(',').map(str::trim) {
+        let lower = directive.to_lowercase();
+        if let Some(val) = lower.strip_prefix("max-age=") {
+            if let Ok(secs) = val.trim().parse::<u64>() {
+                return Some(std::time::Duration::from_secs(secs));
+            }
+        }
+    }
+    None
+}
 
 /// A composite upstream that delegates to child upstreams.
 #[derive(Debug, Clone)]
@@ -680,6 +714,193 @@ impl ProxyHttp for FluxoProxy {
         Ok(())
     }
 
+    fn request_cache_filter(
+        &self,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        // Cache decision requires a matched route with cache config.
+        // At this point request_filter has already run, so ctx.matched_route is set.
+        let state = self.state.load();
+        let Some(route) = ctx.matched_route.as_ref() else {
+            return Ok(());
+        };
+
+        let compiled = &state.router.routes()[route.index];
+        let Some(cache_config) = compiled.cache.as_ref() else {
+            return Ok(());
+        };
+
+        // Only cache allowed methods
+        let method = ctx.method.as_deref().unwrap_or("");
+        if !cache_config
+            .methods
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(method))
+        {
+            ctx.cache_status = Some(crate::context::CacheStatus::Bypass);
+            return Ok(());
+        }
+
+        // Enable Pingora's cache for this request
+        session.cache.enable(
+            global_cache_storage(),
+            None, // no eviction manager for v0.1
+            None, // no predictor
+            None, // no cache lock
+            None, // no option overrides
+        );
+
+        // Set max file size for this request
+        session
+            .cache
+            .set_max_file_size_bytes(cache_config.max_file_size as usize);
+
+        Ok(())
+    }
+
+    fn cache_key_callback(
+        &self,
+        session: &Session,
+        ctx: &mut Self::CTX,
+    ) -> Result<CacheKey, Box<Error>> {
+        let req = session.req_header();
+        let method = req.method.as_str();
+        let host = req
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("_");
+
+        // Build primary key: method + host + path (+ optional query)
+        let state = self.state.load();
+        let include_query = ctx
+            .matched_route
+            .as_ref()
+            .and_then(|r| state.router.routes().get(r.index))
+            .and_then(|r| r.cache.as_ref())
+            .is_none_or(|c| c.include_query);
+
+        let primary = if include_query {
+            let pq = req
+                .uri
+                .path_and_query()
+                .map_or("/", http::uri::PathAndQuery::as_str);
+            format!("{method}{host}{pq}")
+        } else {
+            format!("{method}{host}{}", req.uri.path())
+        };
+
+        Ok(CacheKey::new("fluxo", primary, ""))
+    }
+
+    fn response_cache_filter(
+        &self,
+        _session: &Session,
+        resp: &pingora_http::ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<RespCacheable, Box<Error>> {
+        let state = self.state.load();
+        let Some(cache_config) = ctx
+            .matched_route
+            .as_ref()
+            .and_then(|r| state.router.routes().get(r.index))
+            .and_then(|r| r.cache.as_ref())
+        else {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::NeverEnabled));
+        };
+
+        let status = resp.status.as_u16();
+
+        // Only cache 2xx responses (and 301/304)
+        if !matches!(status, 200..=299 | 301 | 304) {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        }
+
+        // Check Content-Length against max_file_size
+        if let Some(cl) = resp
+            .headers
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            if cl > cache_config.max_file_size {
+                return Ok(RespCacheable::Uncacheable(NoCacheReason::ResponseTooLarge));
+            }
+        }
+
+        // Respect upstream Cache-Control: no-store, private
+        let cc_header = resp
+            .headers
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if !cache_config.force_cache {
+            let cc_lower = cc_header.to_lowercase();
+            if cc_lower.contains("no-store") || cc_lower.contains("private") {
+                return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+            }
+        }
+
+        // Determine TTL: upstream s-maxage > max-age > configured default
+        let ttl = parse_max_age(cc_header).unwrap_or(cache_config.default_ttl);
+
+        let now = std::time::SystemTime::now();
+        let fresh_until = now + ttl;
+
+        let meta = CacheMeta::new(
+            fresh_until,
+            now,
+            cache_config.stale_while_revalidate,
+            cache_config.stale_if_error,
+            resp.clone(),
+        );
+
+        Ok(RespCacheable::Cacheable(meta))
+    }
+
+    async fn cache_hit_filter(
+        &self,
+        _session: &mut Session,
+        _meta: &CacheMeta,
+        _hit_handler: &mut HitHandler,
+        is_fresh: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<ForcedFreshness>, Box<Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        ctx.cache_status = Some(if is_fresh {
+            crate::context::CacheStatus::Hit
+        } else {
+            crate::context::CacheStatus::Stale
+        });
+        Ok(None)
+    }
+
+    fn cache_miss(&self, session: &mut Session, ctx: &mut Self::CTX) {
+        ctx.cache_status = Some(crate::context::CacheStatus::Miss);
+        session.cache.cache_miss();
+    }
+
+    fn should_serve_stale(
+        &self,
+        _session: &mut Session,
+        ctx: &mut Self::CTX,
+        _error: Option<&Error>,
+    ) -> bool {
+        let state = self.state.load();
+        ctx.matched_route
+            .as_ref()
+            .and_then(|r| state.router.routes().get(r.index))
+            .and_then(|r| r.cache.as_ref())
+            .is_some_and(|c| c.stale_while_revalidate > 0 || c.stale_if_error > 0)
+    }
+
     async fn request_filter(
         &self,
         session: &mut Session,
@@ -1102,6 +1323,11 @@ impl ProxyHttp for FluxoProxy {
                     }
                 }
             }
+
+            // --- Cache status header (Nginx X-Cache-Status pattern) ---
+            if let Some(status) = ctx.cache_status {
+                let _ = upstream_response.insert_header("X-Cache-Status", status.as_str());
+            }
         }
         Ok(())
     }
@@ -1382,6 +1608,14 @@ impl ProxyHttp for FluxoProxy {
             );
         }
 
+        // Cache metrics
+        match ctx.cache_status {
+            Some(crate::context::CacheStatus::Hit) => self.static_state.metrics.inc_cache_hits(),
+            Some(crate::context::CacheStatus::Miss) => self.static_state.metrics.inc_cache_misses(),
+            Some(crate::context::CacheStatus::Stale) => self.static_state.metrics.inc_cache_stale(),
+            _ => {}
+        }
+
         self.static_state.metrics.dec_active();
         // Return context to pool
         self.static_state.context_pool.release(std::mem::take(ctx));
@@ -1426,4 +1660,43 @@ async fn send_mirror_request(
 
     debug!("mirror request to {} completed", addr);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn parse_max_age_from_cache_control() {
+        assert_eq!(
+            parse_max_age("max-age=300"),
+            Some(std::time::Duration::from_secs(300))
+        );
+        assert_eq!(
+            parse_max_age("public, max-age=3600"),
+            Some(std::time::Duration::from_secs(3600))
+        );
+    }
+
+    #[test]
+    fn parse_max_age_prefers_s_maxage() {
+        assert_eq!(
+            parse_max_age("max-age=300, s-maxage=60"),
+            Some(std::time::Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn parse_max_age_returns_none_for_no_directive() {
+        assert_eq!(parse_max_age("no-cache, no-store"), None);
+        assert_eq!(parse_max_age(""), None);
+    }
+
+    #[test]
+    fn global_cache_storage_returns_same_instance() {
+        let a = std::ptr::from_ref(global_cache_storage());
+        let b = std::ptr::from_ref(global_cache_storage());
+        assert_eq!(a, b);
+    }
 }

@@ -86,7 +86,7 @@ impl ConfigProvider for FileProvider {
                             last_modified = current_modified;
                         }
                     }
-                    _ = async {
+                    () = async {
                         if let Some(ref mut s) = sighup {
                             s.recv().await
                         } else {

@@ -66,6 +66,25 @@ impl AdminService {
                 handlers::handle_post_config(&proxy, &body_bytes)
             }
             ("POST", "/reload") => handlers::handle_reload(&proxy, config_path.as_deref()),
+            ("POST", "/cache/purge") => {
+                let body_bytes = match req.into_body().collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(e) => {
+                        let err_body = match serde_json::to_string(&serde_json::json!({
+                            "error": format!("failed to read body: {e}")
+                        })) {
+                            Ok(b) => b,
+                            Err(se) => format!(r#"{{"error": "JSON error: {se}"}}"#),
+                        };
+                        return Ok(Response::builder()
+                            .status(400)
+                            .header("content-type", "application/json")
+                            .body(Full::new(Bytes::from(err_body)))
+                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
+                    }
+                };
+                handlers::handle_cache_purge(&body_bytes)
+            }
             _ => handlers::handle_not_found(),
         };
 

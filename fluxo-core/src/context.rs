@@ -103,6 +103,28 @@ impl std::fmt::Debug for StreamingCompressor {
     }
 }
 
+/// Outcome of the cache lookup for observability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheStatus {
+    Hit,
+    Miss,
+    Stale,
+    Bypass,
+    Expired,
+}
+
+impl CacheStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "HIT",
+            Self::Miss => "MISS",
+            Self::Stale => "STALE",
+            Self::Bypass => "BYPASS",
+            Self::Expired => "EXPIRED",
+        }
+    }
+}
+
 /// A typed response from a plugin that short-circuits the request.
 #[derive(Debug, Clone)]
 pub enum PluginResponse {
@@ -186,6 +208,10 @@ pub struct RequestContext {
     /// Whether buffering is currently active (accumulating chunks).
     pub response_buffering_active: bool,
 
+    // --- HTTP caching state ---
+    /// Cache outcome for access log and metrics.
+    pub cache_status: Option<CacheStatus>,
+
     // --- Extensions map (Nginx $variable inspired) ---
     /// Arbitrary key-value data for inter-plugin communication.
     /// Plugins can store values in the request phase and read them in the response phase.
@@ -264,6 +290,7 @@ impl RequestContext {
             response_buffer: Vec::new(),
             response_buffer_limit: 0,
             response_buffering_active: false,
+            cache_status: None,
             extensions: HashMap::new(),
         }
     }
@@ -314,6 +341,7 @@ impl RequestContext {
         self.response_buffer.clear();
         self.response_buffer_limit = 0;
         self.response_buffering_active = false;
+        self.cache_status = None;
         self.extensions.clear();
     }
 
@@ -487,6 +515,23 @@ mod tests {
             Some(&serde_json::json!("canary-v2"))
         );
         assert!(ctx.get_extension("nonexistent").is_none());
+    }
+
+    #[test]
+    fn cache_status_as_str() {
+        assert_eq!(CacheStatus::Hit.as_str(), "HIT");
+        assert_eq!(CacheStatus::Miss.as_str(), "MISS");
+        assert_eq!(CacheStatus::Stale.as_str(), "STALE");
+        assert_eq!(CacheStatus::Bypass.as_str(), "BYPASS");
+        assert_eq!(CacheStatus::Expired.as_str(), "EXPIRED");
+    }
+
+    #[test]
+    fn cache_status_cleared_on_reset() {
+        let mut ctx = RequestContext::new();
+        ctx.cache_status = Some(CacheStatus::Hit);
+        ctx.reset();
+        assert!(ctx.cache_status.is_none());
     }
 
     #[test]

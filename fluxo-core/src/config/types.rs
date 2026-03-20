@@ -310,6 +310,10 @@ pub struct RouteConfig {
     /// Traffic mirroring — fire-and-forget request copies to a shadow upstream.
     /// Traefik-inspired: used for canary testing, shadow traffic, and gradual rollouts.
     pub mirror: Option<MirrorConfig>,
+
+    /// HTTP caching configuration — enables Pingora-native response caching.
+    /// Nginx equivalent: `proxy_cache` + `proxy_cache_valid`.
+    pub cache: Option<CacheConfig>,
 }
 
 /// Configuration for traffic mirroring to a shadow upstream.
@@ -321,6 +325,41 @@ pub struct MirrorConfig {
     /// Percentage of requests to mirror (0-100). Default: 100.
     #[serde(default = "defaults::mirror_percent")]
     pub percent: u8,
+}
+
+/// Per-route HTTP caching configuration (Pingora-native).
+/// When present on a route, enables Pingora's built-in HTTP cache for matching requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// Default TTL when upstream doesn't send Cache-Control. Example: "300s", "1h".
+    #[serde(default = "defaults::cache_default_ttl")]
+    pub default_ttl: String,
+
+    /// Maximum cacheable response size in bytes. Example: "10mb". Default: "50mb".
+    #[serde(default = "defaults::cache_max_size")]
+    pub max_file_size: String,
+
+    /// Stale-while-revalidate window — serve stale while revalidating in background.
+    /// Default: "0s" (disabled).
+    #[serde(default = "defaults::cache_stale_while_revalidate")]
+    pub stale_while_revalidate: String,
+
+    /// Stale-if-error window — serve stale if upstream errors. Default: "0s" (disabled).
+    #[serde(default = "defaults::cache_stale_if_error")]
+    pub stale_if_error: String,
+
+    /// HTTP methods to cache. Default: ["GET", "HEAD"].
+    #[serde(default = "defaults::cache_methods")]
+    pub methods: Vec<String>,
+
+    /// Cache key includes query string. Default: true.
+    #[serde(default = "defaults::cache_include_query")]
+    pub include_query: bool,
+
+    /// Override: always cache regardless of upstream Cache-Control. Default: false.
+    /// Like Nginx `proxy_cache_valid` — forces caching even without upstream headers.
+    #[serde(default)]
+    pub force_cache: bool,
 }
 
 /// Configuration for an upstream group.

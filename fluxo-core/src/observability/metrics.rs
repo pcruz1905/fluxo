@@ -19,6 +19,10 @@ pub struct MetricsRegistry {
     upstream_requests_total: IntCounterVec,
     upstream_duration_seconds: HistogramVec,
     upstream_errors_total: IntCounterVec,
+    // Cache metrics (Pingora-native caching)
+    cache_hits: prometheus::IntCounter,
+    cache_misses: prometheus::IntCounter,
+    cache_stale: prometheus::IntCounter,
 }
 
 impl MetricsRegistry {
@@ -95,6 +99,15 @@ impl MetricsRegistry {
         )
         .map_err(|e| format!("metric creation failed: {e}"))?;
 
+        let cache_hits = prometheus::IntCounter::new("fluxo_cache_hits_total", "Total cache hits")
+            .map_err(|e| format!("metric creation failed: {e}"))?;
+        let cache_misses =
+            prometheus::IntCounter::new("fluxo_cache_misses_total", "Total cache misses")
+                .map_err(|e| format!("metric creation failed: {e}"))?;
+        let cache_stale =
+            prometheus::IntCounter::new("fluxo_cache_stale_total", "Total stale cache serves")
+                .map_err(|e| format!("metric creation failed: {e}"))?;
+
         registry
             .register(Box::new(requests_total.clone()))
             .map_err(|e| format!("collector registration failed: {e}"))?;
@@ -119,6 +132,15 @@ impl MetricsRegistry {
         registry
             .register(Box::new(upstream_errors_total.clone()))
             .map_err(|e| format!("collector registration failed: {e}"))?;
+        registry
+            .register(Box::new(cache_hits.clone()))
+            .map_err(|e| format!("collector registration failed: {e}"))?;
+        registry
+            .register(Box::new(cache_misses.clone()))
+            .map_err(|e| format!("collector registration failed: {e}"))?;
+        registry
+            .register(Box::new(cache_stale.clone()))
+            .map_err(|e| format!("collector registration failed: {e}"))?;
 
         Ok(Self {
             registry,
@@ -130,6 +152,9 @@ impl MetricsRegistry {
             upstream_requests_total,
             upstream_duration_seconds,
             upstream_errors_total,
+            cache_hits,
+            cache_misses,
+            cache_stale,
         })
     }
 
@@ -183,6 +208,21 @@ impl MetricsRegistry {
                 .with_label_values(&[upstream, err])
                 .inc();
         }
+    }
+
+    /// Increment cache hit counter.
+    pub fn inc_cache_hits(&self) {
+        self.cache_hits.inc();
+    }
+
+    /// Increment cache miss counter.
+    pub fn inc_cache_misses(&self) {
+        self.cache_misses.inc();
+    }
+
+    /// Increment cache stale counter.
+    pub fn inc_cache_stale(&self) {
+        self.cache_stale.inc();
     }
 
     /// Increment the active requests gauge.

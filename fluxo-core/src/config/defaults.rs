@@ -148,3 +148,29 @@ pub fn tcp_keepalive_count() -> usize {
 pub fn mirror_percent() -> u8 {
     100
 }
+
+// --- Cache defaults ---
+
+pub fn cache_default_ttl() -> String {
+    "300s".to_string()
+}
+
+pub fn cache_max_size() -> String {
+    "50mb".to_string()
+}
+
+pub fn cache_stale_while_revalidate() -> String {
+    "0s".to_string()
+}
+
+pub fn cache_stale_if_error() -> String {
+    "0s".to_string()
+}
+
+pub fn cache_methods() -> Vec<String> {
+    vec!["GET".to_string(), "HEAD".to_string()]
+}
+
+pub fn cache_include_query() -> bool {
+    true
+}
