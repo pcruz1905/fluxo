@@ -11,9 +11,7 @@ use helpers::{
 
 fn main() {
     helpers::run_tests(&[
-        ("request_id_injected", || {
-            Box::pin(request_id_injected())
-        }),
+        ("request_id_injected", || Box::pin(request_id_injected())),
         ("request_id_custom_header", || {
             Box::pin(request_id_custom_header())
         }),

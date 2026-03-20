@@ -2,17 +2,16 @@
 
 mod helpers;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use fluxo_core::config::{FluxoConfig, TargetConfig, UpstreamConfig};
 use helpers::{minimal_service, simple_route, start_mock_upstream, start_proxy};
 
 fn main() {
-    helpers::run_tests(&[
-        ("weighted_distribution", || {
-            Box::pin(weighted_distribution())
-        }),
-    ]);
+    helpers::run_tests(&[(
+        "weighted_distribution",
+        || Box::pin(weighted_distribution()),
+    )]);
 }
 
 async fn weighted_distribution() {

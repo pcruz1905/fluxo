@@ -24,7 +24,12 @@ use std::time::Duration;
 /// ```ignore
 /// fn main() { helpers::run_tests(&[("test_name", test_name)]); }
 /// ```
-pub fn run_tests(tests: &[(&str, fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>)]) {
+pub fn run_tests(
+    tests: &[(
+        &str,
+        fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+    )],
+) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -39,12 +44,14 @@ pub fn run_tests(tests: &[(&str, fn() -> std::pin::Pin<Box<dyn std::future::Futu
         passed += 1;
     }
 
-    println!("\ntest result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n");
+    println!(
+        "\ntest result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+    );
     std::process::exit(0);
 }
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use pingora_core::server::Server;
 use pingora_core::server::configuration::Opt;
 use pingora_proxy::http_proxy_service;

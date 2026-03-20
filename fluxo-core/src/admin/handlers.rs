@@ -334,8 +334,7 @@ mod tests {
     // --- Admin handler unit tests ---
 
     fn make_proxy(config: crate::config::FluxoConfig) -> Arc<FluxoProxy> {
-        let state =
-            FluxoState::try_from_config(config).expect("default config should build state");
+        let state = FluxoState::try_from_config(config).expect("default config should build state");
         Arc::new(FluxoProxy::new(state).expect("proxy should init"))
     }
 

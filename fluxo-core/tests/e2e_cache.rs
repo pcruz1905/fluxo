@@ -2,16 +2,14 @@
 
 mod helpers;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use fluxo_core::config::{FluxoConfig, RouteConfig};
 use helpers::{minimal_service, mock_upstream_config, start_mock_upstream, start_proxy};
 
 fn main() {
     helpers::run_tests(&[
-        ("cache_miss_then_hit", || {
-            Box::pin(cache_miss_then_hit())
-        }),
+        ("cache_miss_then_hit", || Box::pin(cache_miss_then_hit())),
         ("cache_bypass_with_no_cache", || {
             Box::pin(cache_bypass_with_no_cache())
         }),
@@ -40,9 +38,12 @@ async fn cache_miss_then_hit() {
             name: Some("cached".into()),
             match_host: vec!["cache.test".into()],
             upstream: "backend".into(),
-            cache: Some(serde_json::from_value(serde_json::json!({
-                "default_ttl": "3600s"
-            })).unwrap()),
+            cache: Some(
+                serde_json::from_value(serde_json::json!({
+                    "default_ttl": "3600s"
+                }))
+                .unwrap(),
+            ),
             ..Default::default()
         }]),
     );
@@ -95,12 +96,7 @@ async fn cache_miss_then_hit() {
 async fn cache_bypass_with_no_cache() {
     let app = Router::new().route(
         "/cacheable",
-        get(|| async {
-            (
-                [("Cache-Control", "public, max-age=3600")],
-                "fresh content",
-            )
-        }),
+        get(|| async { ([("Cache-Control", "public, max-age=3600")], "fresh content") }),
     );
     let upstream = start_mock_upstream(app).await;
 
@@ -114,9 +110,12 @@ async fn cache_bypass_with_no_cache() {
             name: Some("cached".into()),
             match_host: vec!["cache2.test".into()],
             upstream: "backend".into(),
-            cache: Some(serde_json::from_value(serde_json::json!({
-                "default_ttl": "3600s"
-            })).unwrap()),
+            cache: Some(
+                serde_json::from_value(serde_json::json!({
+                    "default_ttl": "3600s"
+                }))
+                .unwrap(),
+            ),
             ..Default::default()
         }]),
     );

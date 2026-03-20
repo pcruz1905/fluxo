@@ -6,11 +6,9 @@ use fluxo_core::config::{FluxoConfig, TargetConfig, UpstreamConfig};
 use helpers::{minimal_service, simple_route, start_proxy};
 
 fn main() {
-    helpers::run_tests(&[
-        ("circuit_opens_after_failures", || {
-            Box::pin(circuit_opens_after_failures())
-        }),
-    ]);
+    helpers::run_tests(&[("circuit_opens_after_failures", || {
+        Box::pin(circuit_opens_after_failures())
+    })]);
 }
 
 async fn circuit_opens_after_failures() {
@@ -23,9 +21,12 @@ async fn circuit_opens_after_failures() {
             targets: vec![TargetConfig::Simple("127.0.0.1:1".to_string())],
             load_balancing: "round_robin".to_string(),
             connect_timeout: "100ms".to_string(),
-            circuit_breaker: Some(serde_json::from_value(serde_json::json!({
-                "failure_threshold": 2
-            })).unwrap()),
+            circuit_breaker: Some(
+                serde_json::from_value(serde_json::json!({
+                    "failure_threshold": 2
+                }))
+                .unwrap(),
+            ),
             ..Default::default()
         },
     );

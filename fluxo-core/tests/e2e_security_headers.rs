@@ -14,9 +14,7 @@ fn main() {
         ("security_headers_added", || {
             Box::pin(security_headers_added())
         }),
-        ("security_headers_csp", || {
-            Box::pin(security_headers_csp())
-        }),
+        ("security_headers_csp", || Box::pin(security_headers_csp())),
     ]);
 }
 

@@ -5,7 +5,9 @@ mod helpers;
 use std::collections::HashMap;
 
 use fluxo_core::config::FluxoConfig;
-use helpers::{default_mock_upstream, minimal_service, mock_upstream_config, route_with_plugins, start_proxy};
+use helpers::{
+    default_mock_upstream, minimal_service, mock_upstream_config, route_with_plugins, start_proxy,
+};
 
 fn main() {
     helpers::run_tests(&[

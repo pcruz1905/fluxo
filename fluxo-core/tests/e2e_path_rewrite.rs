@@ -4,10 +4,12 @@ mod helpers;
 
 use std::collections::HashMap;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use fluxo_core::config::FluxoConfig;
-use helpers::{minimal_service, mock_upstream_config, route_with_plugins, start_mock_upstream, start_proxy};
+use helpers::{
+    minimal_service, mock_upstream_config, route_with_plugins, start_mock_upstream, start_proxy,
+};
 
 fn main() {
     helpers::run_tests(&[
@@ -21,10 +23,7 @@ fn main() {
 }
 
 async fn path_rewrite_transforms_url() {
-    let app = Router::new().route(
-        "/v2/users",
-        get(|| async { "rewritten" }),
-    );
+    let app = Router::new().route("/v2/users", get(|| async { "rewritten" }));
     let upstream = start_mock_upstream(app).await;
 
     let mut config = FluxoConfig::default();
