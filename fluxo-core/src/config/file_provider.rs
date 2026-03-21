@@ -86,11 +86,11 @@ impl ConfigProvider for FileProvider {
                             last_modified = current_modified;
                         }
                     }
-                    () = async {
+                    _ = async {
                         if let Some(ref mut s) = sighup {
-                            s.recv().await
+                            s.recv().await;
                         } else {
-                            std::future::pending().await
+                            std::future::pending::<()>().await;
                         }
                     } => {
                         info!(path = %self.path.display(), "SIGHUP received — reloading config");
