@@ -296,6 +296,15 @@ pub struct RouteConfig {
     #[serde(default)]
     pub match_header: std::collections::HashMap<String, String>,
 
+    /// Query string conditions to match (e.g., {"version": "v2"}).
+    /// Empty value means "key must be present". `~pattern` for regex.
+    #[serde(default)]
+    pub match_query: std::collections::HashMap<String, String>,
+
+    /// Client IP CIDRs to match (e.g., ["10.0.0.0/8", "192.168.1.0/24"]).
+    #[serde(default)]
+    pub match_client_ip: Vec<String>,
+
     /// Name of the upstream group to forward to.
     pub upstream: String,
 
@@ -314,6 +323,16 @@ pub struct RouteConfig {
     /// HTTP caching configuration — enables Pingora-native response caching.
     /// Nginx equivalent: `proxy_cache` + `proxy_cache_valid`.
     pub cache: Option<CacheConfig>,
+
+    /// Custom error pages keyed by HTTP status code (per-route).
+    /// Overrides global error pages for this route.
+    #[serde(default)]
+    pub error_pages: HashMap<u16, String>,
+
+    /// When true, intercept upstream error responses (matching `error_pages` status codes)
+    /// and replace the body with the custom error page (per-route).
+    /// Overrides global `intercept_errors` for this route.
+    pub intercept_errors: Option<bool>,
 }
 
 /// Configuration for traffic mirroring to a shadow upstream.

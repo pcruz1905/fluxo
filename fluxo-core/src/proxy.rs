@@ -1048,10 +1048,12 @@ impl ProxyHttp for FluxoProxy {
         // --- Route matching ---
         let req_header = session.req_header();
         let pingora_hdrs = PingoraHeaders(req_header);
+        let query = req_header.uri.query();
+        let client_ip_ref = ctx.client_ip.as_deref();
         if let Some(route) =
             state
                 .router
-                .match_route_with_headers(host, path, method, &pingora_hdrs)
+                .match_route_full(host, path, method, &pingora_hdrs, query, client_ip_ref)
         {
             ctx.matched_route = Some(MatchedRoute {
                 index: route.index,
@@ -1280,9 +1282,19 @@ impl ProxyHttp for FluxoProxy {
             }
 
             // --- Error page interception (Nginx proxy_intercept_errors) ---
-            if state.config.global.intercept_errors {
+            // Check per-route error pages first, then fall back to global
+            let compiled = &state.router.routes()[route_index];
+            let should_intercept = compiled
+                .intercept_errors
+                .unwrap_or(state.config.global.intercept_errors);
+            if should_intercept {
                 let status = upstream_response.status.as_u16();
-                if let Some(page_body) = state.config.global.error_pages.get(&status) {
+                // Per-route error pages take priority over global
+                let page_body = compiled
+                    .error_pages
+                    .get(&status)
+                    .or_else(|| state.config.global.error_pages.get(&status));
+                if let Some(page_body) = page_body {
                     ctx.error_page_override = Some(page_body.clone());
                     upstream_response.remove_header("content-length");
                     upstream_response.remove_header("content-encoding");
@@ -1509,9 +1521,16 @@ impl ProxyHttp for FluxoProxy {
             }
         }
 
-        // Use custom error page if configured for this status code
+        // Use custom error page if configured: per-route first, then global
         let state = self.state.load();
-        let sent = if let Some(body) = state.config.global.error_pages.get(&code) {
+        let route_error_page = ctx.matched_route.as_ref().and_then(|r| {
+            let compiled = &state.router.routes()[r.index];
+            compiled.error_pages.get(&code).cloned()
+        });
+        let error_body = route_error_page
+            .as_deref()
+            .or_else(|| state.config.global.error_pages.get(&code).map(String::as_str));
+        let sent = if let Some(body) = error_body {
             let result = async {
                 let mut header = pingora_http::ResponseHeader::build(code, None)?;
                 header.insert_header("content-type", "text/html; charset=utf-8")?;
@@ -1519,7 +1538,7 @@ impl ProxyHttp for FluxoProxy {
                     .write_response_header(Box::new(header), false)
                     .await?;
                 session
-                    .write_response_body(Some(bytes::Bytes::from(body.clone().into_bytes())), true)
+                    .write_response_body(Some(bytes::Bytes::from(body.to_owned().into_bytes())), true)
                     .await
             };
             result.await.is_ok()

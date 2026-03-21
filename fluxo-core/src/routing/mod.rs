@@ -6,10 +6,12 @@
 
 pub mod matcher;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use matcher::{
-    HeaderMatcher, HostMatcher, MethodMatcher, PathMatcher, RequestHeaders, RouteMatcher,
+    ClientIPMatcher, HeaderMatcher, HostMatcher, MethodMatcher, PathMatcher, QueryMatcher,
+    RequestHeaders, RouteMatcher,
 };
 use thiserror::Error;
 
@@ -41,6 +43,13 @@ pub enum RoutingError {
     /// A plugin configuration error.
     #[error("plugin config error: {0}")]
     PluginConfig(#[from] crate::plugins::config::PluginConfigError),
+
+    /// An invalid CIDR was specified.
+    #[error("invalid CIDR '{cidr}'")]
+    InvalidCidr {
+        /// The CIDR string that failed to parse.
+        cidr: String,
+    },
 
     /// A cycle was detected in parent route references.
     #[error("cycle detected in route parent chain: route '{0}' is part of a cycle")]
@@ -81,6 +90,10 @@ pub struct CompiledRoute {
     pub mirror: Option<CompiledMirror>,
     /// HTTP cache config (Pingora-native caching).
     pub cache: Option<CompiledCache>,
+    /// Per-route custom error pages (overrides global).
+    pub error_pages: HashMap<u16, String>,
+    /// Per-route `intercept_errors` flag (overrides global when Some).
+    pub intercept_errors: Option<bool>,
 }
 
 /// Pre-compiled mirror configuration for a route.
@@ -129,6 +142,21 @@ impl CompiledRoute {
         self.matchers
             .iter()
             .all(|m| m.matches_with_headers(host, path, method, headers))
+    }
+
+    /// Full matching with all request context: headers, query string, and client IP.
+    pub fn matches_full(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &dyn RequestHeaders,
+        query: Option<&str>,
+        client_ip: Option<&str>,
+    ) -> bool {
+        self.matchers
+            .iter()
+            .all(|m| m.matches_full(host, path, method, headers, query, client_ip))
     }
 }
 
@@ -228,6 +256,12 @@ impl RouteTable {
             for (k, v) in &child.match_header {
                 merged.match_header.insert(k.clone(), v.clone());
             }
+            for (k, v) in &child.match_query {
+                merged.match_query.insert(k.clone(), v.clone());
+            }
+            if !child.match_client_ip.is_empty() {
+                merged.match_client_ip.clone_from(&child.match_client_ip);
+            }
             // Child's plugins are merged on top of parent's (parent plugins run first)
             for (k, v) in &child.plugins {
                 merged.plugins.insert(k.clone(), v.clone());
@@ -239,6 +273,15 @@ impl RouteTable {
             merged.upstream.clone_from(&child.upstream);
             if child.max_request_body.is_some() {
                 merged.max_request_body.clone_from(&child.max_request_body);
+            }
+            // Per-route error pages: child overrides parent
+            if !child.error_pages.is_empty() {
+                for (code, body) in &child.error_pages {
+                    merged.error_pages.insert(*code, body.clone());
+                }
+            }
+            if child.intercept_errors.is_some() {
+                merged.intercept_errors = child.intercept_errors;
             }
             // parent field not carried forward
             merged.parent = None;
@@ -266,7 +309,7 @@ impl RouteTable {
                 .match_host
                 .iter()
                 .map(|p| HostMatcher::compile(p))
-                .collect();
+                .collect::<Result<_, _>>()?;
             matchers.push(RouteMatcher::Host(host_matchers));
         }
 
@@ -290,6 +333,18 @@ impl RouteTable {
         // Compile header matchers
         for (name, value) in &config.match_header {
             matchers.push(RouteMatcher::Header(HeaderMatcher::compile(name, value)?));
+        }
+
+        // Compile query matchers
+        for (key, value) in &config.match_query {
+            matchers.push(RouteMatcher::Query(QueryMatcher::compile(key, value)?));
+        }
+
+        // Compile client IP matcher
+        if !config.match_client_ip.is_empty() {
+            matchers.push(RouteMatcher::ClientIP(ClientIPMatcher::compile(
+                &config.match_client_ip,
+            )?));
         }
 
         // Compile plugin pipeline
@@ -329,6 +384,8 @@ impl RouteTable {
                     force_cache: c.force_cache,
                 })
             }),
+            error_pages: config.error_pages.clone(),
+            intercept_errors: config.intercept_errors,
         })
     }
 
@@ -356,6 +413,23 @@ impl RouteTable {
         self.routes
             .iter()
             .find(|r| r.matches_with_headers(host, path, method, headers))
+    }
+
+    /// Full matching with all request context: headers, query string, and client IP.
+    ///
+    /// This is the primary matching method used in the proxy hot path.
+    pub fn match_route_full(
+        &self,
+        host: Option<&str>,
+        path: &str,
+        method: &str,
+        headers: &dyn RequestHeaders,
+        query: Option<&str>,
+        client_ip: Option<&str>,
+    ) -> Option<&CompiledRoute> {
+        self.routes
+            .iter()
+            .find(|r| r.matches_full(host, path, method, headers, query, client_ip))
     }
 
     /// Return the number of compiled routes.
