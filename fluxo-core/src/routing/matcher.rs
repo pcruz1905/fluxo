@@ -375,14 +375,13 @@ impl ClientIPMatcher {
         for cidr in cidrs {
             // If no prefix length, append /32 (IPv4) or /128 (IPv6)
             let net: ipnet::IpNet = if cidr.contains('/') {
-                cidr.parse().map_err(|_| RoutingError::InvalidCidr {
-                    cidr: cidr.clone(),
-                })?
+                cidr.parse()
+                    .map_err(|_| RoutingError::InvalidCidr { cidr: cidr.clone() })?
             } else {
                 // Bare IP → single-host network
-                let ip: IpAddr = cidr.parse().map_err(|_| RoutingError::InvalidCidr {
-                    cidr: cidr.clone(),
-                })?;
+                let ip: IpAddr = cidr
+                    .parse()
+                    .map_err(|_| RoutingError::InvalidCidr { cidr: cidr.clone() })?;
                 ipnet::IpNet::from(ip)
             };
             networks.push(net);
@@ -642,11 +641,8 @@ mod tests {
 
     #[test]
     fn client_ip_multiple_cidrs() {
-        let m = ClientIPMatcher::compile(&[
-            "10.0.0.0/8".to_string(),
-            "192.168.0.0/16".to_string(),
-        ])
-        .unwrap();
+        let m = ClientIPMatcher::compile(&["10.0.0.0/8".to_string(), "192.168.0.0/16".to_string()])
+            .unwrap();
         assert!(m.matches(Some("10.1.2.3")));
         assert!(m.matches(Some("192.168.1.1")));
         assert!(!m.matches(Some("172.16.0.1")));

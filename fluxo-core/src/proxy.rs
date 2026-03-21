@@ -1527,9 +1527,14 @@ impl ProxyHttp for FluxoProxy {
             let compiled = &state.router.routes()[r.index];
             compiled.error_pages.get(&code).cloned()
         });
-        let error_body = route_error_page
-            .as_deref()
-            .or_else(|| state.config.global.error_pages.get(&code).map(String::as_str));
+        let error_body = route_error_page.as_deref().or_else(|| {
+            state
+                .config
+                .global
+                .error_pages
+                .get(&code)
+                .map(String::as_str)
+        });
         let sent = if let Some(body) = error_body {
             let result = async {
                 let mut header = pingora_http::ResponseHeader::build(code, None)?;
@@ -1538,7 +1543,10 @@ impl ProxyHttp for FluxoProxy {
                     .write_response_header(Box::new(header), false)
                     .await?;
                 session
-                    .write_response_body(Some(bytes::Bytes::from(body.to_owned().into_bytes())), true)
+                    .write_response_body(
+                        Some(bytes::Bytes::from(body.to_owned().into_bytes())),
+                        true,
+                    )
                     .await
             };
             result.await.is_ok()
