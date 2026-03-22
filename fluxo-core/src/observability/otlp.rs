@@ -146,8 +146,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn build_exporter_grpc() {
+    #[tokio::test]
+    async fn build_exporter_grpc() {
         let config = OtelTracingConfig {
             enabled: true,
             endpoint: "http://localhost:4317".to_string(),
