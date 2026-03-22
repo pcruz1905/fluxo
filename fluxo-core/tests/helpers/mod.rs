@@ -202,15 +202,21 @@ pub async fn start_proxy(config: FluxoConfig) -> (String, reqwest::Client) {
     (proxy_url, client)
 }
 
-/// Wait for a server to become ready.
+/// Wait for a server to become ready by sending real HTTP requests.
 ///
-/// Pingora needs time to bootstrap workers after binding.
-/// We first wait for TCP accept, then give workers time to initialize.
+/// Pingora binds the TCP socket early but needs time to bootstrap workers.
+/// A successful TCP connect is not enough — we loop until an HTTP request
+/// gets a response (any status), which proves workers are processing.
 async fn wait_for_server(url: &str, timeout: Duration) {
     let start = std::time::Instant::now();
-    let addr = url.trim_start_matches("http://");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(200))
+        .no_proxy()
+        .build()
+        .unwrap();
+
     loop {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+        if client.get(format!("{url}/")).send().await.is_ok() {
             break;
         }
         assert!(
@@ -219,6 +225,4 @@ async fn wait_for_server(url: &str, timeout: Duration) {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // Give Pingora workers time to initialize after the socket is bound
-    tokio::time::sleep(Duration::from_millis(500)).await;
 }
