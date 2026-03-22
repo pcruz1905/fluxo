@@ -187,8 +187,17 @@ async fn compression_gzip_applied() {
         )]),
     );
 
-    let (url, client) = start_proxy(config).await;
-    let resp = client
+    let (url, _client) = start_proxy(config).await;
+    // Use a client with no auto-decompression so we can inspect content-encoding
+    let raw_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let resp = raw_client
         .get(format!("{url}/large"))
         .header("Host", "compress.test")
         .header("Accept-Encoding", "gzip")
@@ -213,7 +222,7 @@ async fn ip_deny_blocks_all() {
             "backend",
             HashMap::from([(
                 "ip_restrict".into(),
-                serde_json::json!({"deny": ["0.0.0.0/0"]}),
+                serde_json::json!({"deny": ["0.0.0.0/0", "::/0"]}),
             )]),
         )]),
     );

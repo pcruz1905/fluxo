@@ -185,11 +185,13 @@ pub async fn start_proxy(config: FluxoConfig) -> (String, reqwest::Client) {
     let random_port = fastrand::u16(10000..60000);
     let proxy_addr = format!("127.0.0.1:{random_port}");
 
+    // IMPORTANT: `test: false` — Pingora's test mode calls process::exit(0)
+    // inside bootstrap(), which would kill the process before tests run.
     let mut server = Server::new(Some(Opt {
         conf: None,
         daemon: false,
         upgrade: false,
-        test: true,
+        test: false,
         nocapture: false,
     }))
     .unwrap();

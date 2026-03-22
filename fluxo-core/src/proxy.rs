@@ -1011,9 +1011,22 @@ impl ProxyHttp for FluxoProxy {
         } else {
             None
         };
-        ctx.client_ip = proxy_proto_ip
-            .or(xff_ip)
-            .or_else(|| peer_addr.map(ToString::to_string));
+        ctx.client_ip = proxy_proto_ip.or(xff_ip).or_else(|| {
+            peer_addr.map(|a| {
+                let s = a.to_string();
+                // Strip port from "ip:port" — handle both IPv4 and [IPv6]:port
+                if s.starts_with('[') {
+                    s.split(']')
+                        .next()
+                        .unwrap_or(&s)
+                        .trim_start_matches('[')
+                        .to_string()
+                } else {
+                    s.rsplit_once(':')
+                        .map_or(s.clone(), |(ip, _)| ip.to_string())
+                }
+            })
+        });
 
         if let Some(ssl) = session
             .as_downstream()
