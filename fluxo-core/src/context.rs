@@ -567,7 +567,8 @@ mod tests {
         let _compressed = compressor.write_chunk(data).unwrap();
         let final_bytes = compressor.finish().unwrap();
         // Compressed output should be non-empty (or at least finish should succeed)
-        assert!(!final_bytes.is_empty() || true); // finish succeeded
+        // finish() succeeded — compressed output may or may not be empty
+        let _ = final_bytes;
     }
 
     #[test]
