@@ -34,8 +34,8 @@ async fn security_headers_added() {
                 "security_headers".into(),
                 serde_json::json!({
                     "hsts_max_age": 31536000,
-                    "frame_options": "DENY",
-                    "content_type_nosniff": true
+                    "x_frame_options": "DENY",
+                    "x_content_type_options": true
                 }),
             )]),
         )]),

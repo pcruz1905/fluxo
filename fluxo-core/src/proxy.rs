@@ -548,6 +548,7 @@ impl FluxoProxy {
         self.state.store(Arc::new(new_state));
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn send_plugin_response(
         &self,
         session: &mut Session,
@@ -674,6 +675,33 @@ impl FluxoProxy {
                         Error::explain(
                             pingora_core::ErrorType::WriteError,
                             format!("failed to write auth challenge response: {e}"),
+                        )
+                    })?;
+            }
+            Some(PluginResponse::Cors { headers }) => {
+                let cors_headers: Vec<(String, String)> = headers.clone();
+                let mut header =
+                    pingora_http::ResponseHeader::build(status, None).map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::InternalError,
+                            format!("failed to build CORS response: {e}"),
+                        )
+                    })?;
+                for (k, v) in &cors_headers {
+                    if let (Ok(hn), Ok(hv)) = (
+                        http::header::HeaderName::from_bytes(k.as_bytes()),
+                        http::header::HeaderValue::from_str(v),
+                    ) {
+                        let _ = header.insert_header(hn, hv);
+                    }
+                }
+                session
+                    .write_response_header(Box::new(header), true)
+                    .await
+                    .map_err(|e| {
+                        Error::explain(
+                            pingora_core::ErrorType::WriteError,
+                            format!("failed to write CORS response: {e}"),
                         )
                     })?;
             }
@@ -1023,7 +1051,7 @@ impl ProxyHttp for FluxoProxy {
                         .to_string()
                 } else {
                     s.rsplit_once(':')
-                        .map_or(s.clone(), |(ip, _)| ip.to_string())
+                        .map_or_else(|| s.clone(), |(ip, _)| ip.to_string())
                 }
             })
         });

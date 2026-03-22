@@ -83,12 +83,12 @@ async fn cache_miss_then_hit() {
     // First should be miss, second should be hit
     assert_eq!(
         cache_status1.as_deref(),
-        Some("miss"),
+        Some("MISS"),
         "first request should be a cache miss"
     );
     assert_eq!(
         cache_status2.as_deref(),
-        Some("hit"),
+        Some("HIT"),
         "second request should be a cache hit"
     );
 }
@@ -135,6 +135,6 @@ async fn cache_bypass_with_no_cache() {
     // Should be bypass or miss (not hit)
     if let Some(status) = resp.headers().get("x-cache-status") {
         let s = status.to_str().unwrap();
-        assert_ne!(s, "hit", "no-cache request should not be a cache hit");
+        assert_ne!(s, "HIT", "no-cache request should not be a cache hit");
     }
 }

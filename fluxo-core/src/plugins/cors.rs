@@ -56,37 +56,38 @@ impl CorsPlugin {
             return super::PluginAction::Continue;
         };
 
-        // Build preflight response headers as the body for static response
         let allow_origin = self.resolve_origin(origin);
-        let mut headers = format!("Access-Control-Allow-Origin: {allow_origin}");
+
+        // Build CORS headers as key-value pairs for the response
+        let mut cors_headers: Vec<(String, String)> = Vec::new();
+        cors_headers.push(("Access-Control-Allow-Origin".into(), allow_origin.clone()));
 
         if !self.config.allowed_methods.is_empty() {
-            headers.push_str(&format!(
-                "\r\nAccess-Control-Allow-Methods: {}",
-                self.config.allowed_methods.join(", ")
+            cors_headers.push((
+                "Access-Control-Allow-Methods".into(),
+                self.config.allowed_methods.join(", "),
             ));
         }
         if !self.config.allowed_headers.is_empty() {
-            headers.push_str(&format!(
-                "\r\nAccess-Control-Allow-Headers: {}",
-                self.config.allowed_headers.join(", ")
+            cors_headers.push((
+                "Access-Control-Allow-Headers".into(),
+                self.config.allowed_headers.join(", "),
             ));
         }
         if let Some(max_age) = self.config.max_age {
-            headers.push_str(&format!("\r\nAccess-Control-Max-Age: {max_age}"));
+            cors_headers.push(("Access-Control-Max-Age".into(), max_age.to_string()));
         }
         if self.config.allow_credentials {
-            headers.push_str("\r\nAccess-Control-Allow-Credentials: true");
+            cors_headers.push(("Access-Control-Allow-Credentials".into(), "true".into()));
+        }
+        // Vary: Origin when reflecting specific origins
+        if allow_origin != "*" {
+            cors_headers.push(("Vary".into(), "Origin".into()));
         }
 
-        // Store preflight response with built headers as body
-        ctx.plugin_response = Some(crate::context::PluginResponse::Static {
-            status: 204,
-            body: Some(headers),
-            content_type: None,
+        ctx.plugin_response = Some(crate::context::PluginResponse::Cors {
+            headers: cors_headers,
         });
-        // Store the resolved origin so on_response can use it
-        ctx.error_message = Some(format!("cors-origin:{allow_origin}"));
         super::PluginAction::Handled(204)
     }
 

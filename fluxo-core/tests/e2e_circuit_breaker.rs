@@ -37,7 +37,9 @@ async fn circuit_opens_after_failures() {
 
     let (url, client) = start_proxy(config).await;
 
-    // Send requests to a dead backend — they should all fail with 502
+    // Send requests to a dead backend.
+    // First requests fail with 502 (upstream unreachable), then the circuit
+    // breaker opens (failure_threshold=2) and returns 503 directly.
     let mut statuses = Vec::new();
     for _ in 0..5 {
         let resp = client
@@ -49,9 +51,18 @@ async fn circuit_opens_after_failures() {
         statuses.push(resp.status().as_u16());
     }
 
-    // All requests should fail (502)
+    // All statuses should be errors (502 = upstream down, 503 = circuit open)
     assert!(
-        statuses.iter().all(|&s| s == 502),
-        "all requests to dead backend should return 502, got: {statuses:?}"
+        statuses.iter().all(|&s| s == 502 || s == 503),
+        "all requests should fail with 502 or 503, got: {statuses:?}"
+    );
+    // At least one 502 (before circuit opens) and at least one 503 (after)
+    assert!(
+        statuses.contains(&502),
+        "should see 502 before circuit opens, got: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&503),
+        "circuit breaker should open and return 503, got: {statuses:?}"
     );
 }

@@ -30,39 +30,23 @@ pub fn run_tests(
         fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
     )],
 ) {
-    use std::io::Write;
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
     let mut passed = 0;
-    let total = tests.len();
 
     for (name, test_fn) in tests {
-        write!(std::io::stderr(), "test {name} ... ").unwrap();
-        std::io::stderr().flush().unwrap();
+        eprint!("test {name} ... ");
         rt.block_on(test_fn());
-        writeln!(std::io::stderr(), "ok").unwrap();
-        std::io::stderr().flush().unwrap();
+        eprintln!("ok");
         passed += 1;
     }
 
-    // Write results to a temp file so they survive process::exit().
-    // The file can be checked after the run for definitive proof.
-    let results = format!("test result: ok. {passed}/{total} passed; 0 failed; 0 ignored\n");
-    if let Ok(dir) = std::env::temp_dir().canonicalize() {
-        let path = dir.join("fluxo_test_results.txt");
-        let _ = std::fs::write(&path, &results);
-    }
-
-    writeln!(
-        std::io::stderr(),
+    eprintln!(
         "\ntest result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
-    )
-    .unwrap();
-    std::io::stderr().flush().unwrap();
+    );
     std::process::exit(0);
 }
 

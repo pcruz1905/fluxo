@@ -142,6 +142,8 @@ pub enum PluginResponse {
     BasicAuthChallenge { realm: String },
     /// Send a simple error status (403, etc).
     Error { status: u16 },
+    /// Send a CORS preflight response with actual HTTP headers.
+    Cors { headers: Vec<(String, String)> },
 }
 
 /// Per-request state created by `new_ctx()` and threaded through all callbacks.

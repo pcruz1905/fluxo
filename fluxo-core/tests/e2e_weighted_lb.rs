@@ -34,7 +34,7 @@ async fn weighted_distribution() {
                     weight: 1,
                 },
             ],
-            load_balancing: "round_robin".to_string(),
+            load_balancing: "weighted_edf".to_string(),
             ..Default::default()
         },
     );
