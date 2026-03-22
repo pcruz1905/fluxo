@@ -126,6 +126,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
                 plugins: Default::default(),
                 mirror: None,
                 cache: None,
+                forward_auth: None,
                 error_pages: Default::default(),
                 intercept_errors: None,
             }],

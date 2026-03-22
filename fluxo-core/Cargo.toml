@@ -53,8 +53,10 @@ parking_lot = { workspace = true }
 ppp = { workspace = true }
 
 [dev-dependencies]
-axum = "0.8.8"
+axum = { version = "0.8.8", features = ["ws"] }
 reqwest = { version = "0.13.2", features = ["json", "rustls", "brotli", "gzip", "deflate"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
 tempfile = { workspace = true }
 
 # All E2E tests use harness = false so std::process::exit(0) runs after tests,
@@ -101,4 +103,8 @@ harness = false
 
 [[test]]
 name = "e2e_error_pages"
+harness = false
+
+[[test]]
+name = "e2e_websocket"
 harness = false

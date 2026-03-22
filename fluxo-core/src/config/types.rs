@@ -181,6 +181,11 @@ pub struct GlobalConfig {
     /// Default: 0 (log everything).
     #[serde(default)]
     pub access_log_min_duration_ms: u64,
+
+    /// Path to access log file. When set, access logs are written to this file
+    /// in addition to stdout. Example: "/var/log/fluxo/access.log".
+    /// Nginx equivalent: `access_log /path/to/file`.
+    pub access_log_file: Option<String>,
 }
 
 impl Default for GlobalConfig {
@@ -204,6 +209,7 @@ impl Default for GlobalConfig {
             client_write_timeout: None,
             access_log_exclude: Vec::new(),
             access_log_min_duration_ms: 0,
+            access_log_file: None,
         }
     }
 }
@@ -324,6 +330,10 @@ pub struct RouteConfig {
     /// Nginx equivalent: `proxy_cache` + `proxy_cache_valid`.
     pub cache: Option<CacheConfig>,
 
+    /// Forward authentication — delegate auth decisions to an external service.
+    /// Nginx equivalent: `auth_request`. Traefik equivalent: `ForwardAuth` middleware.
+    pub forward_auth: Option<ForwardAuthConfig>,
+
     /// Custom error pages keyed by HTTP status code (per-route).
     /// Overrides global error pages for this route.
     #[serde(default)]
@@ -379,6 +389,25 @@ pub struct CacheConfig {
     /// Like Nginx `proxy_cache_valid` — forces caching even without upstream headers.
     #[serde(default)]
     pub force_cache: bool,
+}
+
+/// Forward authentication — delegate auth decisions to an external service.
+/// Nginx equivalent: `auth_request`. Traefik equivalent: `ForwardAuth` middleware.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardAuthConfig {
+    /// URL of the auth service (e.g., `http://auth-service:9090/verify`).
+    pub url: String,
+    /// Headers from the auth response to copy to the upstream request.
+    /// Example: ["X-User-Id", "X-User-Role"].
+    #[serde(default)]
+    pub auth_response_headers: Vec<String>,
+    /// Timeout for the auth request. Default: "5s".
+    #[serde(default = "forward_auth_default_timeout")]
+    pub timeout: String,
+}
+
+fn forward_auth_default_timeout() -> String {
+    "5s".to_string()
 }
 
 /// Configuration for an upstream group.

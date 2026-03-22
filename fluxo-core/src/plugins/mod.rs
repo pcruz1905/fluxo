@@ -10,6 +10,7 @@
 pub mod body_filter;
 
 pub mod add_prefix;
+pub mod bandwidth_limit;
 pub mod basic_auth;
 pub mod compression;
 pub mod concurrency_limit;
@@ -51,6 +52,7 @@ pub enum BuiltinPlugin {
     StaticResponse(static_response::StaticResponsePlugin),
     Compression(compression::CompressionPlugin),
     BasicAuth(basic_auth::BasicAuthPlugin),
+    BandwidthLimit(bandwidth_limit::BandwidthLimitPlugin),
     StripPrefix(strip_prefix::StripPrefixPlugin),
     AddPrefix(add_prefix::AddPrefixPlugin),
     PathRewrite(path_rewrite::PathRewritePlugin),
@@ -73,6 +75,7 @@ impl BuiltinPlugin {
             Self::Compression(p) => p.on_request(req, ctx),
             Self::BasicAuth(p) => p.on_request(req, ctx),
             Self::ConcurrencyLimit(p) => p.on_request(req, ctx),
+            Self::BandwidthLimit(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }

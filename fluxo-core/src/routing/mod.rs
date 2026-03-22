@@ -90,6 +90,8 @@ pub struct CompiledRoute {
     pub mirror: Option<CompiledMirror>,
     /// HTTP cache config (Pingora-native caching).
     pub cache: Option<CompiledCache>,
+    /// Forward auth config (auth subrequest to external service).
+    pub forward_auth: Option<CompiledForwardAuth>,
     /// Per-route custom error pages (overrides global).
     pub error_pages: HashMap<u16, String>,
     /// Per-route `intercept_errors` flag (overrides global when Some).
@@ -122,6 +124,17 @@ pub struct CompiledCache {
     pub include_query: bool,
     /// Force caching regardless of upstream Cache-Control.
     pub force_cache: bool,
+}
+
+/// Pre-compiled forward auth configuration for a route.
+#[derive(Debug)]
+pub struct CompiledForwardAuth {
+    /// Parsed URL of the auth service.
+    pub url: String,
+    /// Headers to copy from auth response to upstream request (lowercased).
+    pub response_headers: Vec<String>,
+    /// Auth request timeout.
+    pub timeout: std::time::Duration,
 }
 
 impl CompiledRoute {
@@ -283,6 +296,9 @@ impl RouteTable {
             if child.intercept_errors.is_some() {
                 merged.intercept_errors = child.intercept_errors;
             }
+            if child.forward_auth.is_some() {
+                merged.forward_auth.clone_from(&child.forward_auth);
+            }
             // parent field not carried forward
             merged.parent = None;
         }
@@ -383,6 +399,16 @@ impl RouteTable {
                     include_query: c.include_query,
                     force_cache: c.force_cache,
                 })
+            }),
+            forward_auth: config.forward_auth.as_ref().map(|fa| CompiledForwardAuth {
+                url: fa.url.clone(),
+                response_headers: fa
+                    .auth_response_headers
+                    .iter()
+                    .map(|h| h.to_lowercase())
+                    .collect(),
+                timeout: crate::config::parse_duration(&fa.timeout)
+                    .unwrap_or(std::time::Duration::from_secs(5)),
             }),
             error_pages: config.error_pages.clone(),
             intercept_errors: config.intercept_errors,

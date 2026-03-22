@@ -86,6 +86,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize access log file writer (if configured)
+    fluxo_core::observability::init_file_logger(fluxo_config.global.access_log_file.as_deref());
+
     tracing::info!("starting fluxo v{}", env!("CARGO_PKG_VERSION"));
 
     // --test: validate and exit

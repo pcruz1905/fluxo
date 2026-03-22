@@ -686,6 +686,7 @@ impl FluxoProxy {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_lines)]
 impl ProxyHttp for FluxoProxy {
     type CTX = RequestContext;
 
@@ -1067,6 +1068,53 @@ impl ProxyHttp for FluxoProxy {
                 return Ok(true);
             }
 
+            // --- Forward auth subrequest (Nginx auth_request / Traefik ForwardAuth) ---
+            if let Some(ref fwd_auth) = route.forward_auth {
+                let req_header = session.req_header();
+                match forward_auth_check(req_header, fwd_auth).await {
+                    Ok(auth_headers) => {
+                        // Store auth response headers for injection in upstream_request_filter
+                        for (name, value) in auth_headers {
+                            ctx.set_extension(format!("fwd_auth_{name}"), serde_json::json!(value));
+                        }
+                    }
+                    Err(status) => {
+                        let mut header = pingora_http::ResponseHeader::build(status, None)
+                            .map_err(|e| {
+                                Error::explain(
+                                    pingora_core::ErrorType::InternalError,
+                                    format!("failed to build forward auth error response: {e}"),
+                                )
+                            })?;
+                        let _ = header.insert_header("content-type", "text/plain");
+                        session
+                            .write_response_header(Box::new(header), false)
+                            .await
+                            .map_err(|e| {
+                                Error::explain(
+                                    pingora_core::ErrorType::WriteError,
+                                    format!("failed to write forward auth response: {e}"),
+                                )
+                            })?;
+                        let body_msg = match status {
+                            401 => "Unauthorized",
+                            403 => "Forbidden",
+                            _ => "Auth Failed",
+                        };
+                        session
+                            .write_response_body(Some(bytes::Bytes::from(body_msg)), true)
+                            .await
+                            .map_err(|e| {
+                                Error::explain(
+                                    pingora_core::ErrorType::WriteError,
+                                    format!("failed to write forward auth body: {e}"),
+                                )
+                            })?;
+                        return Ok(true);
+                    }
+                }
+            }
+
             Ok(false)
         } else {
             let _ = session.respond_error(404).await;
@@ -1224,6 +1272,30 @@ impl ProxyHttp for FluxoProxy {
             compiled
                 .pipeline
                 .run_upstream_request(upstream_request, ctx);
+
+            // --- Forward auth header injection ---
+            // Copy headers from the auth service response into the upstream request.
+            // Collect into owned Vec first — insert_header requires owned values to
+            // avoid tying the lifetime to the ArcSwap guard.
+            let fwd_headers: Vec<(String, String)> = compiled
+                .forward_auth
+                .as_ref()
+                .map(|fwd_auth| {
+                    fwd_auth
+                        .response_headers
+                        .iter()
+                        .filter_map(|header_name| {
+                            let ext_key = format!("fwd_auth_{header_name}");
+                            ctx.get_extension(&ext_key).and_then(|v| {
+                                v.as_str().map(|s| (header_name.clone(), s.to_string()))
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (name, val) in fwd_headers {
+                let _ = upstream_request.insert_header(name, val);
+            }
 
             // --- Traffic mirroring (Traefik-inspired) ---
             // Fire-and-forget: clone headers, send to mirror upstream in background.
@@ -1475,7 +1547,21 @@ impl ProxyHttp for FluxoProxy {
             }
         }
 
-        Ok(None)
+        // --- Bandwidth throttling (Nginx limit_rate) ---
+        // Calculate delay based on chunk size and configured bytes/sec limit.
+        // Returning Some(duration) tells Pingora to wait before sending next chunk.
+        let throttle_delay = ctx.bandwidth_limit_bps.and_then(|bps| {
+            body.as_ref().map(|chunk| {
+                let chunk_len = chunk.len() as u64;
+                if chunk_len == 0 || bps == 0 {
+                    return std::time::Duration::ZERO;
+                }
+                // delay = chunk_size / rate (in seconds)
+                std::time::Duration::from_millis(chunk_len * 1000 / bps)
+            })
+        });
+
+        Ok(throttle_delay)
     }
 
     async fn fail_to_proxy(
@@ -1687,6 +1773,95 @@ async fn send_mirror_request(
 
     debug!("mirror request to {} completed", addr);
     Ok(())
+}
+
+/// Forward auth subrequest — sends a GET to the auth service with the original
+/// request headers. Returns `Ok(headers_to_copy)` on 2xx, `Err(status)` otherwise.
+///
+/// Nginx equivalent: `auth_request`. Traefik equivalent: `ForwardAuth` middleware.
+async fn forward_auth_check(
+    original_req: &pingora_http::RequestHeader,
+    config: &crate::routing::CompiledForwardAuth,
+) -> Result<Vec<(String, String)>, u16> {
+    use http_body_util::Empty;
+    use hyper::body::Bytes;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+
+    let uri: hyper::Uri = config.url.parse().map_err(|_| 500u16)?;
+
+    let host = uri.host().unwrap_or("localhost");
+    let port = uri.port_u16().unwrap_or_else(|| {
+        if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        }
+    });
+    let authority = format!("{host}:{port}");
+
+    let path = uri.path_and_query().map_or("/", |pq| pq.as_str());
+
+    // Build the auth request — forward original headers (host, cookie, authorization, etc.)
+    let mut builder = hyper::Request::builder().method("GET").uri(path);
+
+    // Copy select headers from the original request
+    for name in &[
+        "host",
+        "authorization",
+        "cookie",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-forwarded-host",
+        "x-forwarded-method",
+        "x-forwarded-uri",
+    ] {
+        if let Some(val) = original_req.headers.get(*name) {
+            builder = builder.header(*name, val);
+        }
+    }
+
+    // Add original method and URI as X-Forwarded-* headers (Traefik convention)
+    builder = builder.header("X-Forwarded-Method", original_req.method.as_str());
+    if let Some(pq) = original_req.uri.path_and_query() {
+        builder = builder.header("X-Forwarded-Uri", pq.as_str());
+    }
+    builder = builder.header("Host", authority.as_str());
+
+    let auth_req = builder.body(Empty::<Bytes>::new()).map_err(|_| 500u16)?;
+
+    // Connect using hyper-util client
+    let connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    let client = Client::builder(TokioExecutor::new()).build(connector);
+
+    let resp = tokio::time::timeout(config.timeout, client.request(auth_req))
+        .await
+        .map_err(|_| {
+            warn!("forward auth timeout to {}", config.url);
+            503u16
+        })?
+        .map_err(|e| {
+            warn!("forward auth request to {} failed: {}", config.url, e);
+            502u16
+        })?;
+
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        debug!("forward auth rejected with status {}", status);
+        return Err(status);
+    }
+
+    // Extract configured response headers to forward to upstream
+    let mut headers_to_copy = Vec::new();
+    for header_name in &config.response_headers {
+        if let Some(val) = resp.headers().get(header_name.as_str()) {
+            if let Ok(v) = val.to_str() {
+                headers_to_copy.push((header_name.clone(), v.to_string()));
+            }
+        }
+    }
+
+    Ok(headers_to_copy)
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit)"
     )]
     UnknownPlugin(String),
 
@@ -49,6 +49,7 @@ pub fn compile_plugins(
         "cors",
         "security_headers",
         "compression", // Compression last in request phase (captures Accept-Encoding)
+        "bandwidth_limit",
     ];
 
     for name in ordered_names {
@@ -233,6 +234,16 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                 })?;
             Ok(BuiltinPlugin::ConcurrencyLimit(
                 super::concurrency_limit::ConcurrencyLimitPlugin::new(&cfg),
+            ))
+        }
+        "bandwidth_limit" => {
+            let cfg: super::bandwidth_limit::BandwidthLimitConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(BuiltinPlugin::BandwidthLimit(
+                super::bandwidth_limit::BandwidthLimitPlugin::new(&cfg),
             ))
         }
         "path_rewrite" => {
