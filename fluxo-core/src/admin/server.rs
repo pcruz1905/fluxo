@@ -28,15 +28,59 @@ pub struct AdminService {
     pub metrics: Arc<MetricsRegistry>,
     /// Path to the config file on disk — used by `POST /reload`.
     pub config_path: Option<String>,
+    /// Optional bearer token for admin API authentication.
+    pub auth_token: Option<String>,
 }
 
 impl AdminService {
+    /// Check bearer token auth. Returns an error response if auth fails, `None` if OK.
+    fn check_auth(
+        req: &Request<Incoming>,
+        auth_token: &Option<String>,
+    ) -> Option<Response<Full<Bytes>>> {
+        let Some(expected) = auth_token else {
+            return None; // No auth configured
+        };
+
+        // /health is always exempt (load balancers need unauthenticated access)
+        if req.uri().path() == "/health" {
+            return None;
+        }
+
+        let authorized = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .is_some_and(|token| token == expected.as_str());
+
+        if authorized {
+            return None;
+        }
+
+        let body = r#"{"error": "unauthorized"}"#;
+        Some(
+            Response::builder()
+                .status(401)
+                .header("content-type", "application/json")
+                .header("www-authenticate", "Bearer")
+                .body(Full::new(Bytes::from(body)))
+                .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
+        )
+    }
+
     async fn handle_request(
         proxy: Arc<FluxoProxy>,
         metrics: Arc<MetricsRegistry>,
         config_path: Option<String>,
+        auth_token: Option<String>,
         req: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+        // Auth check (exempt: /health)
+        if let Some(resp) = Self::check_auth(&req, &auth_token) {
+            return Ok(resp);
+        }
+
         let method = req.method().as_str().to_string();
         let path = req.uri().path().to_string();
 
@@ -121,6 +165,7 @@ impl pingora_core::services::background::BackgroundService for AdminService {
                             let proxy = self.proxy.clone();
                             let metrics = self.metrics.clone();
                             let config_path = self.config_path.clone();
+                            let auth_token = self.auth_token.clone();
                             let io = hyper_util::rt::TokioIo::new(stream);
 
                             connections.spawn(async move {
@@ -129,6 +174,7 @@ impl pingora_core::services::background::BackgroundService for AdminService {
                                         proxy.clone(),
                                         metrics.clone(),
                                         config_path.clone(),
+                                        auth_token.clone(),
                                         req,
                                     )
                                 });

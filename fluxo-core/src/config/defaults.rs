@@ -193,6 +193,11 @@ pub fn cache_include_query() -> bool {
     true
 }
 
+/// Default disk cache max size: 1 GB.
+pub fn cache_max_disk_size() -> String {
+    "1gb".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

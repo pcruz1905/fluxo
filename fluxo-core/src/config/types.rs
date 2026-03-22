@@ -207,6 +207,22 @@ pub struct GlobalConfig {
     /// When enabled, spans are exported via OTLP to a collector.
     #[serde(default)]
     pub tracing: crate::observability::OtelTracingConfig,
+
+    /// Bearer token for admin API authentication.
+    /// When set, all admin endpoints (except `/health`) require
+    /// `Authorization: Bearer <token>` header. Example: `"my-secret-token"`.
+    pub admin_auth_token: Option<String>,
+
+    /// Directory for disk-backed HTTP cache storage.
+    /// When set, cached responses persist across restarts.
+    /// Example: `"/var/cache/fluxo"`.
+    pub cache_dir: Option<String>,
+
+    /// Maximum total size of the disk cache.
+    /// Uses human-readable format: `"1gb"`, `"500mb"`.
+    /// Default: `"1gb"`.
+    #[serde(default = "defaults::cache_max_disk_size")]
+    pub cache_max_disk_size: String,
 }
 
 impl Default for GlobalConfig {
@@ -233,6 +249,9 @@ impl Default for GlobalConfig {
             access_log_file: None,
             geoip_db_path: None,
             tracing: crate::observability::OtelTracingConfig::default(),
+            admin_auth_token: None,
+            cache_dir: None,
+            cache_max_disk_size: defaults::cache_max_disk_size(),
         }
     }
 }

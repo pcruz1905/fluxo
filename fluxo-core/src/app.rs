@@ -284,6 +284,7 @@ impl FluxoApp {
                 .config_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
+            auth_token: self.config.global.admin_auth_token.clone(),
         };
 
         let svc = GenBackgroundService::new("admin API".to_string(), Arc::new(admin));

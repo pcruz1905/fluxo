@@ -16,14 +16,19 @@ use super::config::TcpServiceConfig;
 /// A running TCP proxy service.
 pub struct TcpProxy {
     config: TcpServiceConfig,
+    /// Pre-parsed connect timeout (avoids re-parsing per connection).
+    connect_timeout: Duration,
     /// Round-robin index for load balancing.
     next_target: std::sync::atomic::AtomicUsize,
 }
 
 impl TcpProxy {
     pub fn new(config: TcpServiceConfig) -> Self {
+        let connect_timeout = crate::config::parse_duration(&config.connect_timeout)
+            .unwrap_or(Duration::from_secs(5));
         Self {
             config,
+            connect_timeout,
             next_target: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -165,8 +170,8 @@ impl TcpProxy {
             "TCP proxy connecting"
         );
 
-        // Connect to upstream with timeout
-        let connect_timeout = Duration::from_secs(5); // TODO: parse from config
+        // Connect to upstream with configured timeout
+        let connect_timeout = self.connect_timeout;
         let upstream =
             match tokio::time::timeout(connect_timeout, TcpStream::connect(&target)).await {
                 Ok(Ok(stream)) => stream,
