@@ -105,6 +105,12 @@ pub struct FluxoState {
     pub client_write_timeout: Option<std::time::Duration>,
     /// Pre-compiled body filter chain (Nginx-inspired).
     pub body_filters: BodyFilterChain,
+    /// `GeoIP` database for route matching (if configured).
+    pub geoip_db: Option<crate::routing::geoip::GeoIpDb>,
+    /// SNI certificate map for multi-cert TLS listeners.
+    pub sni_cert_map: Option<crate::tls::SniCertMap>,
+    /// `mTLS` client auth configurations per service.
+    pub mtls_configs: HashMap<String, crate::tls::MtlsConfig>,
 }
 
 /// Long-lived state that survives config reloads.
@@ -137,6 +143,8 @@ impl FluxoState {
         let has_tls = has_tls_configured(&config);
         let trusted_proxies = parse_trusted_proxies(&config);
         let (client_body_timeout, client_write_timeout) = parse_downstream_timeouts(&config);
+        let geoip_db = load_geoip_db(&config);
+        let (sni_cert_map, mtls_configs) = build_tls_state(&config);
 
         // Build the global body filter chain
         let mut body_filters = BodyFilterChain::empty();
@@ -153,6 +161,9 @@ impl FluxoState {
             client_body_timeout,
             client_write_timeout,
             body_filters,
+            geoip_db,
+            sni_cert_map,
+            mtls_configs,
         })
     }
 
@@ -176,6 +187,9 @@ impl FluxoState {
         let mut body_filters = BodyFilterChain::empty();
         body_filters.push(Box::new(CompressionBodyFilter));
 
+        let geoip_db = load_geoip_db(&config);
+        let (sni_cert_map, mtls_configs) = build_tls_state(&config);
+
         Ok(FluxoBuild {
             state: Self {
                 config,
@@ -188,6 +202,9 @@ impl FluxoState {
                 client_body_timeout,
                 client_write_timeout,
                 body_filters,
+                geoip_db,
+                sni_cert_map,
+                mtls_configs,
             },
             health_check_services,
         })
@@ -219,9 +236,44 @@ fn build_upstream_groups(
         // Wire timeouts from config (not defaults)
         let timeouts = UpstreamTimeouts::from_config(upstream_config);
 
+        // DNS discovery: resolve targets from hostname
+        #[allow(clippy::option_if_let_else)]
+        let effective_targets = if upstream_config.discovery == "dns" {
+            if let Some(ref hostname) = upstream_config.dns_hostname {
+                match crate::upstream::dns::parse_dns_config(
+                    hostname,
+                    upstream_config.dns_port,
+                    Some(&upstream_config.dns_refresh_interval),
+                ) {
+                    Ok(dns_config) => {
+                        let discovery = std::sync::Arc::new(
+                            crate::upstream::dns::DnsDiscovery::new(dns_config),
+                        );
+                        // Spawn background DNS refresh
+                        std::sync::Arc::clone(&discovery).start_background();
+                        info!(
+                            upstream = name,
+                            hostname = hostname,
+                            "DNS discovery started"
+                        );
+                        // Use static targets as initial fallback (DNS resolves async)
+                        upstream_config.targets.clone()
+                    }
+                    Err(e) => {
+                        warn!(upstream = name, error = %e, "DNS discovery config failed, using static targets");
+                        upstream_config.targets.clone()
+                    }
+                }
+            } else {
+                upstream_config.targets.clone()
+            }
+        } else {
+            upstream_config.targets.clone()
+        };
+
         let mut group = UpstreamGroup::new(
             upstream_name.clone(),
-            &upstream_config.targets,
+            &effective_targets,
             strategy,
             Default::default(), // TLS — wired from config later
             timeouts,
@@ -237,8 +289,9 @@ fn build_upstream_groups(
             hc.peer_template.options.connection_timeout = Some(timeout);
             hc.peer_template.options.read_timeout = Some(timeout);
 
+            let method = hc_config.method.as_str();
             let mut req =
-                pingora_http::RequestHeader::build("GET", hc_config.path.as_bytes(), None)
+                pingora_http::RequestHeader::build(method, hc_config.path.as_bytes(), None)
                     .map_err(|e| {
                         crate::config::ConfigError::Validation(format!(
                             "invalid health check path '{}': {}",
@@ -250,6 +303,12 @@ fn build_upstream_groups(
                     "failed to set health check Host header: {e}"
                 ))
             })?;
+            // Add custom health check headers
+            for (hdr_name, hdr_value) in &hc_config.headers {
+                let name = hdr_name.clone();
+                let value = hdr_value.clone();
+                let _ = req.insert_header(name, value);
+            }
             hc.req = req;
 
             // Dual-interval health checks (Traefik-inspired):
@@ -410,6 +469,80 @@ fn parse_trusted_proxies(config: &FluxoConfig) -> Vec<ipnet::IpNet> {
         .iter()
         .filter_map(|s| s.parse().ok())
         .collect()
+}
+
+fn build_tls_state(
+    config: &FluxoConfig,
+) -> (
+    Option<crate::tls::SniCertMap>,
+    HashMap<String, crate::tls::MtlsConfig>,
+) {
+    // Build SNI cert map from all services' sni_certs
+    let mut all_sni_certs: Vec<crate::tls::SniCertConfig> = Vec::new();
+    let mut mtls_configs = HashMap::new();
+
+    for (service_name, service_config) in &config.services {
+        if let Some(ref tls) = service_config.tls {
+            // Collect SNI certs
+            all_sni_certs.extend(tls.sni_certs.clone());
+
+            // Build mTLS config
+            match crate::tls::MtlsConfig::build(
+                &tls.client_auth_type,
+                tls.client_ca_path.as_deref(),
+            ) {
+                Ok(mtls) => {
+                    if mtls.auth_type != crate::tls::ClientAuthType::None {
+                        info!(
+                            service = service_name,
+                            auth_type = ?mtls.auth_type,
+                            "mTLS client auth configured"
+                        );
+                        mtls_configs.insert(service_name.clone(), mtls);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        service = service_name,
+                        error = %e,
+                        "mTLS configuration error"
+                    );
+                }
+            }
+        }
+    }
+
+    let sni_map = if all_sni_certs.is_empty() {
+        None
+    } else {
+        match crate::tls::SniCertMap::build(&all_sni_certs) {
+            Ok(map) => {
+                info!(count = map.len(), "SNI certificate map built");
+                Some(map)
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to build SNI certificate map");
+                None
+            }
+        }
+    };
+
+    (sni_map, mtls_configs)
+}
+
+fn load_geoip_db(config: &FluxoConfig) -> Option<crate::routing::geoip::GeoIpDb> {
+    config.global.geoip_db_path.as_deref().and_then(|path| {
+        match crate::routing::geoip::GeoIpDb::open(path) {
+            Ok(db) => {
+                info!("GeoIP database loaded: {path}");
+                Some(db)
+            }
+            Err(e) => {
+                warn!("failed to load GeoIP database: {e}");
+                None
+            }
+        }
+    })
 }
 
 fn is_trusted_proxy(
@@ -1127,16 +1260,44 @@ impl ProxyHttp for FluxoProxy {
             }
         }
 
+        // --- OpenTelemetry trace context extraction ---
+        if state.config.global.tracing.enabled {
+            let req_header = session.req_header();
+            let trace_ctx = crate::observability::TraceContext::from_headers(req_header);
+            if trace_ctx.is_active() {
+                ctx.set_extension(
+                    "traceparent".to_string(),
+                    serde_json::json!(trace_ctx.traceparent.as_deref().unwrap_or("")),
+                );
+                if let Some(ref ts) = trace_ctx.tracestate {
+                    ctx.set_extension("tracestate".to_string(), serde_json::json!(ts));
+                }
+            }
+        }
+
+        // --- GeoIP lookup (for route matching) ---
+        let geoip_country = state.geoip_db.as_ref().and_then(|db| {
+            ctx.client_ip
+                .as_deref()
+                .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+                .and_then(|ip| db.country_code(ip))
+        });
+
         // --- Route matching ---
         let req_header = session.req_header();
         let pingora_hdrs = PingoraHeaders(req_header);
         let query = req_header.uri.query();
         let client_ip_ref = ctx.client_ip.as_deref();
-        if let Some(route) =
-            state
-                .router
-                .match_route_full(host, path, method, &pingora_hdrs, query, client_ip_ref)
-        {
+        let geoip_ref = geoip_country.as_deref();
+        if let Some(route) = state.router.match_route_full(
+            host,
+            path,
+            method,
+            &pingora_hdrs,
+            query,
+            client_ip_ref,
+            geoip_ref,
+        ) {
             ctx.matched_route = Some(MatchedRoute {
                 index: route.index,
                 upstream: route.upstream.clone(),
@@ -1354,6 +1515,20 @@ impl ProxyHttp for FluxoProxy {
                 .pipeline
                 .run_upstream_request(upstream_request, ctx);
 
+            // --- OpenTelemetry trace context injection ---
+            if state.config.global.tracing.enabled {
+                if let Some(tp) = ctx.get_extension("traceparent") {
+                    if let Some(tp_str) = tp.as_str() {
+                        let _ = upstream_request.insert_header("traceparent", tp_str);
+                    }
+                }
+                if let Some(ts) = ctx.get_extension("tracestate") {
+                    if let Some(ts_str) = ts.as_str() {
+                        let _ = upstream_request.insert_header("tracestate", ts_str);
+                    }
+                }
+            }
+
             // --- Forward auth header injection ---
             // Copy headers from the auth service response into the upstream request.
             // Collect into owned Vec first — insert_header requires owned values to
@@ -1489,6 +1664,16 @@ impl ProxyHttp for FluxoProxy {
                 }
             }
 
+            // --- Capture content type for sub_filter ---
+            if let Some(ct) = upstream_response.headers.get("content-type") {
+                if let Ok(ct_str) = ct.to_str() {
+                    ctx.set_extension(
+                        "response_content_type".to_string(),
+                        serde_json::json!(ct_str),
+                    );
+                }
+            }
+
             // --- Cache status header (Nginx X-Cache-Status pattern) ---
             if let Some(status) = ctx.cache_status {
                 let _ = upstream_response.insert_header("X-Cache-Status", status.as_str());
@@ -1523,6 +1708,16 @@ impl ProxyHttp for FluxoProxy {
                     }
                 }
             }
+
+            // Enforce request_buffer plugin limit
+            if let Some(max_buffer) = ctx.request_buffer_max_bytes {
+                if max_buffer > 0 && ctx.bytes_received > max_buffer {
+                    return Err(Error::explain(
+                        pingora_core::ErrorType::HTTPStatus(413),
+                        "request body exceeds buffer limit",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1545,6 +1740,28 @@ impl ProxyHttp for FluxoProxy {
                 ctx.error_page_override = None;
             }
             return Ok(None);
+        }
+
+        // --- Sub_filter response body rewriting (Nginx sub_filter) ---
+        if let Some(ref sub_filter) = ctx.matched_route.as_ref().and_then(|r| {
+            let state = self.state.load();
+            state.router.routes().get(r.index).and_then(|compiled| {
+                compiled.sub_filter.as_ref().and_then(|sf| {
+                    // Check content type from ctx (set during response_filter)
+                    let ct = ctx.get_extension("response_content_type");
+                    let ct_str = ct.and_then(|v| v.as_str());
+                    if sf.should_filter(ct_str) {
+                        Some(sf.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+        }) {
+            if let Some(chunk) = body.as_ref() {
+                let rewritten = sub_filter.apply(chunk);
+                *body = Some(rewritten);
+            }
         }
 
         // --- Response buffering (Nginx proxy_buffering) ---

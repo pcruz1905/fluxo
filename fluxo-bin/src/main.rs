@@ -216,6 +216,23 @@ fn main() -> anyhow::Result<()> {
         server.add_boxed_service(renewal_svc);
     }
 
+    // Register L4 TCP proxy services
+    for (name, tcp_config) in &fluxo_config.l4.tcp_services {
+        let tcp_proxy = std::sync::Arc::new(fluxo_core::l4::TcpProxy::new(tcp_config.clone()));
+        let listen_addr = tcp_config.listen.clone();
+        let svc_name = name.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                service = svc_name,
+                address = listen_addr,
+                "L4 TCP proxy listening"
+            );
+            if let Err(e) = tcp_proxy.run().await {
+                tracing::error!(service = svc_name, error = %e, "L4 TCP proxy failed");
+            }
+        });
+    }
+
     // Register Admin API
     let admin_service = app.admin_service();
     server.add_boxed_service(admin_service);

@@ -101,6 +101,8 @@ pub struct CompiledRoute {
     pub error_pages: HashMap<u16, String>,
     /// Per-route `intercept_errors` flag (overrides global when Some).
     pub intercept_errors: Option<bool>,
+    /// Pre-compiled `sub_filter` for response body rewriting.
+    pub sub_filter: Option<crate::plugins::sub_filter::CompiledSubFilter>,
 }
 
 /// Pre-compiled mirror configuration for a route.
@@ -162,7 +164,8 @@ impl CompiledRoute {
             .all(|m| m.matches_with_headers(host, path, method, headers))
     }
 
-    /// Full matching with all request context: headers, query string, and client IP.
+    /// Full matching with all request context.
+    #[allow(clippy::too_many_arguments)]
     pub fn matches_full(
         &self,
         host: Option<&str>,
@@ -171,10 +174,11 @@ impl CompiledRoute {
         headers: &dyn RequestHeaders,
         query: Option<&str>,
         client_ip: Option<&str>,
+        geoip_country: Option<&str>,
     ) -> bool {
         self.matchers
             .iter()
-            .all(|m| m.matches_full(host, path, method, headers, query, client_ip))
+            .all(|m| m.matches_full(host, path, method, headers, query, client_ip, geoip_country))
     }
 }
 
@@ -371,6 +375,20 @@ impl RouteTable {
             )?));
         }
 
+        // Compile GeoIP matcher
+        if !config.match_geoip.is_empty() {
+            let negate = config.match_geoip.iter().any(|c| c.starts_with('!'));
+            let countries: Vec<String> = config
+                .match_geoip
+                .iter()
+                .map(|c| c.trim_start_matches('!').to_uppercase())
+                .collect();
+            matchers.push(RouteMatcher::GeoIp(geoip::GeoIpMatcher {
+                countries,
+                negate,
+            }));
+        }
+
         // Compile plugin pipeline
         let plugin_list = crate::plugins::config::compile_plugins(&config.plugins, global_plugins)?;
         let pipeline = PluginPipeline::new(plugin_list);
@@ -420,6 +438,10 @@ impl RouteTable {
             }),
             error_pages: config.error_pages.clone(),
             intercept_errors: config.intercept_errors,
+            sub_filter: config
+                .sub_filter
+                .as_ref()
+                .map(crate::plugins::sub_filter::CompiledSubFilter::from_config),
         })
     }
 
@@ -452,6 +474,7 @@ impl RouteTable {
     /// Full matching with all request context: headers, query string, and client IP.
     ///
     /// This is the primary matching method used in the proxy hot path.
+    #[allow(clippy::too_many_arguments)]
     pub fn match_route_full(
         &self,
         host: Option<&str>,
@@ -460,10 +483,11 @@ impl RouteTable {
         headers: &dyn RequestHeaders,
         query: Option<&str>,
         client_ip: Option<&str>,
+        geoip_country: Option<&str>,
     ) -> Option<&CompiledRoute> {
         self.routes
             .iter()
-            .find(|r| r.matches_full(host, path, method, headers, query, client_ip))
+            .find(|r| r.matches_full(host, path, method, headers, query, client_ip, geoip_country))
     }
 
     /// Return the number of compiled routes.
@@ -891,15 +915,15 @@ targets = ["127.0.0.1:3000"]
         let h = H;
 
         // With matching query string
-        let matched = table.match_route_full(None, "/", "GET", &h, Some("version=v2"), None);
+        let matched = table.match_route_full(None, "/", "GET", &h, Some("version=v2"), None, None);
         assert_eq!(matched.unwrap().name.as_deref(), Some("versioned"));
 
         // Without query string — falls through to catch-all
-        let matched = table.match_route_full(None, "/", "GET", &h, None, None);
+        let matched = table.match_route_full(None, "/", "GET", &h, None, None, None);
         assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
 
         // With wrong query value — falls through
-        let matched = table.match_route_full(None, "/", "GET", &h, Some("version=v1"), None);
+        let matched = table.match_route_full(None, "/", "GET", &h, Some("version=v1"), None, None);
         assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
     }
 
@@ -938,15 +962,15 @@ targets = ["127.0.0.1:3000"]
         let h = H;
 
         // Internal IP matches
-        let matched = table.match_route_full(None, "/", "GET", &h, None, Some("10.1.2.3"));
+        let matched = table.match_route_full(None, "/", "GET", &h, None, Some("10.1.2.3"), None);
         assert_eq!(matched.unwrap().name.as_deref(), Some("internal"));
 
         // External IP falls through
-        let matched = table.match_route_full(None, "/", "GET", &h, None, Some("8.8.8.8"));
+        let matched = table.match_route_full(None, "/", "GET", &h, None, Some("8.8.8.8"), None);
         assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
 
         // No client IP falls through
-        let matched = table.match_route_full(None, "/", "GET", &h, None, None);
+        let matched = table.match_route_full(None, "/", "GET", &h, None, None, None);
         assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
     }
 

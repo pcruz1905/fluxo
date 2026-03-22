@@ -29,6 +29,8 @@ pub enum RouteMatcher {
     Query(QueryMatcher),
     /// Match on client IP address (supports CIDR notation).
     ClientIP(ClientIPMatcher),
+    /// Match on `GeoIP` country code.
+    GeoIp(super::geoip::GeoIpMatcher),
 }
 
 /// Request headers abstraction for matching.
@@ -49,7 +51,7 @@ impl RouteMatcher {
             Self::Host(matchers) => host.is_some_and(|h| matchers.iter().any(|m| m.matches(h))),
             Self::Path(matchers) => matchers.iter().any(|m| m.matches(path)),
             Self::Method(m) => m.matches(method),
-            Self::Header(_) | Self::Query(_) | Self::ClientIP(_) => true,
+            Self::Header(_) | Self::Query(_) | Self::ClientIP(_) | Self::GeoIp(_) => true,
         }
     }
 
@@ -66,13 +68,14 @@ impl RouteMatcher {
             Self::Path(matchers) => matchers.iter().any(|m| m.matches(path)),
             Self::Method(m) => m.matches(method),
             Self::Header(m) => m.matches(headers),
-            Self::Query(_) | Self::ClientIP(_) => true,
+            Self::Query(_) | Self::ClientIP(_) | Self::GeoIp(_) => true,
         }
     }
 
-    /// Full matching with all request context: headers, query string, and client IP.
+    /// Full matching with all request context: headers, query string, client IP, and `GeoIP` country.
     ///
     /// This is the primary matcher used in the proxy hot path.
+    #[allow(clippy::too_many_arguments)]
     pub fn matches_full(
         &self,
         host: Option<&str>,
@@ -81,6 +84,7 @@ impl RouteMatcher {
         headers: &dyn RequestHeaders,
         query: Option<&str>,
         client_ip: Option<&str>,
+        geoip_country: Option<&str>,
     ) -> bool {
         match self {
             Self::Host(matchers) => host.is_some_and(|h| matchers.iter().any(|m| m.matches(h))),
@@ -89,6 +93,7 @@ impl RouteMatcher {
             Self::Header(m) => m.matches(headers),
             Self::Query(m) => m.matches(query),
             Self::ClientIP(m) => m.matches(client_ip),
+            Self::GeoIp(m) => m.matches(geoip_country),
         }
     }
 }
