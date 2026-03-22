@@ -308,10 +308,7 @@ pub fn handle_put_upstream(
 }
 
 /// DELETE /upstreams/:name — remove an upstream dynamically
-pub fn handle_delete_upstream(
-    proxy: &Arc<FluxoProxy>,
-    name: &str,
-) -> (u16, String, &'static str) {
+pub fn handle_delete_upstream(proxy: &Arc<FluxoProxy>, name: &str) -> (u16, String, &'static str) {
     let state = proxy.state_snapshot();
     let mut new_config = state.config.clone();
 
@@ -782,12 +779,22 @@ match_host = ["test.com"]
     #[test]
     fn drain_sets_draining_flag() {
         let proxy = make_proxy(crate::config::FluxoConfig::default());
-        assert!(!proxy.static_state.draining.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            !proxy
+                .static_state
+                .draining
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         let (status, body, _) = handle_drain(&proxy);
         assert_eq!(status, 200);
         assert!(body.contains("draining"));
-        assert!(proxy.static_state.draining.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            proxy
+                .static_state
+                .draining
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         // Health should now return 503
         let (status, _, _) = handle_health(&proxy);

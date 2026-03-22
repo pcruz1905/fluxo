@@ -112,22 +112,14 @@ pub mod host_functions {
     ) -> i32;
 
     /// Get the client IP address as a string.
-    pub type GetClientIp = extern "C" fn(
-        ip_out_ptr: *mut u8,
-        ip_out_len: *mut u32,
-    ) -> i32;
+    pub type GetClientIp = extern "C" fn(ip_out_ptr: *mut u8, ip_out_len: *mut u32) -> i32;
 
     /// Get the request path.
-    pub type GetRequestPath = extern "C" fn(
-        path_out_ptr: *mut u8,
-        path_out_len: *mut u32,
-    ) -> i32;
+    pub type GetRequestPath = extern "C" fn(path_out_ptr: *mut u8, path_out_len: *mut u32) -> i32;
 
     /// Get the request method.
-    pub type GetRequestMethod = extern "C" fn(
-        method_out_ptr: *mut u8,
-        method_out_len: *mut u32,
-    ) -> i32;
+    pub type GetRequestMethod =
+        extern "C" fn(method_out_ptr: *mut u8, method_out_len: *mut u32) -> i32;
 
     /// Log a message from the plugin.
     pub type Log = extern "C" fn(

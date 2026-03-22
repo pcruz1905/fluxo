@@ -140,7 +140,11 @@ impl ParsedTraceparent {
         }
 
         // Validate lengths: version=2, trace_id=32, parent_id=16, flags=2
-        if parts[0].len() != 2 || parts[1].len() != 32 || parts[2].len() != 16 || parts[3].len() != 2 {
+        if parts[0].len() != 2
+            || parts[1].len() != 32
+            || parts[2].len() != 16
+            || parts[3].len() != 2
+        {
             return None;
         }
 
@@ -176,10 +180,9 @@ mod tests {
 
     #[test]
     fn parse_traceparent_valid() {
-        let tp = ParsedTraceparent::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        )
-        .unwrap();
+        let tp =
+            ParsedTraceparent::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                .unwrap();
         assert_eq!(tp.version, "00");
         assert_eq!(tp.trace_id, "4bf92f3577b34da6a3ce929d0e0e4736");
         assert_eq!(tp.parent_id, "00f067aa0ba902b7");
@@ -189,10 +192,9 @@ mod tests {
 
     #[test]
     fn parse_traceparent_not_sampled() {
-        let tp = ParsedTraceparent::parse(
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00",
-        )
-        .unwrap();
+        let tp =
+            ParsedTraceparent::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")
+                .unwrap();
         assert!(!tp.is_sampled());
     }
 
@@ -206,9 +208,13 @@ mod tests {
     #[test]
     fn trace_context_extract_inject() {
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        req.insert_header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+        req.insert_header(
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        )
+        .unwrap();
+        req.insert_header("tracestate", "congo=t61rcWkgMzE")
             .unwrap();
-        req.insert_header("tracestate", "congo=t61rcWkgMzE").unwrap();
 
         let ctx = TraceContext::from_headers(&req);
         assert!(ctx.is_active());

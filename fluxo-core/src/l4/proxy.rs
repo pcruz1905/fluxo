@@ -167,19 +167,18 @@ impl TcpProxy {
 
         // Connect to upstream with timeout
         let connect_timeout = Duration::from_secs(5); // TODO: parse from config
-        let upstream = match tokio::time::timeout(connect_timeout, TcpStream::connect(&target))
-            .await
-        {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(e)) => {
-                warn!(target = %target, error = %e, "TCP upstream connect failed");
-                return Ok(());
-            }
-            Err(_) => {
-                warn!(target = %target, "TCP upstream connect timeout");
-                return Ok(());
-            }
-        };
+        let upstream =
+            match tokio::time::timeout(connect_timeout, TcpStream::connect(&target)).await {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(e)) => {
+                    warn!(target = %target, error = %e, "TCP upstream connect failed");
+                    return Ok(());
+                }
+                Err(_) => {
+                    warn!(target = %target, "TCP upstream connect timeout");
+                    return Ok(());
+                }
+            };
 
         // Bidirectional copy
         let (mut down_read, mut down_write) = downstream.into_split();

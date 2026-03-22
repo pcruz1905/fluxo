@@ -336,10 +336,9 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
             }
 
             // Validate mTLS client auth settings
-            if let Err(e) = crate::tls::MtlsConfig::build(
-                &tls.client_auth_type,
-                tls.client_ca_path.as_deref(),
-            ) {
+            if let Err(e) =
+                crate::tls::MtlsConfig::build(&tls.client_auth_type, tls.client_ca_path.as_deref())
+            {
                 errors.push(format!("service '{service_name}': mTLS: {e}"));
             }
         }
@@ -387,10 +386,7 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
         // Validate DNS discovery fields
         if upstream.discovery == "dns" {
             if upstream.dns_hostname.is_none()
-                || upstream
-                    .dns_hostname
-                    .as_ref()
-                    .is_some_and(String::is_empty)
+                || upstream.dns_hostname.as_ref().is_some_and(String::is_empty)
             {
                 errors.push(format!(
                     "upstream '{name}': dns discovery requires a non-empty dns_hostname"
@@ -1872,8 +1868,7 @@ path = "/healthz"
 expected_status = {status}
 "#
             );
-            load_from_str(&toml)
-                .unwrap_or_else(|e| panic!("status {status} should be valid: {e}"));
+            load_from_str(&toml).unwrap_or_else(|e| panic!("status {status} should be valid: {e}"));
         }
     }
 

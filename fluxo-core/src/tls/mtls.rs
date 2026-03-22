@@ -52,9 +52,7 @@ impl MtlsConfig {
 
         // Verify CA path is provided for verify mode
         if auth_type == ClientAuthType::Verify && client_ca_path.is_none() {
-            return Err(
-                "client_ca_path is required when client_auth_type is 'verify'".to_string(),
-            );
+            return Err("client_ca_path is required when client_auth_type is 'verify'".to_string());
         }
 
         // Verify CA file exists if provided
