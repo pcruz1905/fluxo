@@ -112,6 +112,8 @@ pub enum LbStrategy {
     ConsistentHash,
     /// Earliest Deadline First — heap-based precise weighted distribution (Traefik-inspired).
     WeightedEdf,
+    /// Least Connections — picks the backend with fewest active requests.
+    LeastConnections,
 }
 
 impl LbStrategy {
@@ -123,6 +125,7 @@ impl LbStrategy {
             "fnv_hash" => Ok(Self::FnvHash),
             "consistent_hash" => Ok(Self::ConsistentHash),
             "weighted_edf" => Ok(Self::WeightedEdf),
+            "least_connections" => Ok(Self::LeastConnections),
             other => Err(UpstreamError::InvalidStrategy(other.to_string())),
         }
     }
@@ -136,6 +139,8 @@ enum AnyLoadBalancer {
     ConsistentHash(Arc<LoadBalancer<Consistent>>),
     /// EDF-based weighted scheduler — doesn't use Pingora's `LoadBalancer`.
     Edf(Arc<super::edf::EdfScheduler>),
+    /// Least connections scheduler — picks the backend with fewest active requests.
+    LeastConn(Arc<super::least_conn::LeastConnScheduler>),
 }
 
 impl AnyLoadBalancer {
@@ -199,6 +204,13 @@ impl AnyLoadBalancer {
                     edf_targets,
                 ))))
             }
+            LbStrategy::LeastConnections => {
+                let addresses: Vec<String> =
+                    targets.iter().map(|t| t.address().to_string()).collect();
+                Ok(Self::LeastConn(Arc::new(
+                    super::least_conn::LeastConnScheduler::new(addresses),
+                )))
+            }
         }
     }
 
@@ -215,6 +227,14 @@ impl AnyLoadBalancer {
                 Some(pingora_load_balancing::Backend {
                     addr: addr.parse().ok()?,
                     weight: 1, // Weight is handled by the EDF scheduler itself
+                    ext: Default::default(),
+                })
+            }
+            Self::LeastConn(scheduler) => {
+                let (_, addr) = scheduler.select()?;
+                Some(pingora_load_balancing::Backend {
+                    addr: addr.parse().ok()?,
+                    weight: 1,
                     ext: Default::default(),
                 })
             }
@@ -246,9 +266,8 @@ impl AnyLoadBalancer {
                     mut_lb.set_health_check(hc);
                 }
             }
-            Self::Edf(_) => {
-                // EDF doesn't use Pingora's LoadBalancer health checking.
-                // Health checks for EDF upstreams would need a custom implementation.
+            Self::Edf(_) | Self::LeastConn(_) => {
+                // Custom schedulers don't use Pingora's LoadBalancer health checking.
             }
         }
     }
@@ -269,7 +288,7 @@ impl AnyLoadBalancer {
             Self::ConsistentHash(lb) if lb.health_check_frequency.is_some() => {
                 Some(Box::new(GenBackgroundService::new(svc_name, lb.clone())))
             }
-            // EDF does not support Pingora-integrated health checks
+            // EDF and LeastConn do not support Pingora-integrated health checks
             _ => None,
         }
     }
@@ -296,7 +315,7 @@ impl AnyLoadBalancer {
                     mut_lb.health_check_frequency = Some(freq);
                 }
             }
-            Self::Edf(_) => {}
+            Self::Edf(_) | Self::LeastConn(_) => {}
         }
     }
 }
@@ -471,6 +490,10 @@ mod tests {
         assert_eq!(
             LbStrategy::from_config("consistent_hash").unwrap(),
             LbStrategy::ConsistentHash
+        );
+        assert_eq!(
+            LbStrategy::from_config("least_connections").unwrap(),
+            LbStrategy::LeastConnections
         );
         assert!(LbStrategy::from_config("invalid").is_err());
     }

@@ -212,6 +212,11 @@ pub struct RequestContext {
     /// Cache outcome for access log and metrics.
     pub cache_status: Option<CacheStatus>,
 
+    // --- Concurrency limiting state ---
+    /// Semaphore permit held for the duration of the request.
+    /// Dropped automatically when the context is dropped (end of request).
+    pub concurrency_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+
     // --- Extensions map (Nginx $variable inspired) ---
     /// Arbitrary key-value data for inter-plugin communication.
     /// Plugins can store values in the request phase and read them in the response phase.
@@ -291,6 +296,7 @@ impl RequestContext {
             response_buffer_limit: 0,
             response_buffering_active: false,
             cache_status: None,
+            concurrency_permit: None,
             extensions: HashMap::new(),
         }
     }
@@ -342,6 +348,7 @@ impl RequestContext {
         self.response_buffer_limit = 0;
         self.response_buffering_active = false;
         self.cache_status = None;
+        self.concurrency_permit = None;
         self.extensions.clear();
     }
 

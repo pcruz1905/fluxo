@@ -2,6 +2,7 @@
 
 pub mod circuit_breaker;
 pub mod edf;
+pub mod least_conn;
 pub mod peer;
 
 use std::fmt;

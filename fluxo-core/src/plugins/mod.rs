@@ -12,6 +12,7 @@ pub mod body_filter;
 pub mod add_prefix;
 pub mod basic_auth;
 pub mod compression;
+pub mod concurrency_limit;
 pub mod config;
 pub mod cors;
 pub mod headers;
@@ -53,6 +54,7 @@ pub enum BuiltinPlugin {
     StripPrefix(strip_prefix::StripPrefixPlugin),
     AddPrefix(add_prefix::AddPrefixPlugin),
     PathRewrite(path_rewrite::PathRewritePlugin),
+    ConcurrencyLimit(concurrency_limit::ConcurrencyLimitPlugin),
 }
 
 impl BuiltinPlugin {
@@ -70,6 +72,7 @@ impl BuiltinPlugin {
             Self::Cors(p) => p.on_request(req, ctx),
             Self::Compression(p) => p.on_request(req, ctx),
             Self::BasicAuth(p) => p.on_request(req, ctx),
+            Self::ConcurrencyLimit(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
