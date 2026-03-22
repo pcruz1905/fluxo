@@ -4,6 +4,7 @@
 //! pre-built matchers. At request time, the `RouteTable` performs a linear
 //! scan (first-match-wins) over compiled routes.
 
+pub mod geoip;
 pub mod matcher;
 
 use std::collections::HashMap;
@@ -278,6 +279,9 @@ impl RouteTable {
             }
             if !child.match_client_ip.is_empty() {
                 merged.match_client_ip.clone_from(&child.match_client_ip);
+            }
+            if !child.match_geoip.is_empty() {
+                merged.match_geoip.clone_from(&child.match_geoip);
             }
             // Child's plugins are merged on top of parent's (parent plugins run first)
             for (k, v) in &child.plugins {

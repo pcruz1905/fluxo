@@ -80,25 +80,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
         UpstreamConfig {
             discovery: "static".to_string(),
             targets: vec![TargetConfig::Simple(upstream.to_string())],
-            load_balancing: "round_robin".to_string(),
-            health_check: None,
-            connect_timeout: defaults::connect_timeout(),
-            read_timeout: defaults::read_timeout(),
-            write_timeout: defaults::write_timeout(),
-            retry: None,
-            passive_health: None,
-            total_connection_timeout: None,
-            sticky: None,
-            circuit_breaker: None,
-            keepalive_timeout: defaults::keepalive_timeout(),
-            keepalive_pool_size: defaults::keepalive_pool_size(),
-            tcp_keepalive: None,
-            max_h2_streams: None,
-            tcp_recv_buf: None,
-            h2_ping_interval: None,
-            response_buffer_size: None,
-            upstream_type: None,
-            services: vec![],
+            ..Default::default()
         },
     );
 
@@ -114,21 +96,8 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
             tls: None,
             routes: vec![RouteConfig {
                 name: Some("default".to_string()),
-                parent: None,
-                match_host: vec![],
-                match_path: vec![],
-                match_method: vec![],
-                match_header: Default::default(),
-                match_query: Default::default(),
-                match_client_ip: vec![],
                 upstream: "default".to_string(),
-                max_request_body: None,
-                plugins: Default::default(),
-                mirror: None,
-                cache: None,
-                forward_auth: None,
-                error_pages: Default::default(),
-                intercept_errors: None,
+                ..Default::default()
             }],
         },
     );
@@ -137,6 +106,7 @@ pub fn config_from_upstream(upstream: &str) -> Result<FluxoConfig, ConfigError> 
         global: GlobalConfig::default(),
         services,
         upstreams,
+        l4: Default::default(),
     };
     validate(&config)?;
     Ok(config)
@@ -364,6 +334,14 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                 }
                 _ => {}
             }
+
+            // Validate mTLS client auth settings
+            if let Err(e) = crate::tls::MtlsConfig::build(
+                &tls.client_auth_type,
+                tls.client_ca_path.as_deref(),
+            ) {
+                errors.push(format!("service '{service_name}': mTLS: {e}"));
+            }
         }
     }
 
@@ -396,12 +374,34 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
             }
         }
 
-        // Only "static" discovery supported currently
-        if upstream.discovery != "static" {
+        // Validate discovery method
+        let valid_discoveries = ["static", "dns"];
+        if !valid_discoveries.contains(&upstream.discovery.as_str()) {
             errors.push(format!(
-                "upstream '{name}': discovery '{}' is not yet supported. Only 'static' is available.",
-                upstream.discovery
+                "upstream '{name}': unknown discovery '{}'. Valid: {}",
+                upstream.discovery,
+                valid_discoveries.join(", ")
             ));
+        }
+
+        // Validate DNS discovery fields
+        if upstream.discovery == "dns" {
+            if upstream.dns_hostname.is_none()
+                || upstream
+                    .dns_hostname
+                    .as_ref()
+                    .is_some_and(String::is_empty)
+            {
+                errors.push(format!(
+                    "upstream '{name}': dns discovery requires a non-empty dns_hostname"
+                ));
+            }
+            if parse_duration(&upstream.dns_refresh_interval).is_err() {
+                errors.push(format!(
+                    "upstream '{name}': invalid dns_refresh_interval '{}'",
+                    upstream.dns_refresh_interval
+                ));
+            }
         }
 
         // Validate load balancing strategy
@@ -613,6 +613,27 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                         "upstream '{name}': invalid health_check.unhealthy_interval '{ui}'"
                     ));
                 }
+            }
+            if hc.expected_status != 0 && !(100..=599).contains(&hc.expected_status) {
+                errors.push(format!(
+                    "upstream '{name}': health_check.expected_status {} is not a valid HTTP status (100-599)",
+                    hc.expected_status
+                ));
+            }
+            if let Some(ref body) = hc.expected_body {
+                if body.is_empty() {
+                    errors.push(format!(
+                        "upstream '{name}': health_check.expected_body must not be empty when set"
+                    ));
+                }
+            }
+            let valid_methods = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
+            if !valid_methods.contains(&hc.method.as_str()) {
+                errors.push(format!(
+                    "upstream '{name}': health_check.method '{}' is not a valid HTTP method. Valid: {}",
+                    hc.method,
+                    valid_methods.join(", ")
+                ));
             }
         }
 
@@ -1714,5 +1735,169 @@ targets = ["127.0.0.1:3000"]
 "#;
         let config = load_from_str(toml).unwrap();
         assert!(config.services["web"].routes[0].cache.is_none());
+    }
+
+    #[test]
+    fn parse_health_check_extended_fields() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+interval = "10s"
+timeout = "3s"
+expected_status = 200
+expected_body = "OK"
+method = "POST"
+follow_redirects = false
+headers = { "Host" = "example.com", "Authorization" = "Bearer token" }
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let hc = config.upstreams["backend"].health_check.as_ref().unwrap();
+        assert_eq!(hc.expected_status, 200);
+        assert_eq!(hc.expected_body.as_deref(), Some("OK"));
+        assert_eq!(hc.method, "POST");
+        assert!(!hc.follow_redirects);
+        assert_eq!(hc.headers.get("Host").unwrap(), "example.com");
+        assert_eq!(hc.headers.get("Authorization").unwrap(), "Bearer token");
+    }
+
+    #[test]
+    fn health_check_extended_fields_have_defaults() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+"#;
+        let config = load_from_str(toml).expect("should parse");
+        let hc = config.upstreams["backend"].health_check.as_ref().unwrap();
+        assert_eq!(hc.expected_status, 0);
+        assert!(hc.expected_body.is_none());
+        assert_eq!(hc.method, "GET");
+        assert!(hc.follow_redirects);
+        assert!(hc.headers.is_empty());
+    }
+
+    #[test]
+    fn reject_invalid_health_check_expected_status() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+expected_status = 999
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("expected_status"));
+    }
+
+    #[test]
+    fn reject_empty_health_check_expected_body() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+expected_body = ""
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("expected_body"));
+    }
+
+    #[test]
+    fn reject_invalid_health_check_method() {
+        let toml = r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+method = "INVALID"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("method"));
+    }
+
+    #[test]
+    fn accept_valid_health_check_expected_status_range() {
+        for status in [100, 200, 301, 404, 503, 599] {
+            let toml = format!(
+                r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+expected_status = {status}
+"#
+            );
+            load_from_str(&toml)
+                .unwrap_or_else(|e| panic!("status {status} should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn accept_all_valid_health_check_methods() {
+        for method in ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+            let toml = format!(
+                r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+
+[upstreams.backend.health_check]
+path = "/healthz"
+method = "{method}"
+"#
+            );
+            load_from_str(&toml)
+                .unwrap_or_else(|e| panic!("method '{method}' should be valid: {e}"));
+        }
     }
 }

@@ -690,6 +690,9 @@ mod tests {
             response_buffer_size: None,
             upstream_type: None,
             services: vec![],
+            dns_hostname: None,
+            dns_port: 80,
+            dns_refresh_interval: "30s".to_string(),
         };
         let t = UpstreamTimeouts::from_config(&uc);
         assert_eq!(t.connect, Duration::from_secs(3));

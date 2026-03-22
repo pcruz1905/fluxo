@@ -2,8 +2,12 @@
 
 pub mod acme;
 pub mod challenge;
+pub mod mtls;
 pub mod renewal;
+pub mod sni;
 pub mod store;
 
 pub use challenge::ChallengeState;
+pub use mtls::{ClientAuthType, MtlsConfig};
+pub use sni::{SniCertConfig, SniCertMap};
 pub use store::{CertInfo, CertStore};

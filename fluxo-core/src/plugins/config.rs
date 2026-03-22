@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer)"
     )]
     UnknownPlugin(String),
 
@@ -50,6 +50,7 @@ pub fn compile_plugins(
         "security_headers",
         "compression", // Compression last in request phase (captures Accept-Encoding)
         "bandwidth_limit",
+        "request_buffer",
     ];
 
     for name in ordered_names {
@@ -260,6 +261,16 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     }
                 })?;
             Ok(BuiltinPlugin::PathRewrite(plugin))
+        }
+        "request_buffer" => {
+            let cfg: super::request_buffer::RequestBufferConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(BuiltinPlugin::RequestBuffer(
+                super::request_buffer::RequestBufferPlugin::new(&cfg),
+            ))
         }
         _ => Err(PluginConfigError::UnknownPlugin(name.to_string())),
     }

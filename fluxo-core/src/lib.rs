@@ -8,6 +8,7 @@ pub mod app;
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod l4;
 pub mod observability;
 pub mod plugins;
 pub mod proxy;

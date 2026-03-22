@@ -240,6 +240,126 @@ pub async fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
     }
 }
 
+/// GET /routes — list all routes across all services
+pub fn handle_routes(proxy: &FluxoProxy) -> (u16, String, &'static str) {
+    let state = proxy.state_snapshot();
+    let mut routes = Vec::new();
+
+    for (service_name, service) in &state.config.services {
+        for (idx, route) in service.routes.iter().enumerate() {
+            routes.push(serde_json::json!({
+                "service": service_name,
+                "index": idx,
+                "name": route.name,
+                "upstream": route.upstream,
+                "match_host": route.match_host,
+                "match_path": route.match_path,
+                "match_method": route.match_method,
+                "plugins": route.plugins.keys().collect::<Vec<_>>(),
+            }));
+        }
+    }
+    json_response_pretty(200, &routes)
+}
+
+/// PUT /upstreams/:name — add or update an upstream dynamically
+pub fn handle_put_upstream(
+    proxy: &Arc<FluxoProxy>,
+    name: &str,
+    body: &[u8],
+) -> (u16, String, &'static str) {
+    let upstream_config: crate::config::UpstreamConfig = match serde_json::from_slice(body) {
+        Ok(c) => c,
+        Err(e) => {
+            return json_response(
+                400,
+                &serde_json::json!({"error": format!("invalid JSON: {e}")}),
+            );
+        }
+    };
+
+    // Clone current config and update
+    let state = proxy.state_snapshot();
+    let mut new_config = state.config.clone();
+    new_config
+        .upstreams
+        .insert(name.to_string(), upstream_config);
+
+    // Validate and reload
+    if let Err(e) = crate::config::validate(&new_config) {
+        return match &e {
+            crate::config::ConfigError::ValidationMultiple(errors) => {
+                json_response(400, &serde_json::json!({"errors": errors}))
+            }
+            _ => json_response(400, &serde_json::json!({"error": e.to_string()})),
+        };
+    }
+
+    match FluxoState::try_from_config(new_config) {
+        Ok(new_state) => {
+            proxy.reload(new_state);
+            json_response(
+                200,
+                &serde_json::json!({"status": "updated", "upstream": name}),
+            )
+        }
+        Err(e) => json_response(500, &serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// DELETE /upstreams/:name — remove an upstream dynamically
+pub fn handle_delete_upstream(
+    proxy: &Arc<FluxoProxy>,
+    name: &str,
+) -> (u16, String, &'static str) {
+    let state = proxy.state_snapshot();
+    let mut new_config = state.config.clone();
+
+    if new_config.upstreams.remove(name).is_none() {
+        return json_response(
+            404,
+            &serde_json::json!({"error": format!("upstream '{name}' not found")}),
+        );
+    }
+
+    // Check no routes reference this upstream
+    for service in new_config.services.values() {
+        for route in &service.routes {
+            if route.upstream == name {
+                return json_response(
+                    409,
+                    &serde_json::json!({
+                        "error": format!("upstream '{name}' is referenced by route '{}'", route.name.as_deref().unwrap_or("unnamed"))
+                    }),
+                );
+            }
+        }
+    }
+
+    match FluxoState::try_from_config(new_config) {
+        Ok(new_state) => {
+            proxy.reload(new_state);
+            json_response(
+                200,
+                &serde_json::json!({"status": "deleted", "upstream": name}),
+            )
+        }
+        Err(e) => json_response(500, &serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// POST /drain — start graceful shutdown drain
+pub fn handle_drain(proxy: &FluxoProxy) -> (u16, String, &'static str) {
+    proxy
+        .static_state
+        .draining
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    json_response(
+        200,
+        &serde_json::json!({"status": "draining", "message": "health endpoint now returns 503"}),
+    )
+}
+
 /// Fallback for unknown routes
 pub fn handle_not_found() -> (u16, String, &'static str) {
     let body = serde_json::json!({
@@ -248,10 +368,14 @@ pub fn handle_not_found() -> (u16, String, &'static str) {
             "GET /health",
             "GET /metrics",
             "GET /config",
+            "GET /routes",
             "GET /upstreams",
             "POST /config",
             "POST /reload",
+            "POST /drain",
             "POST /cache/purge",
+            "PUT /upstreams/:name",
+            "DELETE /upstreams/:name",
         ]
     });
     json_response(404, &body)
@@ -527,5 +651,155 @@ match_host = ["test.com"]
         let (status, body, _) = handle_reload(&proxy, Some(path));
         assert_eq!(status, 500);
         assert!(body.contains("error"));
+    }
+
+    // --- Dynamic API tests ---
+
+    #[test]
+    fn routes_lists_all_routes() {
+        let mut config = crate::config::FluxoConfig::default();
+        config.upstreams.insert(
+            "api".to_string(),
+            crate::config::UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "127.0.0.1:3000".to_string(),
+                )],
+                load_balancing: "round_robin".to_string(),
+                ..Default::default()
+            },
+        );
+        config.services.insert(
+            "web".to_string(),
+            crate::config::ServiceConfig {
+                routes: vec![crate::config::RouteConfig {
+                    name: Some("api-route".to_string()),
+                    upstream: "api".to_string(),
+                    match_host: vec!["api.example.com".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let proxy = make_proxy(config);
+        let (status, body, _) = handle_routes(&proxy);
+        assert_eq!(status, 200);
+        assert!(body.contains("api-route"));
+        assert!(body.contains("api.example.com"));
+    }
+
+    #[test]
+    fn routes_empty_services() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_routes(&proxy);
+        assert_eq!(status, 200);
+        assert_eq!(body.trim(), "[]");
+    }
+
+    #[test]
+    fn put_upstream_adds_new() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let body = serde_json::to_vec(&serde_json::json!({
+            "targets": ["10.0.0.1:8080"],
+            "load_balancing": "round_robin"
+        }))
+        .unwrap();
+        let (status, resp, _) = handle_put_upstream(&proxy, "new_backend", &body);
+        assert_eq!(status, 200);
+        assert!(resp.contains("updated"));
+
+        let state = proxy.state_snapshot();
+        assert!(state.config.upstreams.contains_key("new_backend"));
+    }
+
+    #[test]
+    fn put_upstream_invalid_json() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_put_upstream(&proxy, "test", b"not json");
+        assert_eq!(status, 400);
+        assert!(body.contains("invalid JSON"));
+    }
+
+    #[test]
+    fn delete_upstream_nonexistent() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        let (status, body, _) = handle_delete_upstream(&proxy, "nonexistent");
+        assert_eq!(status, 404);
+        assert!(body.contains("not found"));
+    }
+
+    #[test]
+    fn delete_upstream_in_use() {
+        let mut config = crate::config::FluxoConfig::default();
+        config.upstreams.insert(
+            "api".to_string(),
+            crate::config::UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "127.0.0.1:3000".to_string(),
+                )],
+                load_balancing: "round_robin".to_string(),
+                ..Default::default()
+            },
+        );
+        config.services.insert(
+            "web".to_string(),
+            crate::config::ServiceConfig {
+                routes: vec![crate::config::RouteConfig {
+                    upstream: "api".to_string(),
+                    match_host: vec!["test.com".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let proxy = make_proxy(config);
+        let (status, body, _) = handle_delete_upstream(&proxy, "api");
+        assert_eq!(status, 409);
+        assert!(body.contains("referenced"));
+    }
+
+    #[test]
+    fn delete_upstream_success() {
+        let mut config = crate::config::FluxoConfig::default();
+        config.upstreams.insert(
+            "unused".to_string(),
+            crate::config::UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "127.0.0.1:3000".to_string(),
+                )],
+                load_balancing: "round_robin".to_string(),
+                ..Default::default()
+            },
+        );
+        let proxy = make_proxy(config);
+        let (status, body, _) = handle_delete_upstream(&proxy, "unused");
+        assert_eq!(status, 200);
+        assert!(body.contains("deleted"));
+
+        let state = proxy.state_snapshot();
+        assert!(!state.config.upstreams.contains_key("unused"));
+    }
+
+    #[test]
+    fn drain_sets_draining_flag() {
+        let proxy = make_proxy(crate::config::FluxoConfig::default());
+        assert!(!proxy.static_state.draining.load(std::sync::atomic::Ordering::Relaxed));
+
+        let (status, body, _) = handle_drain(&proxy);
+        assert_eq!(status, 200);
+        assert!(body.contains("draining"));
+        assert!(proxy.static_state.draining.load(std::sync::atomic::Ordering::Relaxed));
+
+        // Health should now return 503
+        let (status, _, _) = handle_health(&proxy);
+        assert_eq!(status, 503);
+    }
+
+    #[test]
+    fn not_found_lists_new_endpoints() {
+        let (_, body, _) = handle_not_found();
+        assert!(body.contains("/routes"));
+        assert!(body.contains("/drain"));
+        assert!(body.contains("PUT /upstreams/:name"));
+        assert!(body.contains("DELETE /upstreams/:name"));
     }
 }

@@ -51,6 +51,9 @@ sha2 = "0.10"
 parking_lot = "0.12"
 ppp = "2"
 percent-encoding = "2"
+memchr = "2"
+maxminddb = "0.24"
+hickory-resolver = "0.25"
 
 [workspace.lints.clippy]
 # Enable strict groups

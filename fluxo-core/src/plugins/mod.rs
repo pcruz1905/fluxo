@@ -22,10 +22,12 @@ pub mod path_rewrite;
 pub mod pipeline;
 pub mod rate_limit;
 pub mod redirect;
+pub mod request_buffer;
 pub mod request_id;
 pub mod security_headers;
 pub mod static_response;
 pub mod strip_prefix;
+pub mod sub_filter;
 
 pub use pipeline::PluginPipeline;
 
@@ -57,6 +59,7 @@ pub enum BuiltinPlugin {
     AddPrefix(add_prefix::AddPrefixPlugin),
     PathRewrite(path_rewrite::PathRewritePlugin),
     ConcurrencyLimit(concurrency_limit::ConcurrencyLimitPlugin),
+    RequestBuffer(request_buffer::RequestBufferPlugin),
 }
 
 impl BuiltinPlugin {
@@ -76,6 +79,7 @@ impl BuiltinPlugin {
             Self::BasicAuth(p) => p.on_request(req, ctx),
             Self::ConcurrencyLimit(p) => p.on_request(req, ctx),
             Self::BandwidthLimit(p) => p.on_request(req, ctx),
+            Self::RequestBuffer(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }

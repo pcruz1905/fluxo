@@ -1,6 +1,7 @@
 //! Upstream management — groups, peer selection, and health tracking.
 
 pub mod circuit_breaker;
+pub mod dns;
 pub mod edf;
 pub mod least_conn;
 pub mod peer;

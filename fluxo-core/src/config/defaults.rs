@@ -12,6 +12,16 @@ pub fn discovery() -> String {
     "static".to_string()
 }
 
+// --- DNS discovery defaults ---
+
+pub fn dns_default_port() -> u16 {
+    80
+}
+
+pub fn dns_refresh_interval() -> String {
+    "30s".to_string()
+}
+
 pub fn load_balancing() -> String {
     "round_robin".to_string()
 }
@@ -30,6 +40,14 @@ pub fn unhealthy_threshold() -> u32 {
 
 pub fn healthy_threshold() -> u32 {
     2
+}
+
+pub fn health_check_method() -> String {
+    "GET".to_string()
+}
+
+pub fn health_check_follow_redirects() -> bool {
+    true
 }
 
 pub fn access_log_format() -> super::types::AccessLogFormat {
@@ -400,5 +418,17 @@ mod tests {
     #[test]
     fn default_cache_include_query_is_true() {
         assert!(cache_include_query());
+    }
+
+    // --- Health check extended defaults ---
+
+    #[test]
+    fn default_health_check_method_is_get() {
+        assert_eq!(health_check_method(), "GET");
+    }
+
+    #[test]
+    fn default_health_check_follow_redirects_is_true() {
+        assert!(health_check_follow_redirects());
     }
 }

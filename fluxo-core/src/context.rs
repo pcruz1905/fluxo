@@ -214,6 +214,10 @@ pub struct RequestContext {
     /// Cache outcome for access log and metrics.
     pub cache_status: Option<CacheStatus>,
 
+    // --- Request buffering state ---
+    /// Maximum request body bytes to buffer (set by `request_buffer` plugin).
+    pub request_buffer_max_bytes: Option<u64>,
+
     // --- Bandwidth throttling state ---
     /// Maximum response body bytes per second. Set by `bandwidth_limit` plugin.
     pub bandwidth_limit_bps: Option<u64>,
@@ -302,6 +306,7 @@ impl RequestContext {
             response_buffer_limit: 0,
             response_buffering_active: false,
             cache_status: None,
+            request_buffer_max_bytes: None,
             bandwidth_limit_bps: None,
             concurrency_permit: None,
             extensions: HashMap::new(),
@@ -355,6 +360,7 @@ impl RequestContext {
         self.response_buffer_limit = 0;
         self.response_buffering_active = false;
         self.cache_status = None;
+        self.request_buffer_max_bytes = None;
         self.bandwidth_limit_bps = None;
         self.concurrency_permit = None;
         self.extensions.clear();

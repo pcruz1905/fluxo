@@ -60,6 +60,10 @@ pub struct FluxoConfig {
     /// Named upstream groups.
     #[serde(default)]
     pub upstreams: HashMap<String, UpstreamConfig>,
+
+    /// L4 (TCP/UDP) proxy services.
+    #[serde(default)]
+    pub l4: crate::l4::config::L4Config,
 }
 
 impl FluxoConfig {
@@ -87,6 +91,13 @@ impl FluxoConfig {
                 route.upstream.push_str(&suffix);
             }
         }
+
+        // Qualify L4 TCP services
+        let mut new_tcp_services = HashMap::new();
+        for (name, cfg) in std::mem::take(&mut self.l4.tcp_services) {
+            new_tcp_services.insert(format!("{name}{suffix}"), cfg);
+        }
+        self.l4.tcp_services = new_tcp_services;
     }
 
     /// Merge another `FluxoConfig` into this one.
@@ -95,8 +106,9 @@ impl FluxoConfig {
     pub fn merge(&mut self, other: Self) {
         self.services.extend(other.services);
         self.upstreams.extend(other.upstreams);
+        self.l4.tcp_services.extend(other.l4.tcp_services);
         // Note: Global settings are typically taken from the primary provider (file)
-        // or the last one that sent an update. For simplicity, we only merge services/upstreams.
+        // or the last one that sent an update. For simplicity, we only merge services/upstreams/l4.
     }
 }
 
@@ -186,6 +198,15 @@ pub struct GlobalConfig {
     /// in addition to stdout. Example: "/var/log/fluxo/access.log".
     /// Nginx equivalent: `access_log /path/to/file`.
     pub access_log_file: Option<String>,
+
+    /// Path to `MaxMind` `GeoIP2`/`GeoLite2` database file (`.mmdb`).
+    /// Required for `match_geoip` route matching.
+    pub geoip_db_path: Option<String>,
+
+    /// OpenTelemetry distributed tracing configuration.
+    /// When enabled, spans are exported via OTLP to a collector.
+    #[serde(default)]
+    pub tracing: crate::observability::OtelTracingConfig,
 }
 
 impl Default for GlobalConfig {
@@ -210,6 +231,8 @@ impl Default for GlobalConfig {
             access_log_exclude: Vec::new(),
             access_log_min_duration_ms: 0,
             access_log_file: None,
+            geoip_db_path: None,
+            tracing: crate::observability::OtelTracingConfig::default(),
         }
     }
 }
@@ -271,6 +294,22 @@ pub struct TlsConfig {
     /// Use Let's Encrypt staging environment for testing.
     #[serde(default)]
     pub acme_staging: bool,
+
+    /// Path to CA certificate file for client cert verification (mTLS).
+    /// Nginx equivalent: `ssl_client_certificate`.
+    pub client_ca_path: Option<String>,
+
+    /// Client authentication type.
+    /// Values: "none" (default), "request" (optional), "require" (must present), "verify" (must present + validate).
+    /// Traefik equivalent: `clientAuthType`.
+    #[serde(default = "default_client_auth_type")]
+    pub client_auth_type: String,
+
+    /// Additional TLS certificates for SNI-based selection.
+    /// Each entry maps hostnames to a cert/key pair.
+    /// Nginx equivalent: multiple `ssl_certificate` + `ssl_certificate_key` blocks.
+    #[serde(default)]
+    pub sni_certs: Vec<crate::tls::SniCertConfig>,
 }
 
 /// A single route definition.
@@ -311,6 +350,14 @@ pub struct RouteConfig {
     #[serde(default)]
     pub match_client_ip: Vec<String>,
 
+    /// `GeoIP` country matching — match requests by client country.
+    /// Requires `geoip_db_path` in global config.
+    /// Format: list of ISO 3166-1 alpha-2 country codes.
+    /// Prefix with "!" to negate (deny list).
+    /// Example: `["US", "CA"]` (allow list) or `["!CN", "!RU"]` (deny list).
+    #[serde(default)]
+    pub match_geoip: Vec<String>,
+
     /// Name of the upstream group to forward to.
     pub upstream: String,
 
@@ -343,6 +390,10 @@ pub struct RouteConfig {
     /// and replace the body with the custom error page (per-route).
     /// Overrides global `intercept_errors` for this route.
     pub intercept_errors: Option<bool>,
+
+    /// Response body rewriting — search and replace text in response bodies.
+    /// Nginx equivalent: `sub_filter`. Only applies to text content types.
+    pub sub_filter: Option<SubFilterConfig>,
 }
 
 /// Configuration for traffic mirroring to a shadow upstream.
@@ -410,16 +461,62 @@ fn forward_auth_default_timeout() -> String {
     "5s".to_string()
 }
 
+fn default_client_auth_type() -> String {
+    "none".to_string()
+}
+
+/// Response body text substitution — Nginx `sub_filter` equivalent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubFilterConfig {
+    /// Search/replacement pairs. Each pair: { search = "old", replace = "new" }.
+    pub replacements: Vec<SubFilterReplacement>,
+
+    /// Content types to filter. Default: ["text/html"].
+    /// Nginx equivalent: `sub_filter_types`.
+    #[serde(default = "sub_filter_default_types")]
+    pub types: Vec<String>,
+
+    /// Replace only first occurrence of each pattern. Default: false.
+    /// Nginx equivalent: `sub_filter_once`.
+    #[serde(default)]
+    pub once: bool,
+}
+
+/// A single search/replace pair for `sub_filter`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubFilterReplacement {
+    /// The string to search for in the response body.
+    pub search: String,
+    /// The replacement string.
+    pub replace: String,
+}
+
+fn sub_filter_default_types() -> Vec<String> {
+    vec!["text/html".to_string()]
+}
+
 /// Configuration for an upstream group.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
-    /// Discovery method: "static" (v0.1 only).
+    /// Discovery method: "static" or "dns".
     #[serde(default = "defaults::discovery")]
     pub discovery: String,
 
     /// Static list of upstream targets. Supports simple strings or weighted objects.
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
+
+    /// DNS hostname for discovery (used when discovery = "dns").
+    /// The hostname is periodically resolved to discover upstream targets.
+    pub dns_hostname: Option<String>,
+
+    /// Default port for DNS-discovered targets. Default: 80.
+    #[serde(default = "defaults::dns_default_port")]
+    pub dns_port: u16,
+
+    /// DNS refresh interval (e.g., "30s"). Default: "30s".
+    #[serde(default = "defaults::dns_refresh_interval")]
+    pub dns_refresh_interval: String,
 
     /// Load balancing strategy.
     #[serde(default = "defaults::load_balancing")]
@@ -505,6 +602,37 @@ pub struct UpstreamConfig {
     /// Each entry references another upstream by name, with an optional weight.
     #[serde(default)]
     pub services: Vec<ServiceRef>,
+}
+
+impl Default for UpstreamConfig {
+    fn default() -> Self {
+        Self {
+            discovery: defaults::discovery(),
+            targets: Vec::new(),
+            dns_hostname: None,
+            dns_port: defaults::dns_default_port(),
+            dns_refresh_interval: defaults::dns_refresh_interval(),
+            load_balancing: defaults::load_balancing(),
+            health_check: None,
+            connect_timeout: defaults::connect_timeout(),
+            read_timeout: defaults::read_timeout(),
+            write_timeout: defaults::write_timeout(),
+            total_connection_timeout: None,
+            retry: None,
+            passive_health: None,
+            sticky: None,
+            circuit_breaker: None,
+            keepalive_timeout: defaults::keepalive_timeout(),
+            keepalive_pool_size: defaults::keepalive_pool_size(),
+            tcp_keepalive: None,
+            max_h2_streams: None,
+            tcp_recv_buf: None,
+            h2_ping_interval: None,
+            response_buffer_size: None,
+            upstream_type: None,
+            services: Vec::new(),
+        }
+    }
 }
 
 /// A reference to a child upstream in a composite upstream.
@@ -652,4 +780,30 @@ pub struct HealthCheckConfig {
     /// Faster probe interval for unhealthy targets (Traefik-inspired dual-interval).
     /// Defaults to interval/3 if not set. Example: "3s".
     pub unhealthy_interval: Option<String>,
+
+    /// Expected HTTP status code from the health check endpoint.
+    /// Default: 0 (accept any 2xx-3xx). When set, only this exact code is accepted.
+    /// Traefik equivalent: `status` in `ServerHealthCheck`.
+    #[serde(default)]
+    pub expected_status: u16,
+
+    /// Expected substring in the health check response body.
+    /// When set, the response body must contain this string for the check to pass.
+    /// Nginx Plus equivalent: custom body match. Traefik TCP equivalent: `expect`.
+    #[serde(default)]
+    pub expected_body: Option<String>,
+
+    /// HTTP method for health check requests. Default: "GET".
+    /// Traefik equivalent: `method` in `ServerHealthCheck`.
+    #[serde(default = "defaults::health_check_method")]
+    pub method: String,
+
+    /// Custom headers to send with health check requests.
+    /// Example: { "Host" = "example.com", "Authorization" = "Bearer token" }
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Whether to follow HTTP redirects during health checks. Default: true.
+    #[serde(default = "defaults::health_check_follow_redirects")]
+    pub follow_redirects: bool,
 }
