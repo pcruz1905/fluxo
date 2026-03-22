@@ -34,11 +34,28 @@ use crate::upstream::circuit_breaker::{
 };
 use crate::upstream::peer::UpstreamGroup;
 
-/// Global in-memory cache storage (Pingora requires `&'static` lifetime).
-/// Using `MemCache` for v0.1 — production would use disk-backed storage.
-pub(crate) fn global_cache_storage() -> &'static MemCache {
+/// Global in-memory cache storage (fallback when no `cache_dir` is configured).
+pub(crate) fn global_mem_cache() -> &'static MemCache {
     static STORAGE: OnceLock<MemCache> = OnceLock::new();
     STORAGE.get_or_init(MemCache::new)
+}
+
+/// Global disk-backed cache storage (used when `cache_dir` is configured).
+/// Initialized once at startup via `init_disk_cache`.
+static DISK_CACHE: OnceLock<crate::cache::DiskCache> = OnceLock::new();
+
+/// Initialize the global disk cache. Called once at startup when `cache_dir` is set.
+pub fn init_disk_cache(root: std::path::PathBuf, max_size: u64) {
+    let _ = DISK_CACHE.get_or_init(|| crate::cache::DiskCache::new(root, max_size));
+}
+
+/// Get the appropriate cache storage: disk if configured, otherwise in-memory.
+pub(crate) fn global_cache_storage() -> &'static (dyn pingora_cache::storage::Storage + Sync) {
+    if let Some(disk) = DISK_CACHE.get() {
+        disk
+    } else {
+        global_mem_cache()
+    }
 }
 
 /// Parse max-age or s-maxage from a Cache-Control header value.

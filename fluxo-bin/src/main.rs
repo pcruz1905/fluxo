@@ -89,6 +89,20 @@ fn main() -> anyhow::Result<()> {
     // Initialize access log file writer (if configured)
     fluxo_core::observability::init_file_logger(fluxo_config.global.access_log_file.as_deref());
 
+    // Initialize disk cache storage (if configured)
+    if let Some(ref cache_dir) = fluxo_config.global.cache_dir {
+        let max_size = fluxo_core::cache::DiskCache::parse_max_size(
+            &fluxo_config.global.cache_max_disk_size,
+        );
+        let cache_path = std::path::PathBuf::from(cache_dir);
+        if let Err(e) = std::fs::create_dir_all(&cache_path) {
+            tracing::warn!(path = %cache_dir, error = %e, "failed to create cache directory");
+        } else {
+            fluxo_core::proxy::init_disk_cache(cache_path, max_size);
+            tracing::info!(path = %cache_dir, max_size_bytes = max_size, "disk cache initialized");
+        }
+    }
+
     tracing::info!("starting fluxo v{}", env!("CARGO_PKG_VERSION"));
 
     // --test: validate and exit
