@@ -217,4 +217,178 @@ mod tests {
         assert!(!chain.is_empty());
         assert_eq!(chain.len(), 1);
     }
+
+    // --- CompressionBodyFilter tests ---
+
+    #[test]
+    fn compression_filter_no_encoding_passthrough() {
+        let filter = CompressionBodyFilter;
+        let mut body = Some(bytes::Bytes::from("hello"));
+        let mut ctx = RequestContext::new();
+        // No compression_encoding set — should pass through
+        filter.filter_body(&mut body, false, &mut ctx);
+        assert_eq!(body.as_deref(), Some(b"hello".as_ref()));
+    }
+
+    #[test]
+    fn compression_filter_gzip_compresses_body() {
+        use crate::context::CompressionEncoding;
+
+        let filter = CompressionBodyFilter;
+        let mut ctx = RequestContext::new();
+        ctx.compression_encoding = Some(CompressionEncoding::Gzip);
+
+        // Send a chunk
+        let data = "hello world, this is test data for gzip compression";
+        let mut body = Some(bytes::Bytes::from(data));
+        filter.filter_body(&mut body, false, &mut ctx);
+        // Compressor should be initialized
+        assert!(ctx.compressor.is_some());
+
+        // Finalize on end-of-stream
+        let mut body = None;
+        filter.filter_body(&mut body, true, &mut ctx);
+        // After end-of-stream, compressor is consumed
+        assert!(ctx.compressor.is_none());
+    }
+
+    #[test]
+    fn compression_filter_none_body_with_encoding() {
+        use crate::context::CompressionEncoding;
+
+        let filter = CompressionBodyFilter;
+        let mut ctx = RequestContext::new();
+        ctx.compression_encoding = Some(CompressionEncoding::Gzip);
+
+        // Send None body (no data chunk)
+        let mut body: Option<bytes::Bytes> = None;
+        filter.filter_body(&mut body, false, &mut ctx);
+        // No compressor created since no data was provided
+        assert!(ctx.compressor.is_none());
+    }
+
+    #[test]
+    fn compression_filter_end_of_stream_no_compressor() {
+        use crate::context::CompressionEncoding;
+
+        let filter = CompressionBodyFilter;
+        let mut ctx = RequestContext::new();
+        ctx.compression_encoding = Some(CompressionEncoding::Gzip);
+
+        // End-of-stream without any prior chunks
+        let mut body: Option<bytes::Bytes> = None;
+        filter.filter_body(&mut body, true, &mut ctx);
+        // Should not panic; body remains None
+        assert!(body.is_none());
+    }
+
+    #[test]
+    fn compression_filter_brotli_compresses() {
+        use crate::context::CompressionEncoding;
+
+        let filter = CompressionBodyFilter;
+        let mut ctx = RequestContext::new();
+        ctx.compression_encoding = Some(CompressionEncoding::Brotli);
+
+        let data = "test data for brotli compression, repeated content content content";
+        let mut body = Some(bytes::Bytes::from(data));
+        filter.filter_body(&mut body, false, &mut ctx);
+        assert!(ctx.compressor.is_some());
+
+        let mut body = None;
+        filter.filter_body(&mut body, true, &mut ctx);
+        assert!(ctx.compressor.is_none());
+    }
+
+    #[test]
+    fn compression_filter_zstd_compresses() {
+        use crate::context::CompressionEncoding;
+
+        let filter = CompressionBodyFilter;
+        let mut ctx = RequestContext::new();
+        ctx.compression_encoding = Some(CompressionEncoding::Zstd);
+
+        let data = "test data for zstd compression, repeated content content content";
+        let mut body = Some(bytes::Bytes::from(data));
+        filter.filter_body(&mut body, false, &mut ctx);
+        assert!(ctx.compressor.is_some());
+
+        let mut body = None;
+        filter.filter_body(&mut body, true, &mut ctx);
+        assert!(ctx.compressor.is_none());
+    }
+
+    #[test]
+    fn compression_filter_end_of_stream_with_existing_body() {
+        use crate::context::CompressionEncoding;
+
+        let filter = CompressionBodyFilter;
+        let mut ctx = RequestContext::new();
+        ctx.compression_encoding = Some(CompressionEncoding::Gzip);
+
+        // First chunk initializes compressor
+        let mut body = Some(bytes::Bytes::from("initial chunk of data to compress"));
+        filter.filter_body(&mut body, false, &mut ctx);
+
+        // Final chunk with body — tests the "combine existing + final" path
+        let mut body = Some(bytes::Bytes::from("final chunk"));
+        filter.filter_body(&mut body, true, &mut ctx);
+        // Body should have some content (compressed initial + final)
+        assert!(ctx.compressor.is_none()); // consumed
+    }
+
+    #[test]
+    fn default_chain_is_empty() {
+        let chain = BodyFilterChain::default();
+        assert!(chain.is_empty());
+        assert_eq!(chain.len(), 0);
+    }
+
+    #[test]
+    fn chain_new_with_multiple_filters() {
+        let chain =
+            BodyFilterChain::new(vec![Box::new(UppercaseFilter), Box::new(UppercaseFilter)]);
+        assert_eq!(chain.len(), 2);
+        assert!(!chain.is_empty());
+    }
+
+    #[test]
+    fn chain_run_with_none_body() {
+        let chain = BodyFilterChain::new(vec![Box::new(UppercaseFilter)]);
+        let mut body: Option<bytes::Bytes> = None;
+        let mut ctx = RequestContext::new();
+        chain.run(&mut body, false, &mut ctx);
+        // None body stays None (UppercaseFilter only transforms Some)
+        assert!(body.is_none());
+    }
+
+    #[test]
+    fn chain_end_of_stream_flag_passed() {
+        #[derive(Debug)]
+        struct EndOfStreamTracker;
+        impl BodyFilter for EndOfStreamTracker {
+            fn filter_body(
+                &self,
+                body: &mut Option<bytes::Bytes>,
+                end_of_stream: bool,
+                _ctx: &mut RequestContext,
+            ) {
+                if end_of_stream {
+                    *body = Some(bytes::Bytes::from("END"));
+                }
+            }
+        }
+
+        let chain = BodyFilterChain::new(vec![Box::new(EndOfStreamTracker)]);
+        let mut body: Option<bytes::Bytes> = None;
+        let mut ctx = RequestContext::new();
+
+        // Not end of stream — body stays None
+        chain.run(&mut body, false, &mut ctx);
+        assert!(body.is_none());
+
+        // End of stream — body set to END
+        chain.run(&mut body, true, &mut ctx);
+        assert_eq!(body.as_deref(), Some(b"END".as_ref()));
+    }
 }

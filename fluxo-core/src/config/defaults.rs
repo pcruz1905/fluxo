@@ -174,3 +174,231 @@ pub fn cache_methods() -> Vec<String> {
 pub fn cache_include_query() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Basic defaults ---
+
+    #[test]
+    fn default_admin_addr_is_localhost() {
+        assert_eq!(admin_addr(), "127.0.0.1:2019");
+    }
+
+    #[test]
+    fn default_log_level_is_info() {
+        assert_eq!(log_level(), "info");
+    }
+
+    #[test]
+    fn default_discovery_is_static() {
+        assert_eq!(discovery(), "static");
+    }
+
+    #[test]
+    fn default_load_balancing_is_round_robin() {
+        assert_eq!(load_balancing(), "round_robin");
+    }
+
+    // --- Health check defaults ---
+
+    #[test]
+    fn default_health_check_interval_is_10s() {
+        assert_eq!(health_check_interval(), "10s");
+    }
+
+    #[test]
+    fn default_health_check_timeout_is_3s() {
+        assert_eq!(health_check_timeout(), "3s");
+    }
+
+    #[test]
+    fn default_unhealthy_threshold_is_3() {
+        assert_eq!(unhealthy_threshold(), 3);
+    }
+
+    #[test]
+    fn default_healthy_threshold_is_2() {
+        assert_eq!(healthy_threshold(), 2);
+    }
+
+    // --- Access log ---
+
+    #[test]
+    fn default_access_log_format_is_json() {
+        assert!(matches!(
+            access_log_format(),
+            super::super::types::AccessLogFormat::Json
+        ));
+    }
+
+    #[test]
+    fn default_metrics_enabled_is_true() {
+        assert!(metrics_enabled());
+    }
+
+    // --- Upstream timeout defaults ---
+
+    #[test]
+    fn default_connect_timeout_is_5s() {
+        assert_eq!(connect_timeout(), "5s");
+    }
+
+    #[test]
+    fn default_read_timeout_is_60s() {
+        assert_eq!(read_timeout(), "60s");
+    }
+
+    #[test]
+    fn default_write_timeout_is_60s() {
+        assert_eq!(write_timeout(), "60s");
+    }
+
+    // --- Retry defaults ---
+
+    #[test]
+    fn default_retry_attempts_is_1() {
+        assert_eq!(retry_attempts(), 1);
+    }
+
+    #[test]
+    fn default_retry_on_includes_error_and_timeout() {
+        let on = retry_on();
+        assert_eq!(on.len(), 2);
+        assert!(on.contains(&"error".to_string()));
+        assert!(on.contains(&"timeout".to_string()));
+    }
+
+    #[test]
+    fn default_retry_initial_interval_is_100ms() {
+        assert_eq!(retry_initial_interval(), "100ms");
+    }
+
+    #[test]
+    fn default_retry_max_interval_is_1s() {
+        assert_eq!(retry_max_interval(), "1s");
+    }
+
+    // --- Passive health check defaults ---
+
+    #[test]
+    fn default_passive_max_fails_is_3() {
+        assert_eq!(passive_max_fails(), 3);
+    }
+
+    #[test]
+    fn default_passive_fail_timeout_is_30s() {
+        assert_eq!(passive_fail_timeout(), "30s");
+    }
+
+    // --- Sticky session defaults ---
+
+    #[test]
+    fn default_sticky_cookie_name() {
+        assert_eq!(sticky_cookie_name(), "FLUXO_STICKY");
+    }
+
+    #[test]
+    fn default_sticky_cookie_http_only_is_true() {
+        assert!(sticky_cookie_http_only());
+    }
+
+    // --- Circuit breaker defaults ---
+
+    #[test]
+    fn default_cb_failure_threshold_is_5() {
+        assert_eq!(cb_failure_threshold(), 5);
+    }
+
+    #[test]
+    fn default_cb_success_threshold_is_3() {
+        assert_eq!(cb_success_threshold(), 3);
+    }
+
+    #[test]
+    fn default_cb_open_duration_is_30s() {
+        assert_eq!(cb_open_duration(), "30s");
+    }
+
+    #[test]
+    fn default_cb_error_ratio_threshold_is_half() {
+        assert!((cb_error_ratio_threshold() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn default_cb_min_requests_is_10() {
+        assert_eq!(cb_min_requests(), 10);
+    }
+
+    // --- Keepalive defaults ---
+
+    #[test]
+    fn default_keepalive_timeout_is_60s() {
+        assert_eq!(keepalive_timeout(), "60s");
+    }
+
+    #[test]
+    fn default_keepalive_pool_size_is_128() {
+        assert_eq!(keepalive_pool_size(), 128);
+    }
+
+    // --- TCP keepalive defaults ---
+
+    #[test]
+    fn default_tcp_keepalive_idle_is_60s() {
+        assert_eq!(tcp_keepalive_idle(), "60s");
+    }
+
+    #[test]
+    fn default_tcp_keepalive_interval_is_15s() {
+        assert_eq!(tcp_keepalive_interval(), "15s");
+    }
+
+    #[test]
+    fn default_tcp_keepalive_count_is_5() {
+        assert_eq!(tcp_keepalive_count(), 5);
+    }
+
+    // --- Mirror defaults ---
+
+    #[test]
+    fn default_mirror_percent_is_100() {
+        assert_eq!(mirror_percent(), 100);
+    }
+
+    // --- Cache defaults ---
+
+    #[test]
+    fn default_cache_default_ttl_is_300s() {
+        assert_eq!(cache_default_ttl(), "300s");
+    }
+
+    #[test]
+    fn default_cache_max_size_is_50mb() {
+        assert_eq!(cache_max_size(), "50mb");
+    }
+
+    #[test]
+    fn default_cache_stale_while_revalidate_is_0s() {
+        assert_eq!(cache_stale_while_revalidate(), "0s");
+    }
+
+    #[test]
+    fn default_cache_stale_if_error_is_0s() {
+        assert_eq!(cache_stale_if_error(), "0s");
+    }
+
+    #[test]
+    fn default_cache_methods_are_get_and_head() {
+        let methods = cache_methods();
+        assert_eq!(methods.len(), 2);
+        assert!(methods.contains(&"GET".to_string()));
+        assert!(methods.contains(&"HEAD".to_string()));
+    }
+
+    #[test]
+    fn default_cache_include_query_is_true() {
+        assert!(cache_include_query());
+    }
+}

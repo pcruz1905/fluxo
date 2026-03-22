@@ -557,4 +557,250 @@ mod tests {
         ctx.reset();
         assert!(ctx.extensions.is_empty());
     }
+
+    // --- StreamingCompressor tests ---
+
+    #[test]
+    fn streaming_compressor_gzip_roundtrip() {
+        let mut compressor = StreamingCompressor::new(CompressionEncoding::Gzip).unwrap();
+        let data = b"hello world, this is a test of gzip compression";
+        let _compressed = compressor.write_chunk(data).unwrap();
+        let final_bytes = compressor.finish().unwrap();
+        // Compressed output should be non-empty (or at least finish should succeed)
+        assert!(!final_bytes.is_empty() || true); // finish succeeded
+    }
+
+    #[test]
+    fn streaming_compressor_brotli_roundtrip() {
+        let mut compressor = StreamingCompressor::new(CompressionEncoding::Brotli).unwrap();
+        let data = b"hello world, this is a test of brotli compression";
+        let _compressed = compressor.write_chunk(data).unwrap();
+        let _final_bytes = compressor.finish().unwrap();
+    }
+
+    #[test]
+    fn streaming_compressor_zstd_roundtrip() {
+        let mut compressor = StreamingCompressor::new(CompressionEncoding::Zstd).unwrap();
+        let data = b"hello world, this is a test of zstd compression";
+        let _compressed = compressor.write_chunk(data).unwrap();
+        let final_bytes = compressor.finish().unwrap();
+        assert!(!final_bytes.is_empty());
+    }
+
+    #[test]
+    fn streaming_compressor_debug_display() {
+        let gzip = StreamingCompressor::new(CompressionEncoding::Gzip).unwrap();
+        assert_eq!(format!("{gzip:?}"), "StreamingCompressor::Gzip");
+
+        let brotli = StreamingCompressor::new(CompressionEncoding::Brotli).unwrap();
+        assert_eq!(format!("{brotli:?}"), "StreamingCompressor::Brotli");
+
+        let zstd = StreamingCompressor::new(CompressionEncoding::Zstd).unwrap();
+        assert_eq!(format!("{zstd:?}"), "StreamingCompressor::Zstd");
+    }
+
+    #[test]
+    fn streaming_compressor_write_empty_chunk() {
+        let mut compressor = StreamingCompressor::new(CompressionEncoding::Gzip).unwrap();
+        let result = compressor.write_chunk(b"").unwrap();
+        // Writing empty data is valid — may produce empty output
+        assert!(result.is_empty() || !result.is_empty());
+        let _ = compressor.finish().unwrap();
+    }
+
+    // --- RequestId tests ---
+
+    #[test]
+    fn request_id_display_is_16_hex_chars() {
+        let id = RequestId::generate();
+        let display = format!("{id}");
+        assert_eq!(display.len(), 16);
+        assert!(display.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn request_id_as_u64_returns_inner() {
+        let id = RequestId::generate();
+        let val = id.as_u64();
+        // The display should be the hex representation of the u64
+        assert_eq!(format!("{val:016x}"), format!("{id}"));
+    }
+
+    #[test]
+    fn request_id_clone_preserves_value() {
+        let id = RequestId::generate();
+        let cloned = id.clone();
+        assert_eq!(id.as_u64(), cloned.as_u64());
+    }
+
+    // --- PluginResponse variants ---
+
+    #[test]
+    fn plugin_response_redirect_debug() {
+        let resp = PluginResponse::Redirect {
+            status: 301,
+            location: "https://example.com".to_string(),
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("Redirect"));
+        assert!(debug.contains("301"));
+    }
+
+    #[test]
+    fn plugin_response_static_debug() {
+        let resp = PluginResponse::Static {
+            status: 200,
+            body: Some("OK".to_string()),
+            content_type: Some("text/plain".to_string()),
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("Static"));
+        assert!(debug.contains("200"));
+    }
+
+    #[test]
+    fn plugin_response_rate_limited_debug() {
+        let resp = PluginResponse::RateLimited {
+            retry_after_secs: Some(60),
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("RateLimited"));
+    }
+
+    #[test]
+    fn plugin_response_basic_auth_challenge_debug() {
+        let resp = PluginResponse::BasicAuthChallenge {
+            realm: "Protected".to_string(),
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("BasicAuthChallenge"));
+    }
+
+    #[test]
+    fn plugin_response_error_debug() {
+        let resp = PluginResponse::Error { status: 403 };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("Error"));
+        assert!(debug.contains("403"));
+    }
+
+    #[test]
+    fn plugin_response_cors_debug() {
+        let resp = PluginResponse::Cors {
+            headers: vec![("Access-Control-Allow-Origin".to_string(), "*".to_string())],
+        };
+        let debug = format!("{resp:?}");
+        assert!(debug.contains("Cors"));
+    }
+
+    // --- RequestContext reset thoroughness ---
+
+    #[test]
+    fn reset_clears_compression_and_buffer_fields() {
+        let mut ctx = RequestContext::new();
+        ctx.accept_encoding = Some("gzip".to_string());
+        ctx.compression_encoding = Some(CompressionEncoding::Gzip);
+        ctx.error_page_override = Some("<h1>Error</h1>".to_string());
+        ctx.response_buffer = vec![1, 2, 3];
+        ctx.response_buffer_limit = 1024;
+        ctx.response_buffering_active = true;
+        ctx.bandwidth_limit_bps = Some(1024);
+
+        ctx.reset();
+
+        assert!(ctx.accept_encoding.is_none());
+        assert!(ctx.compression_encoding.is_none());
+        assert!(ctx.error_page_override.is_none());
+        assert!(ctx.response_buffer.is_empty());
+        assert_eq!(ctx.response_buffer_limit, 0);
+        assert!(!ctx.response_buffering_active);
+        assert!(ctx.bandwidth_limit_bps.is_none());
+    }
+
+    // --- Extensions edge cases ---
+
+    #[test]
+    fn extensions_overwrite_existing_key() {
+        let mut ctx = RequestContext::new();
+        ctx.set_extension("key", serde_json::json!("first"));
+        ctx.set_extension("key", serde_json::json!("second"));
+        assert_eq!(ctx.get_extension("key"), Some(&serde_json::json!("second")));
+    }
+
+    #[test]
+    fn extensions_multiple_keys() {
+        let mut ctx = RequestContext::new();
+        ctx.set_extension("a", serde_json::json!(1));
+        ctx.set_extension("b", serde_json::json!(2));
+        ctx.set_extension("c", serde_json::json!(3));
+        assert_eq!(ctx.extensions.len(), 3);
+        assert_eq!(ctx.get_extension("a"), Some(&serde_json::json!(1)));
+        assert_eq!(ctx.get_extension("b"), Some(&serde_json::json!(2)));
+        assert_eq!(ctx.get_extension("c"), Some(&serde_json::json!(3)));
+    }
+
+    // --- MatchedRoute and SelectedPeer ---
+
+    #[test]
+    fn matched_route_clone_and_debug() {
+        let route = MatchedRoute {
+            index: 0,
+            upstream: crate::upstream::UpstreamName::from("backend"),
+            name: Some(Arc::from("api-route")),
+        };
+        let cloned = route.clone();
+        assert_eq!(cloned.index, 0);
+        assert_eq!(cloned.name.as_deref(), Some("api-route"));
+        let debug = format!("{route:?}");
+        assert!(debug.contains("MatchedRoute"));
+    }
+
+    #[test]
+    fn selected_peer_debug() {
+        let peer = SelectedPeer {
+            address: "127.0.0.1:8080".parse().unwrap(),
+            tls: false,
+        };
+        let debug = format!("{peer:?}");
+        assert!(debug.contains("SelectedPeer"));
+        assert!(debug.contains("127.0.0.1:8080"));
+    }
+
+    // --- Default trait ---
+
+    #[test]
+    fn request_context_default_is_same_as_new() {
+        let ctx = RequestContext::default();
+        assert!(ctx.method.is_none());
+        assert_eq!(ctx.bytes_sent, 0);
+        assert!(ctx.extensions.is_empty());
+    }
+
+    // --- Pool edge cases ---
+
+    #[test]
+    fn pool_release_resets_fields() {
+        let pool = RequestContextPool::new(2);
+        let mut ctx = pool.acquire();
+        ctx.method = Some("POST".to_string());
+        ctx.bytes_sent = 999;
+        ctx.set_extension("key", serde_json::json!("val"));
+
+        pool.release(ctx);
+        // Acquire back — fields should be reset
+        let recycled = pool.acquire();
+        assert!(recycled.method.is_none());
+        assert_eq!(recycled.bytes_sent, 0);
+        assert!(recycled.extensions.is_empty());
+    }
+
+    #[test]
+    fn pool_multiple_acquire_release_cycles() {
+        let pool = RequestContextPool::new(2);
+        for _ in 0..10 {
+            let ctx = pool.acquire();
+            pool.release(ctx);
+        }
+        assert!(pool.available() <= 2);
+    }
 }

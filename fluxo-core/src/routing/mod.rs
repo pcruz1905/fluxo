@@ -831,4 +831,553 @@ targets = ["127.0.0.1:3000"]
         assert!(table.match_route(None, "/hello", "GET").is_some());
         assert!(table.match_route(None, "/other", "GET").is_none());
     }
+
+    // --- Route table metadata ---
+
+    #[test]
+    fn empty_config_produces_empty_table() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+        let table = RouteTable::build(&cfg).unwrap();
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+    }
+
+    // --- Query string matching via match_route_full ---
+
+    #[test]
+    fn query_string_matching() {
+        struct H;
+        impl matcher::RequestHeaders for H {
+            fn get_header(&self, _name: &str) -> Option<&str> {
+                None
+            }
+        }
+
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "versioned"
+  upstream = "backend"
+  [services.web.routes.match_query]
+  version = "v2"
+
+  [[services.web.routes]]
+  name = "catch-all"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let h = H;
+
+        // With matching query string
+        let matched = table.match_route_full(None, "/", "GET", &h, Some("version=v2"), None);
+        assert_eq!(matched.unwrap().name.as_deref(), Some("versioned"));
+
+        // Without query string — falls through to catch-all
+        let matched = table.match_route_full(None, "/", "GET", &h, None, None);
+        assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
+
+        // With wrong query value — falls through
+        let matched = table.match_route_full(None, "/", "GET", &h, Some("version=v1"), None);
+        assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
+    }
+
+    // --- Client IP matching via match_route_full ---
+
+    #[test]
+    fn client_ip_matching() {
+        struct H;
+        impl matcher::RequestHeaders for H {
+            fn get_header(&self, _name: &str) -> Option<&str> {
+                None
+            }
+        }
+
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "internal"
+  match_client_ip = ["10.0.0.0/8"]
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "catch-all"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let h = H;
+
+        // Internal IP matches
+        let matched = table.match_route_full(None, "/", "GET", &h, None, Some("10.1.2.3"));
+        assert_eq!(matched.unwrap().name.as_deref(), Some("internal"));
+
+        // External IP falls through
+        let matched = table.match_route_full(None, "/", "GET", &h, None, Some("8.8.8.8"));
+        assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
+
+        // No client IP falls through
+        let matched = table.match_route_full(None, "/", "GET", &h, None, None);
+        assert_eq!(matched.unwrap().name.as_deref(), Some("catch-all"));
+    }
+
+    // --- Route with plugins ---
+
+    #[test]
+    fn route_with_plugins_compiles() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "api"
+  match_path = ["/api/*"]
+  upstream = "backend"
+  [services.web.routes.plugins.headers]
+  response_set = { "X-Api" = "true" }
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/api/users", "GET").unwrap();
+        assert_eq!(route.pipeline.len(), 1);
+    }
+
+    // --- max_request_body parsing ---
+
+    #[test]
+    fn route_with_max_request_body() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "limited"
+  upstream = "backend"
+  max_request_body = "10mb"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/", "GET").unwrap();
+        assert!(route.max_body_bytes.is_some());
+        assert_eq!(route.max_body_bytes.unwrap(), 10 * 1024 * 1024);
+    }
+
+    // --- Route with unnamed route ---
+
+    #[test]
+    fn unnamed_route_has_none_name() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/", "GET").unwrap();
+        assert!(route.name.is_none());
+    }
+
+    // --- Route index ---
+
+    #[test]
+    fn routes_have_sequential_indices() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "first"
+  match_path = ["/first"]
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "second"
+  match_path = ["/second"]
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "third"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let routes = table.routes();
+        assert_eq!(routes[0].index, 0);
+        assert_eq!(routes[1].index, 1);
+        assert_eq!(routes[2].index, 2);
+    }
+
+    // --- Combined host + path + method matching ---
+
+    #[test]
+    fn combined_host_path_method_matching() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "strict"
+  match_host = ["api.example.com"]
+  match_path = ["/v1/*"]
+  match_method = ["POST", "PUT"]
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "catch-all"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+
+        // All three match
+        let m = table.match_route(Some("api.example.com"), "/v1/users", "POST");
+        assert_eq!(m.unwrap().name.as_deref(), Some("strict"));
+
+        // Wrong method — falls through
+        let m = table.match_route(Some("api.example.com"), "/v1/users", "GET");
+        assert_eq!(m.unwrap().name.as_deref(), Some("catch-all"));
+
+        // Wrong host — falls through
+        let m = table.match_route(Some("other.com"), "/v1/users", "POST");
+        assert_eq!(m.unwrap().name.as_deref(), Some("catch-all"));
+
+        // Wrong path — falls through
+        let m = table.match_route(Some("api.example.com"), "/v2/users", "POST");
+        assert_eq!(m.unwrap().name.as_deref(), Some("catch-all"));
+    }
+
+    // --- Hierarchical route with plugin inheritance ---
+
+    #[test]
+    fn hierarchical_route_inherits_plugins() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "parent"
+  match_path = ["/api/*"]
+  upstream = "backend"
+  [services.web.routes.plugins.headers]
+  response_set = { "X-Parent" = "true" }
+
+  [[services.web.routes]]
+  name = "child"
+  parent = "parent"
+  match_path = ["/api/v2/*"]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        // Child inherits parent's plugin
+        let child = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("child"))
+            .unwrap();
+        assert_eq!(child.pipeline.len(), 1);
+    }
+
+    // --- Hierarchical route with child overriding parent plugins ---
+
+    #[test]
+    fn hierarchical_route_child_overrides_parent_plugins() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "parent"
+  match_path = ["/api/*"]
+  upstream = "backend"
+  [services.web.routes.plugins.headers]
+  response_set = { "X-Parent" = "true" }
+
+  [[services.web.routes]]
+  name = "child"
+  parent = "parent"
+  match_path = ["/api/v2/*"]
+  upstream = "backend"
+  [services.web.routes.plugins.headers]
+  response_set = { "X-Child" = "true" }
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        // Child overrides parent's headers plugin — still 1 plugin, not 2
+        let child = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("child"))
+            .unwrap();
+        assert_eq!(child.pipeline.len(), 1);
+    }
+
+    // --- Global plugins applied to routes ---
+
+    #[test]
+    fn global_plugins_applied_to_routes() {
+        let cfg = make_config(
+            r#"
+[global]
+[global.plugins.security_headers]
+hsts_max_age = 31536000
+
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "api"
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/", "GET").unwrap();
+        // Should have 1 plugin from global config
+        assert_eq!(route.pipeline.len(), 1);
+    }
+
+    // --- Route with error_pages ---
+
+    #[test]
+    fn route_with_error_pages() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "custom-errors"
+  upstream = "backend"
+  intercept_errors = true
+  [services.web.routes.error_pages]
+  502 = "<h1>Bad Gateway</h1>"
+  503 = "<h1>Service Unavailable</h1>"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/", "GET").unwrap();
+        assert_eq!(route.intercept_errors, Some(true));
+        assert_eq!(route.error_pages.len(), 2);
+        assert!(route.error_pages.contains_key(&502));
+        assert!(route.error_pages.contains_key(&503));
+    }
+
+    // --- Route with mirror ---
+
+    #[test]
+    fn route_with_mirror() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "mirrored"
+  upstream = "backend"
+  [services.web.routes.mirror]
+  upstream = "shadow"
+  percent = 50
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.shadow]
+targets = ["127.0.0.1:3001"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/", "GET").unwrap();
+        assert!(route.mirror.is_some());
+        let mirror = route.mirror.as_ref().unwrap();
+        assert_eq!(mirror.percent, 50);
+    }
+
+    // --- Route with forward_auth ---
+
+    #[test]
+    fn route_with_forward_auth() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "authed"
+  upstream = "backend"
+  [services.web.routes.forward_auth]
+  url = "http://auth:9090/verify"
+  auth_response_headers = ["X-User-Id", "X-Role"]
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table.match_route(None, "/", "GET").unwrap();
+        assert!(route.forward_auth.is_some());
+        let fa = route.forward_auth.as_ref().unwrap();
+        assert_eq!(fa.url, "http://auth:9090/verify");
+        // Headers should be lowercased
+        assert_eq!(fa.response_headers, vec!["x-user-id", "x-role"]);
+    }
+
+    // --- Multiple services with routes ---
+
+    #[test]
+    fn multiple_services_routes_combined() {
+        let cfg = make_config(
+            r#"
+[services.api]
+  [[services.api.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.api.routes]]
+  name = "api-route"
+  match_host = ["api.example.com"]
+  upstream = "api-backend"
+
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "web-route"
+  match_host = ["www.example.com"]
+  upstream = "web-backend"
+
+[upstreams.api-backend]
+targets = ["127.0.0.1:8080"]
+[upstreams.web-backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        assert_eq!(table.len(), 2);
+    }
+
+    // --- Three-level parent chain ---
+
+    #[test]
+    fn three_level_parent_chain() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "root"
+  upstream = "backend"
+  [services.web.routes.plugins.security_headers]
+  hsts_max_age = 31536000
+
+  [[services.web.routes]]
+  name = "api"
+  parent = "root"
+  match_path = ["/api/*"]
+  upstream = "backend"
+
+  [[services.web.routes]]
+  name = "api-users"
+  parent = "api"
+  match_path = ["/api/users/*"]
+  upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        // Grandchild should inherit plugins from root
+        let grandchild = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("api-users"))
+            .unwrap();
+        assert_eq!(grandchild.pipeline.len(), 1); // inherited security_headers
+    }
 }

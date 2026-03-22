@@ -111,3 +111,196 @@ impl BuiltinPlugin {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // --- on_request dispatch tests ---
+
+    #[test]
+    fn headers_on_request_returns_continue() {
+        let plugin = BuiltinPlugin::Headers(headers::HeadersPlugin::new(Default::default()));
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        // Headers has no on_request branch — falls through to Continue
+        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Continue);
+    }
+
+    #[test]
+    fn redirect_on_request_returns_handled() {
+        let cfg = redirect::RedirectConfig {
+            url: "/new".to_string(),
+            status: 302,
+        };
+        let plugin = BuiltinPlugin::Redirect(redirect::RedirectPlugin::new(cfg));
+        let req = pingora_http::RequestHeader::build("GET", b"/old", None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(302)
+        );
+    }
+
+    #[test]
+    fn static_response_on_request_returns_handled() {
+        let cfg = static_response::StaticResponseConfig {
+            status: 200,
+            body: Some("OK".to_string()),
+            content_type: None,
+        };
+        let plugin = BuiltinPlugin::StaticResponse(static_response::StaticResponsePlugin::new(cfg));
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(200)
+        );
+    }
+
+    #[test]
+    fn bandwidth_limit_on_request_sets_bps() {
+        let cfg = bandwidth_limit::BandwidthLimitConfig {
+            bytes_per_second: 512,
+        };
+        let plugin =
+            BuiltinPlugin::BandwidthLimit(bandwidth_limit::BandwidthLimitPlugin::new(&cfg));
+        let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Continue);
+        assert_eq!(ctx.bandwidth_limit_bps, Some(512));
+    }
+
+    #[test]
+    fn compression_on_request_captures_accept_encoding() {
+        let cfg = compression::CompressionConfig::default();
+        let plugin = BuiltinPlugin::Compression(compression::CompressionPlugin::new(&cfg));
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        req.insert_header("accept-encoding", "gzip, br").unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Continue);
+        assert!(ctx.accept_encoding.is_some());
+    }
+
+    // --- on_upstream_request dispatch tests ---
+
+    #[test]
+    fn request_id_on_upstream_request_injects_header() {
+        let plugin = BuiltinPlugin::RequestId(request_id::RequestIdPlugin::default());
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert!(req.headers.get("X-Request-ID").is_some());
+    }
+
+    #[test]
+    fn headers_on_upstream_request_sets_header() {
+        let cfg = headers::HeadersConfig {
+            request_set: std::iter::once(("X-Proxy".to_string(), "fluxo".to_string())).collect(),
+            ..Default::default()
+        };
+        let plugin = BuiltinPlugin::Headers(headers::HeadersPlugin::new(cfg));
+        let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(
+            req.headers.get("X-Proxy").unwrap().to_str().unwrap(),
+            "fluxo"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_on_upstream_request_modifies_path() {
+        let cfg = strip_prefix::StripPrefixConfig {
+            prefixes: vec!["/api".to_string()],
+            forward_prefix: false,
+        };
+        let plugin = BuiltinPlugin::StripPrefix(strip_prefix::StripPrefixPlugin::new(cfg));
+        let mut req = pingora_http::RequestHeader::build("GET", b"/api/users", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/users");
+    }
+
+    #[test]
+    fn add_prefix_on_upstream_request_prepends() {
+        let cfg = add_prefix::AddPrefixConfig {
+            prefix: "/v2".to_string(),
+        };
+        let plugin = BuiltinPlugin::AddPrefix(add_prefix::AddPrefixPlugin::new(cfg));
+        let mut req = pingora_http::RequestHeader::build("GET", b"/users", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/v2/users");
+    }
+
+    #[test]
+    fn path_rewrite_on_upstream_request_rewrites() {
+        let cfg = path_rewrite::PathRewriteConfig {
+            pattern: "^/old".to_string(),
+            replacement: "/new".to_string(),
+        };
+        let plugin =
+            BuiltinPlugin::PathRewrite(path_rewrite::PathRewritePlugin::try_new(cfg).unwrap());
+        let mut req = pingora_http::RequestHeader::build("GET", b"/old/page", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/new/page");
+    }
+
+    #[test]
+    fn non_upstream_plugin_on_upstream_request_is_noop() {
+        // Plugins that don't participate in upstream_request phase should be no-ops
+        let cfg = compression::CompressionConfig::default();
+        let plugin = BuiltinPlugin::Compression(compression::CompressionPlugin::new(&cfg));
+        let mut req = pingora_http::RequestHeader::build("GET", b"/test", None).unwrap();
+        let ctx = crate::context::RequestContext::new();
+        plugin.on_upstream_request(&mut req, &ctx);
+        assert_eq!(req.uri.path(), "/test"); // unchanged
+    }
+
+    // --- on_response dispatch tests ---
+
+    #[test]
+    fn headers_on_response_sets_header() {
+        let cfg = headers::HeadersConfig {
+            response_set: std::iter::once(("X-Powered-By".to_string(), "fluxo".to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let plugin = BuiltinPlugin::Headers(headers::HeadersPlugin::new(cfg));
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert_eq!(
+            resp.headers.get("X-Powered-By").unwrap().to_str().unwrap(),
+            "fluxo"
+        );
+    }
+
+    #[test]
+    fn security_headers_on_response_sets_hsts() {
+        let cfg = security_headers::SecurityHeadersConfig {
+            hsts_max_age: Some(86400),
+            ..Default::default()
+        };
+        let plugin =
+            BuiltinPlugin::SecurityHeaders(security_headers::SecurityHeadersPlugin::new(cfg));
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert!(resp.headers.get("Strict-Transport-Security").is_some());
+    }
+
+    #[test]
+    fn non_response_plugin_on_response_is_noop() {
+        // Plugins that don't participate in response phase should be no-ops
+        let plugin = BuiltinPlugin::RequestId(request_id::RequestIdPlugin::default());
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        let header_count_before = resp.headers.len();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert_eq!(resp.headers.len(), header_count_before); // unchanged
+    }
+}

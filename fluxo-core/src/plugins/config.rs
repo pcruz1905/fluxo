@@ -369,4 +369,475 @@ mod tests {
         // Route overrides global — only 1 headers plugin, not 2
         assert_eq!(plugins.len(), 1);
     }
+
+    // --- Build every plugin type (covers all build_plugin branches) ---
+
+    #[test]
+    fn build_rate_limit_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "rate_limit".to_string(),
+            serde_json::json!({ "requests_per_second": 10, "burst": 20 }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::RateLimit(_)));
+    }
+
+    #[test]
+    fn build_cors_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "cors".to_string(),
+            serde_json::json!({ "allowed_origins": ["https://example.com"] }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::Cors(_)));
+    }
+
+    #[test]
+    fn build_ip_restrict_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "ip_restrict".to_string(),
+            serde_json::json!({ "deny": ["10.0.0.0/8"] }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::IpRestrict(_)));
+    }
+
+    #[test]
+    fn build_security_headers_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "security_headers".to_string(),
+            serde_json::json!({ "hsts_max_age": 31536000 }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::SecurityHeaders(_)));
+    }
+
+    #[test]
+    fn build_request_id_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("request_id".to_string(), serde_json::json!({}));
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::RequestId(_)));
+    }
+
+    #[test]
+    fn build_redirect_plugin_valid() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "redirect".to_string(),
+            serde_json::json!({ "url": "https://example.com{path}", "status": 301 }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::Redirect(_)));
+    }
+
+    #[test]
+    fn build_static_response_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "static_response".to_string(),
+            serde_json::json!({ "status": 200, "body": "OK" }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::StaticResponse(_)));
+    }
+
+    #[test]
+    fn build_compression_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "compression".to_string(),
+            serde_json::json!({ "algorithms": ["gzip"] }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::Compression(_)));
+    }
+
+    #[test]
+    fn build_basic_auth_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "basic_auth".to_string(),
+            serde_json::json!({ "users": { "admin": "password" } }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::BasicAuth(_)));
+    }
+
+    #[test]
+    fn build_basic_auth_empty_users_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("basic_auth".to_string(), serde_json::json!({ "users": {} }));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn build_strip_prefix_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "strip_prefix".to_string(),
+            serde_json::json!({ "prefixes": ["/api"] }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::StripPrefix(_)));
+    }
+
+    #[test]
+    fn build_strip_prefix_empty_prefixes_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "strip_prefix".to_string(),
+            serde_json::json!({ "prefixes": [] }),
+        );
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn build_add_prefix_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "add_prefix".to_string(),
+            serde_json::json!({ "prefix": "/api/v2" }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::AddPrefix(_)));
+    }
+
+    #[test]
+    fn build_add_prefix_empty_prefix_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "add_prefix".to_string(),
+            serde_json::json!({ "prefix": "" }),
+        );
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn build_concurrency_limit_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "concurrency_limit".to_string(),
+            serde_json::json!({ "max_connections": 100 }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::ConcurrencyLimit(_)));
+    }
+
+    #[test]
+    fn build_bandwidth_limit_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "bandwidth_limit".to_string(),
+            serde_json::json!({ "bytes_per_second": 1048576 }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::BandwidthLimit(_)));
+    }
+
+    #[test]
+    fn build_path_rewrite_plugin() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "path_rewrite".to_string(),
+            serde_json::json!({ "pattern": "^/old/(.*)", "replacement": "/new/$1" }),
+        );
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert!(matches!(plugins[0], BuiltinPlugin::PathRewrite(_)));
+    }
+
+    #[test]
+    fn build_path_rewrite_invalid_regex_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "path_rewrite".to_string(),
+            serde_json::json!({ "pattern": "[invalid", "replacement": "" }),
+        );
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid regex"));
+    }
+
+    // --- Invalid JSON shapes for deserialization errors ---
+
+    #[test]
+    fn invalid_json_for_rate_limit_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("rate_limit".to_string(), serde_json::json!("not-an-object"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("rate_limit"));
+    }
+
+    #[test]
+    fn invalid_json_for_security_headers_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("security_headers".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("security_headers"));
+    }
+
+    #[test]
+    fn invalid_json_for_request_id_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("request_id".to_string(), serde_json::json!(42));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("request_id"));
+    }
+
+    #[test]
+    fn invalid_json_for_redirect_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("redirect".to_string(), serde_json::json!("not-valid"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("redirect"));
+    }
+
+    #[test]
+    fn invalid_json_for_static_response_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("static_response".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("static_response"));
+    }
+
+    #[test]
+    fn invalid_json_for_compression_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("compression".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("compression"));
+    }
+
+    #[test]
+    fn invalid_json_for_basic_auth_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("basic_auth".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("basic_auth"));
+    }
+
+    #[test]
+    fn invalid_json_for_strip_prefix_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("strip_prefix".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("strip_prefix"));
+    }
+
+    #[test]
+    fn invalid_json_for_add_prefix_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("add_prefix".to_string(), serde_json::json!(99));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("add_prefix"));
+    }
+
+    #[test]
+    fn invalid_json_for_concurrency_limit_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("concurrency_limit".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("concurrency_limit"));
+    }
+
+    #[test]
+    fn invalid_json_for_bandwidth_limit_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("bandwidth_limit".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("bandwidth_limit"));
+    }
+
+    #[test]
+    fn invalid_json_for_ip_restrict_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("ip_restrict".to_string(), serde_json::json!("bad"));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("ip_restrict"));
+    }
+
+    #[test]
+    fn invalid_json_for_cors_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("cors".to_string(), serde_json::json!(42));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cors"));
+    }
+
+    #[test]
+    fn invalid_json_for_path_rewrite_returns_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("path_rewrite".to_string(), serde_json::json!(42));
+        let result = compile_plugins(&config, &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("path_rewrite"));
+    }
+
+    // --- Plugin ordering ---
+
+    #[test]
+    fn plugins_compiled_in_phase_order() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        // Insert in non-phase order
+        config.insert(
+            "compression".to_string(),
+            serde_json::json!({ "algorithms": ["gzip"] }),
+        );
+        config.insert(
+            "headers".to_string(),
+            serde_json::json!({ "response_set": { "X-Foo": "bar" } }),
+        );
+        config.insert("request_id".to_string(), serde_json::json!({}));
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        assert_eq!(plugins.len(), 3);
+        // Phase order: request_id, headers, compression
+        assert!(matches!(plugins[0], BuiltinPlugin::RequestId(_)));
+        assert!(matches!(plugins[1], BuiltinPlugin::Headers(_)));
+        assert!(matches!(plugins[2], BuiltinPlugin::Compression(_)));
+    }
+
+    // --- Error message content ---
+
+    #[test]
+    fn unknown_plugin_error_message_contains_name() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("foobar_plugin".to_string(), serde_json::json!({}));
+        let err = compile_plugins(&config, &HashMap::new()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("foobar_plugin"));
+        assert!(msg.contains("unknown plugin"));
+    }
+
+    #[test]
+    fn multiple_unknown_plugins_returns_first_error() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert("unknown_a".to_string(), serde_json::json!({}));
+        config.insert("unknown_b".to_string(), serde_json::json!({}));
+        let err = compile_plugins(&config, &HashMap::new()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown plugin"));
+    }
+
+    // --- All plugins at once ---
+
+    #[test]
+    fn compile_all_plugins_together() {
+        let mut config: HashMap<String, serde_json::Value> = HashMap::new();
+        config.insert(
+            "headers".to_string(),
+            serde_json::json!({ "response_set": { "X-Foo": "bar" } }),
+        );
+        config.insert(
+            "rate_limit".to_string(),
+            serde_json::json!({ "requests_per_second": 10, "burst": 20 }),
+        );
+        config.insert(
+            "cors".to_string(),
+            serde_json::json!({ "allowed_origins": ["https://example.com"] }),
+        );
+        config.insert(
+            "ip_restrict".to_string(),
+            serde_json::json!({ "deny": ["10.0.0.0/8"] }),
+        );
+        config.insert(
+            "security_headers".to_string(),
+            serde_json::json!({ "hsts_max_age": 31536000 }),
+        );
+        config.insert("request_id".to_string(), serde_json::json!({}));
+        config.insert(
+            "redirect".to_string(),
+            serde_json::json!({ "url": "/new", "status": 302 }),
+        );
+        config.insert(
+            "static_response".to_string(),
+            serde_json::json!({ "status": 200 }),
+        );
+        config.insert(
+            "compression".to_string(),
+            serde_json::json!({ "algorithms": ["gzip"] }),
+        );
+        config.insert(
+            "basic_auth".to_string(),
+            serde_json::json!({ "users": { "admin": "pass" } }),
+        );
+        config.insert(
+            "strip_prefix".to_string(),
+            serde_json::json!({ "prefixes": ["/api"] }),
+        );
+        config.insert(
+            "add_prefix".to_string(),
+            serde_json::json!({ "prefix": "/v2" }),
+        );
+        config.insert(
+            "path_rewrite".to_string(),
+            serde_json::json!({ "pattern": "^/old", "replacement": "/new" }),
+        );
+        config.insert(
+            "concurrency_limit".to_string(),
+            serde_json::json!({ "max_connections": 50 }),
+        );
+        config.insert(
+            "bandwidth_limit".to_string(),
+            serde_json::json!({ "bytes_per_second": 1024 }),
+        );
+
+        let plugins = compile_plugins(&config, &HashMap::new()).unwrap();
+        // All 15 known plugins should be compiled (14 ordered + redirect is in the list = 15 total)
+        assert_eq!(plugins.len(), 15);
+    }
 }
