@@ -43,11 +43,20 @@ impl CorsPlugin {
     }
 
     /// Handle preflight OPTIONS requests. Returns Handled(204) if this is a preflight.
+    /// For all requests with an Origin header, stores the origin in ctx for use in `on_response`.
     pub fn on_request(
         &self,
         req: &pingora_http::RequestHeader,
         ctx: &mut crate::context::RequestContext,
     ) -> super::PluginAction {
+        // Capture the request Origin into ctx for ALL requests (needed by on_response).
+        if let Some(origin) = req.headers.get("origin").and_then(|v| v.to_str().ok()) {
+            ctx.set_extension(
+                "cors_request_origin",
+                serde_json::Value::String(origin.to_string()),
+            );
+        }
+
         // Only intercept OPTIONS requests with an Origin header (CORS preflight)
         if req.method != http::Method::OPTIONS {
             return super::PluginAction::Continue;
@@ -114,20 +123,27 @@ impl CorsPlugin {
     pub fn on_response(
         &self,
         resp: &mut pingora_http::ResponseHeader,
-        _ctx: &mut crate::context::RequestContext,
+        ctx: &mut crate::context::RequestContext,
     ) {
         // For normal (non-preflight) responses, add CORS headers.
-        // Use origin reflection (not join) for spec compliance.
-        // We don't have the request Origin header here, so for non-wildcard
-        // we reflect the first configured origin. The proper fix would be to
-        // store the request Origin in ctx, but for now this handles the common cases.
+        // The request Origin was stored in ctx.extensions during on_request,
+        // so we can properly reflect the correct origin per the CORS spec.
+        let stored_origin = ctx
+            .extensions
+            .get("cors_request_origin")
+            .and_then(|v| v.as_str());
+
         let origin = if self.wildcard && !self.config.allow_credentials {
             "*".to_string()
+        } else if let Some(request_origin) = stored_origin {
+            // Use the stored request Origin for proper reflection via resolve_origin.
+            self.resolve_origin(request_origin)
         } else if self.config.allowed_origins.len() == 1 {
+            // Fallback: no stored origin but only one configured, use it directly.
             self.config.allowed_origins[0].clone()
         } else {
-            // Multiple specific origins: ideally we'd reflect the request Origin.
-            // For now, use the first one. Full reflection needs request-phase Origin storage.
+            // Fallback: no stored origin and multiple configured origins.
+            // Without knowing the request Origin we can't reflect correctly.
             self.config
                 .allowed_origins
                 .first()
@@ -192,6 +208,11 @@ mod tests {
         let plugin = CorsPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
         let mut ctx = crate::context::RequestContext::new();
+        // Simulate on_request storing the Origin header
+        ctx.set_extension(
+            "cors_request_origin",
+            serde_json::Value::String("https://app.example.com".into()),
+        );
         plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
@@ -248,6 +269,11 @@ mod tests {
         let plugin = CorsPlugin::new(config);
         let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
         let mut ctx = crate::context::RequestContext::new();
+        // Simulate on_request storing the Origin header
+        ctx.set_extension(
+            "cors_request_origin",
+            serde_json::Value::String("https://app.example.com".into()),
+        );
         plugin.on_response(&mut resp, &mut ctx);
         assert_eq!(
             resp.headers
@@ -311,9 +337,56 @@ mod tests {
             expose_headers: vec![],
         };
         let plugin = CorsPlugin::new(config);
-        let req = pingora_http::RequestHeader::build("GET", b"/api", None).unwrap();
+        let mut req = pingora_http::RequestHeader::build("GET", b"/api", None).unwrap();
+        req.insert_header("Origin", "https://app.example.com")
+            .unwrap();
         let mut ctx = crate::context::RequestContext::new();
         let action = plugin.on_request(&req, &mut ctx);
         assert_eq!(action, super::super::PluginAction::Continue);
+        // Origin should still be stored in ctx for use in on_response
+        assert_eq!(
+            ctx.extensions
+                .get("cors_request_origin")
+                .and_then(|v| v.as_str()),
+            Some("https://app.example.com")
+        );
+    }
+
+    #[test]
+    fn multi_origin_reflects_request_origin() {
+        let config = CorsConfig {
+            allowed_origins: vec![
+                "https://a.example.com".into(),
+                "https://b.example.com".into(),
+            ],
+            allowed_methods: vec!["GET".into()],
+            allowed_headers: vec![],
+            max_age: None,
+            allow_credentials: false,
+            expose_headers: vec![],
+        };
+        let plugin = CorsPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        // Simulate on_request storing Origin: https://b.example.com
+        ctx.set_extension(
+            "cors_request_origin",
+            serde_json::Value::String("https://b.example.com".into()),
+        );
+        plugin.on_response(&mut resp, &mut ctx);
+        // Must reflect the actual request origin, not the first configured one
+        assert_eq!(
+            resp.headers
+                .get("Access-Control-Allow-Origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "https://b.example.com"
+        );
+        // Specific origin must include Vary: Origin
+        assert_eq!(
+            resp.headers.get("Vary").unwrap().to_str().unwrap(),
+            "Origin"
+        );
     }
 }

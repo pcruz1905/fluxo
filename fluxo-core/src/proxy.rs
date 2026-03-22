@@ -271,6 +271,36 @@ fn build_upstream_groups(
     Ok(groups)
 }
 
+/// Wire passive health tracking into EDF/LeastConn upstream groups.
+///
+/// Pingora's built-in strategies (`RoundRobin`, Random, Hash) have integrated health
+/// awareness via `LoadBalancer::select()`. EDF and `LeastConn` are custom schedulers
+/// that need the `PassiveHealthTracker` to filter unhealthy peers during selection.
+fn wire_passive_health(state: &mut FluxoState, tracker: &Arc<PassiveHealthTracker>) {
+    use crate::upstream::peer::{LbStrategy, PassiveHealthParams};
+
+    for (upstream_name, group) in &mut state.upstreams {
+        // Only EDF and LeastConn need passive health wiring
+        if group.strategy != LbStrategy::WeightedEdf
+            && group.strategy != LbStrategy::LeastConnections
+        {
+            continue;
+        }
+
+        // Look up passive_health config for this upstream
+        let upstream_cfg = state.config.upstreams.get(&*upstream_name.0);
+        if let Some(ph_config) = upstream_cfg.and_then(|c| c.passive_health.as_ref()) {
+            let fail_timeout = crate::config::parse_duration(&ph_config.fail_timeout)
+                .unwrap_or(std::time::Duration::from_secs(30));
+            group.set_passive_health(PassiveHealthParams {
+                tracker: Arc::clone(tracker),
+                max_fails: ph_config.max_fails,
+                fail_timeout,
+            });
+        }
+    }
+}
+
 /// Build composite upstream definitions from config.
 fn build_composite_upstreams(config: &FluxoConfig) -> HashMap<UpstreamName, CompositeUpstream> {
     let mut composites = HashMap::new();
@@ -447,7 +477,7 @@ pub struct FluxoProxy {
 }
 
 impl FluxoProxy {
-    pub fn new(state: FluxoState) -> Result<Self, crate::error::FluxoError> {
+    pub fn new(mut state: FluxoState) -> Result<Self, crate::error::FluxoError> {
         let metrics = Arc::new(crate::observability::MetricsRegistry::new().map_err(|e| {
             crate::error::FluxoError::Config(crate::config::ConfigError::Validation(format!(
                 "Metrics init failed: {e}"
@@ -462,10 +492,15 @@ impl FluxoProxy {
             }
         }
 
+        let passive_health = Arc::new(PassiveHealthTracker::new());
+
+        // Wire passive health into EDF/LeastConn upstream groups
+        wire_passive_health(&mut state, &passive_health);
+
         let static_state = Arc::new(FluxoStaticState {
             metrics,
             circuit_breakers: cb,
-            passive_health: Arc::new(PassiveHealthTracker::new()),
+            passive_health,
             context_pool: Arc::new(RequestContextPool::new(1024)),
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
@@ -545,6 +580,11 @@ impl FluxoProxy {
                     .register(UpstreamName::from(name.as_str()), cb_config.clone());
             }
         }
+
+        // Wire passive health into EDF/LeastConn upstream groups
+        let mut new_state = new_state;
+        wire_passive_health(&mut new_state, &self.static_state.passive_health);
+
         self.state.store(Arc::new(new_state));
     }
 

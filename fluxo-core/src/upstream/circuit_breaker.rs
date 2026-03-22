@@ -237,6 +237,7 @@ impl CircuitBreakerTracker {
 }
 
 /// Passive health tracker — tracks consecutive failures per peer address.
+#[derive(Debug)]
 pub struct PassiveHealthTracker {
     /// Map of peer address → (`consecutive_failures`, `last_failure_time`)
     failures: DashMap<String, (AtomicU32, Mutex<Option<Instant>>)>,

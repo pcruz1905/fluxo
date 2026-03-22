@@ -6,6 +6,8 @@
 
 use std::net::IpAddr;
 
+use percent_encoding::percent_decode_str;
+
 use crate::routing::RoutingError;
 
 /// A single match condition, pre-compiled from config at load time.
@@ -114,7 +116,15 @@ impl HostMatcher {
     /// - `~pattern` → regex
     /// - `*suffix` → wildcard
     /// - otherwise → exact
+    ///
+    /// Returns an error for empty patterns or non-ASCII in non-regex patterns.
     pub fn compile(pattern: &str) -> Result<Self, RoutingError> {
+        if pattern.is_empty() {
+            return Err(RoutingError::InvalidPattern(
+                "host pattern must not be empty".to_string(),
+            ));
+        }
+
         if let Some(re_pattern) = pattern.strip_prefix('~') {
             let re = regex::Regex::new(re_pattern).map_err(|e| RoutingError::InvalidRegex {
                 pattern: re_pattern.to_string(),
@@ -122,10 +132,20 @@ impl HostMatcher {
             })?;
             Ok(Self::Regex(re))
         } else if let Some(suffix) = pattern.strip_prefix('*') {
+            if !pattern.is_ascii() {
+                return Err(RoutingError::InvalidPattern(format!(
+                    "host pattern contains non-ASCII characters: '{pattern}'"
+                )));
+            }
             Ok(Self::Wildcard {
                 suffix: suffix.to_lowercase(),
             })
         } else {
+            if !pattern.is_ascii() {
+                return Err(RoutingError::InvalidPattern(format!(
+                    "host pattern contains non-ASCII characters: '{pattern}'"
+                )));
+            }
             Ok(Self::Exact(pattern.to_lowercase()))
         }
     }
@@ -172,7 +192,21 @@ impl PathMatcher {
     /// - Contains `*` or `?` → glob
     /// - Ends with `/` or `*` → prefix (after stripping trailing `*`)
     /// - Otherwise → exact
+    ///
+    /// Returns an error for empty patterns or patterns that don't start with `/` or `~`.
     pub fn compile(pattern: &str) -> Result<Self, RoutingError> {
+        if pattern.is_empty() {
+            return Err(RoutingError::InvalidPattern(
+                "path pattern must not be empty".to_string(),
+            ));
+        }
+
+        if !pattern.starts_with('/') && !pattern.starts_with('~') {
+            return Err(RoutingError::InvalidPattern(format!(
+                "path pattern must start with '/' or '~': '{pattern}'"
+            )));
+        }
+
         if let Some(re_pattern) = pattern.strip_prefix('~') {
             let re = regex::Regex::new(re_pattern).map_err(|e| RoutingError::InvalidRegex {
                 pattern: re_pattern.to_string(),
@@ -198,12 +232,16 @@ impl PathMatcher {
     }
 
     /// Test whether this matcher matches the given path.
+    ///
+    /// The request path is percent-decoded before comparison so that
+    /// `/foo%20bar` matches a pattern of `/foo bar`.
     pub fn matches(&self, path: &str) -> bool {
+        let decoded = percent_decode_str(path).decode_utf8_lossy();
         match self {
-            Self::Exact(expected) => path == expected,
-            Self::Prefix(prefix) => path.starts_with(prefix),
-            Self::Glob(pattern) => pattern.matches(path),
-            Self::Regex(re) => re.is_match(path),
+            Self::Exact(expected) => *decoded == **expected,
+            Self::Prefix(prefix) => decoded.starts_with(prefix.as_str()),
+            Self::Glob(pattern) => pattern.matches(&decoded),
+            Self::Regex(re) => re.is_match(&decoded),
         }
     }
 }
@@ -220,10 +258,17 @@ pub struct MethodMatcher {
 
 impl MethodMatcher {
     /// Compile from a list of method strings (e.g., ["GET", "POST"]).
-    pub fn compile(methods: &[String]) -> Self {
-        Self {
-            methods: methods.iter().map(|m| m.to_uppercase()).collect(),
+    ///
+    /// Returns an error if the methods list is empty.
+    pub fn compile(methods: &[String]) -> Result<Self, RoutingError> {
+        if methods.is_empty() {
+            return Err(RoutingError::InvalidPattern(
+                "method list must not be empty".to_string(),
+            ));
         }
+        Ok(Self {
+            methods: methods.iter().map(|m| m.to_uppercase()).collect(),
+        })
     }
 
     /// Test whether this matcher matches the given method.
@@ -259,7 +304,15 @@ impl HeaderMatcher {
     ///
     /// If the value starts with `~`, the remainder is compiled as a regex.
     /// Otherwise, it's an exact match.
+    ///
+    /// Returns an error if the header name is empty.
     pub fn compile(name: &str, value: &str) -> Result<Self, RoutingError> {
+        if name.is_empty() {
+            return Err(RoutingError::InvalidPattern(
+                "header name must not be empty".to_string(),
+            ));
+        }
+
         let value_matcher = if let Some(pattern) = value.strip_prefix('~') {
             let re = regex::Regex::new(pattern).map_err(|e| RoutingError::InvalidRegex {
                 pattern: pattern.to_string(),
@@ -317,7 +370,15 @@ impl QueryMatcher {
     /// - Empty value → `Present` (key must exist)
     /// - Value starts with `~` → regex
     /// - Otherwise → exact match
+    ///
+    /// Returns an error if the key is empty.
     pub fn compile(key: &str, value: &str) -> Result<Self, RoutingError> {
+        if key.is_empty() {
+            return Err(RoutingError::InvalidPattern(
+                "query parameter key must not be empty".to_string(),
+            ));
+        }
+
         let value_matcher = if value.is_empty() {
             QueryValueMatcher::Present
         } else if let Some(pattern) = value.strip_prefix('~') {
@@ -338,16 +399,20 @@ impl QueryMatcher {
     /// Test whether this matcher matches the given query string.
     ///
     /// `query` is the raw query string without the leading `?`.
+    /// Both keys and values are percent-decoded before comparison so that
+    /// `key=hello%20world` matches a pattern of `"hello world"`.
     pub fn matches(&self, query: Option<&str>) -> bool {
         let Some(qs) = query else { return false };
         // Parse query params: split on `&`, then key=value
         for pair in qs.split('&') {
             let (k, v) = pair.split_once('=').map_or((pair, ""), |(k, v)| (k, v));
-            if k == self.key {
+            let decoded_key = percent_decode_str(k).decode_utf8_lossy();
+            if *decoded_key == *self.key {
+                let decoded_val = percent_decode_str(v).decode_utf8_lossy();
                 return match &self.value_matcher {
                     QueryValueMatcher::Present => true,
-                    QueryValueMatcher::Exact(expected) => v == expected,
-                    QueryValueMatcher::Regex(re) => re.is_match(v),
+                    QueryValueMatcher::Exact(expected) => *decoded_val == **expected,
+                    QueryValueMatcher::Regex(re) => re.is_match(&decoded_val),
                 };
             }
         }
@@ -370,7 +435,15 @@ impl ClientIPMatcher {
     /// Compile from a list of CIDR strings (e.g., ["10.0.0.0/8", "192.168.1.0/24"]).
     ///
     /// Plain IP addresses (without `/prefix`) are treated as single-host CIDRs.
+    ///
+    /// Returns an error if the list is empty.
     pub fn compile(cidrs: &[String]) -> Result<Self, RoutingError> {
+        if cidrs.is_empty() {
+            return Err(RoutingError::InvalidPattern(
+                "client IP CIDR list must not be empty".to_string(),
+            ));
+        }
+
         let mut networks = Vec::with_capacity(cidrs.len());
         for cidr in cidrs {
             // If no prefix length, append /32 (IPv4) or /128 (IPv6)
@@ -449,6 +522,34 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn empty_host_pattern_rejected() {
+        let result = HostMatcher::compile("");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
+    }
+
+    #[test]
+    fn non_ascii_host_rejected() {
+        // Emoji domain
+        let result = HostMatcher::compile("\u{1F600}.example.com");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("non-ASCII"),
+            "error should mention 'non-ASCII': {err}"
+        );
+
+        // Wildcard with non-ASCII suffix
+        let result = HostMatcher::compile("*.\u{00E9}xample.com");
+        assert!(result.is_err());
+
+        // Regex patterns are allowed to contain non-ASCII (regex engine handles it)
+        let result = HostMatcher::compile("~\u{00E9}xample");
+        assert!(result.is_ok());
+    }
+
     // --- Path matching ---
 
     #[test]
@@ -504,11 +605,32 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn empty_path_rejected() {
+        let result = PathMatcher::compile("");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
+    }
+
+    #[test]
+    fn path_without_leading_slash_rejected() {
+        let result = PathMatcher::compile("health");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("'/'"), "error should mention '/': {err}");
+
+        // Paths starting with `/` are fine
+        assert!(PathMatcher::compile("/health").is_ok());
+        // Regex paths starting with `~` are fine
+        assert!(PathMatcher::compile("~^/health").is_ok());
+    }
+
     // --- Method matching ---
 
     #[test]
     fn method_match() {
-        let m = MethodMatcher::compile(&["GET".to_string(), "POST".to_string()]);
+        let m = MethodMatcher::compile(&["GET".to_string(), "POST".to_string()]).unwrap();
         assert!(m.matches("GET"));
         assert!(m.matches("POST"));
         assert!(!m.matches("DELETE"));
@@ -516,8 +638,16 @@ mod tests {
 
     #[test]
     fn method_case_insensitive_compile() {
-        let m = MethodMatcher::compile(&["get".to_string()]);
+        let m = MethodMatcher::compile(&["get".to_string()]).unwrap();
         assert!(m.matches("GET"));
+    }
+
+    #[test]
+    fn empty_method_list_rejected() {
+        let result = MethodMatcher::compile(&[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
     }
 
     // --- Header matching ---
@@ -583,6 +713,14 @@ mod tests {
         assert!(m.matches(&h));
     }
 
+    #[test]
+    fn empty_header_name_rejected() {
+        let result = HeaderMatcher::compile("", "value");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
+    }
+
     // --- Query matching ---
 
     #[test]
@@ -620,6 +758,14 @@ mod tests {
     fn query_invalid_regex() {
         let result = QueryMatcher::compile("q", "~[invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_query_key_rejected() {
+        let result = QueryMatcher::compile("", "value");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
     }
 
     // --- ClientIP matching ---
@@ -664,5 +810,46 @@ mod tests {
     fn client_ip_with_port() {
         let m = ClientIPMatcher::compile(&["10.0.0.0/8".to_string()]).unwrap();
         assert!(m.matches(Some("10.1.2.3:8080")));
+    }
+
+    #[test]
+    fn empty_client_ip_list_rejected() {
+        let result = ClientIPMatcher::compile(&[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "error should mention 'empty': {err}");
+    }
+
+    // --- Percent-decoding ---
+
+    #[test]
+    fn encoded_path_matches_decoded_pattern() {
+        let m = PathMatcher::compile("/foo bar").unwrap();
+        assert!(m.matches("/foo%20bar"));
+        assert!(m.matches("/foo bar"));
+        assert!(!m.matches("/foo_bar"));
+    }
+
+    #[test]
+    fn encoded_path_prefix_match() {
+        let m = PathMatcher::compile("/api/hello world/").unwrap();
+        assert!(m.matches("/api/hello%20world/items"));
+        assert!(m.matches("/api/hello world/items"));
+    }
+
+    #[test]
+    fn encoded_query_matches_decoded_pattern() {
+        let m = QueryMatcher::compile("key", "hello world").unwrap();
+        assert!(m.matches(Some("key=hello%20world")));
+        assert!(m.matches(Some("key=hello world")));
+        assert!(!m.matches(Some("key=helloworld")));
+    }
+
+    #[test]
+    fn encoded_query_key_matches_decoded_pattern() {
+        let m = QueryMatcher::compile("my key", "val").unwrap();
+        assert!(m.matches(Some("my%20key=val")));
+        assert!(m.matches(Some("my key=val")));
+        assert!(!m.matches(Some("mykey=val")));
     }
 }

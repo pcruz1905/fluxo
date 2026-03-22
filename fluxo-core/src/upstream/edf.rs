@@ -104,6 +104,29 @@ impl EdfScheduler {
         Some((idx, &self.targets[idx].address))
     }
 
+    /// Select the next healthy target, skipping unhealthy ones.
+    ///
+    /// The `is_healthy` predicate receives a peer address and returns `true` if
+    /// the peer should receive traffic. Tries up to N targets (one full cycle)
+    /// before giving up.
+    pub fn select_healthy<F>(&self, is_healthy: F) -> Option<(usize, &str)>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let n = self.targets.len();
+        for _ in 0..n {
+            let (idx, addr) = self.select()?;
+            if is_healthy(addr) {
+                return Some((idx, addr));
+            }
+            // Unhealthy — the entry was already re-pushed by select(), so the
+            // next call will pick the next-deadline target automatically.
+        }
+        // All targets unhealthy — fall back to returning whatever EDF picks
+        // (better to send traffic somewhere than drop it entirely).
+        self.select()
+    }
+
     /// Get the number of targets.
     pub fn len(&self) -> usize {
         self.targets.len()
@@ -220,5 +243,93 @@ mod tests {
         // 100:1 ratio → ~1000:10
         assert_eq!(counts[0], 1000);
         assert_eq!(counts[1], 10);
+    }
+
+    #[test]
+    fn select_healthy_skips_unhealthy() {
+        let scheduler = EdfScheduler::new(vec![
+            EdfTarget {
+                address: "a".into(),
+                weight: 1,
+            },
+            EdfTarget {
+                address: "b".into(),
+                weight: 1,
+            },
+            EdfTarget {
+                address: "c".into(),
+                weight: 1,
+            },
+        ]);
+
+        // Mark "a" as unhealthy
+        let is_healthy = |addr: &str| addr != "a";
+
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..100 {
+            let (_, addr) = scheduler.select_healthy(is_healthy).unwrap();
+            *counts.entry(addr.to_string()).or_insert(0u32) += 1;
+        }
+        // "a" should never be selected
+        assert_eq!(
+            counts.get("a"),
+            None,
+            "unhealthy peer 'a' should be skipped"
+        );
+        assert!(
+            counts.get("b").unwrap_or(&0) > &0,
+            "'b' should receive traffic"
+        );
+        assert!(
+            counts.get("c").unwrap_or(&0) > &0,
+            "'c' should receive traffic"
+        );
+    }
+
+    #[test]
+    fn select_healthy_all_unhealthy_falls_back() {
+        let scheduler = EdfScheduler::new(vec![
+            EdfTarget {
+                address: "a".into(),
+                weight: 1,
+            },
+            EdfTarget {
+                address: "b".into(),
+                weight: 1,
+            },
+        ]);
+
+        // All unhealthy — should still return something (fallback)
+        let none_healthy = |_: &str| false;
+        let result = scheduler.select_healthy(none_healthy);
+        assert!(
+            result.is_some(),
+            "should fall back to a peer when all are unhealthy"
+        );
+    }
+
+    #[test]
+    fn select_healthy_all_healthy_preserves_distribution() {
+        let scheduler = EdfScheduler::new(vec![
+            EdfTarget {
+                address: "a".into(),
+                weight: 3,
+            },
+            EdfTarget {
+                address: "b".into(),
+                weight: 1,
+            },
+        ]);
+
+        // All healthy — should behave like normal weighted distribution
+        let all_healthy = |_: &str| true;
+        let mut counts = [0u32; 2];
+        for _ in 0..400 {
+            let (idx, _) = scheduler.select_healthy(all_healthy).unwrap();
+            counts[idx] += 1;
+        }
+        // 3:1 ratio should still hold
+        assert_eq!(counts[0], 300);
+        assert_eq!(counts[1], 100);
     }
 }

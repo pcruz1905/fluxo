@@ -51,6 +51,10 @@ pub enum RoutingError {
         cidr: String,
     },
 
+    /// An invalid matcher pattern was specified.
+    #[error("invalid pattern: {0}")]
+    InvalidPattern(String),
+
     /// A cycle was detected in parent route references.
     #[error("cycle detected in route parent chain: route '{0}' is part of a cycle")]
     CycleDetected(String),
@@ -343,7 +347,7 @@ impl RouteTable {
         if !config.match_method.is_empty() {
             matchers.push(RouteMatcher::Method(MethodMatcher::compile(
                 &config.match_method,
-            )));
+            )?));
         }
 
         // Compile header matchers

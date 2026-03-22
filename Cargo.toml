@@ -50,6 +50,7 @@ base64 = "0.22"
 sha2 = "0.10"
 parking_lot = "0.12"
 ppp = "2"
+percent-encoding = "2"
 
 [workspace.lints.clippy]
 # Enable strict groups

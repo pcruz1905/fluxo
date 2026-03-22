@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Deserialize)]
 pub struct SecurityHeadersConfig {
     /// HSTS max-age in seconds. If set, adds Strict-Transport-Security header.
@@ -9,6 +10,9 @@ pub struct SecurityHeadersConfig {
     /// Include subdomains in HSTS.
     #[serde(default)]
     pub hsts_include_subdomains: bool,
+    /// Add preload flag to HSTS header.
+    #[serde(default)]
+    pub hsts_preload: bool,
     /// X-Frame-Options value (e.g., "DENY", "SAMEORIGIN").
     pub x_frame_options: Option<String>,
     /// If true, adds X-Content-Type-Options: nosniff.
@@ -41,11 +45,13 @@ impl SecurityHeadersPlugin {
         _ctx: &mut crate::context::RequestContext,
     ) {
         if let Some(max_age) = self.config.hsts_max_age {
-            let value = if self.config.hsts_include_subdomains {
-                format!("max-age={max_age}; includeSubDomains")
-            } else {
-                format!("max-age={max_age}")
-            };
+            let mut value = format!("max-age={max_age}");
+            if self.config.hsts_include_subdomains {
+                value.push_str("; includeSubDomains");
+            }
+            if self.config.hsts_preload {
+                value.push_str("; preload");
+            }
             let _ = resp.insert_header("Strict-Transport-Security", &value);
         }
 
@@ -137,6 +143,29 @@ mod tests {
                 .unwrap(),
             "nosniff"
         );
+    }
+
+    #[test]
+    fn hsts_preload_flag_added() {
+        let config = SecurityHeadersConfig {
+            hsts_max_age: Some(31536000),
+            hsts_include_subdomains: true,
+            hsts_preload: true,
+            ..Default::default()
+        };
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
+        let hsts = resp
+            .headers
+            .get("Strict-Transport-Security")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(hsts.contains("max-age=31536000"));
+        assert!(hsts.contains("includeSubDomains"));
+        assert!(hsts.contains("preload"));
     }
 
     #[test]

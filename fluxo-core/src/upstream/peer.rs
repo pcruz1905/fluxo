@@ -16,6 +16,7 @@ use pingora_core::services::background::GenBackgroundService;
 use crate::config::TargetConfig;
 use crate::upstream::UpstreamError;
 use crate::upstream::UpstreamName;
+use crate::upstream::circuit_breaker::PassiveHealthTracker;
 
 /// TLS configuration for connections to an upstream group.
 ///
@@ -215,14 +216,27 @@ impl AnyLoadBalancer {
     }
 
     /// Select a backend using the configured strategy.
-    fn select(&self, key: &[u8], max_iterations: usize) -> Option<pingora_load_balancing::Backend> {
+    ///
+    /// For EDF and `LeastConn`, an optional health filter is used to skip
+    /// unhealthy peers. Pingora's built-in strategies (`RoundRobin`, Random, etc.)
+    /// already integrate with Pingora's health check framework.
+    fn select(
+        &self,
+        key: &[u8],
+        max_iterations: usize,
+        health_filter: Option<&dyn Fn(&str) -> bool>,
+    ) -> Option<pingora_load_balancing::Backend> {
         match self {
             Self::RoundRobin(lb) => lb.select(key, max_iterations),
             Self::Random(lb) => lb.select(key, max_iterations),
             Self::FnvHash(lb) => lb.select(key, max_iterations),
             Self::ConsistentHash(lb) => lb.select(key, max_iterations),
             Self::Edf(scheduler) => {
-                let (_, addr) = scheduler.select()?;
+                let (_, addr) = if let Some(is_healthy) = health_filter {
+                    scheduler.select_healthy(is_healthy)?
+                } else {
+                    scheduler.select()?
+                };
                 // Create a Backend from the address string
                 Some(pingora_load_balancing::Backend {
                     addr: addr.parse().ok()?,
@@ -231,7 +245,11 @@ impl AnyLoadBalancer {
                 })
             }
             Self::LeastConn(scheduler) => {
-                let (_, addr) = scheduler.select()?;
+                let (_, addr) = if let Some(is_healthy) = health_filter {
+                    scheduler.select_healthy(is_healthy)?
+                } else {
+                    scheduler.select()?
+                };
                 Some(pingora_load_balancing::Backend {
                     addr: addr.parse().ok()?,
                     weight: 1,
@@ -320,6 +338,20 @@ impl AnyLoadBalancer {
     }
 }
 
+/// Passive health check parameters for filtering unhealthy peers.
+///
+/// Stored in the upstream group so EDF/LeastConn schedulers can skip
+/// peers that the `PassiveHealthTracker` has marked unhealthy.
+#[derive(Debug, Clone)]
+pub struct PassiveHealthParams {
+    /// Shared tracker that records per-peer failure counts.
+    pub tracker: Arc<PassiveHealthTracker>,
+    /// Number of consecutive failures before a peer is considered unhealthy.
+    pub max_fails: u32,
+    /// Window during which failures count — after this, the peer is considered healthy again.
+    pub fail_timeout: Duration,
+}
+
 /// An upstream group wrapping Pingora's `LoadBalancer` with per-group
 /// TLS settings, timeouts, and configurable load balancing strategy.
 pub struct UpstreamGroup {
@@ -333,6 +365,8 @@ pub struct UpstreamGroup {
     tls: UpstreamTlsConfig,
     /// Timeout settings for connections to this group.
     timeouts: UpstreamTimeouts,
+    /// Passive health filter for EDF/LeastConn (Pingora LB strategies have built-in health).
+    passive_health: Option<PassiveHealthParams>,
 }
 
 impl std::fmt::Debug for UpstreamGroup {
@@ -364,7 +398,18 @@ impl UpstreamGroup {
             strategy,
             tls,
             timeouts,
+            passive_health: None,
         })
+    }
+
+    /// Set passive health parameters for EDF/LeastConn health-aware selection.
+    ///
+    /// When set, the EDF and `LeastConn` schedulers will skip peers that the
+    /// `PassiveHealthTracker` considers unhealthy (consecutive failures >= `max_fails`
+    /// within `fail_timeout`). Pingora's built-in strategies already integrate with
+    /// Pingora's health check framework and don't need this.
+    pub fn set_passive_health(&mut self, params: PassiveHealthParams) {
+        self.passive_health = Some(params);
     }
 
     /// Set a health check on this upstream group.
@@ -414,6 +459,18 @@ impl UpstreamGroup {
         }
     }
 
+    /// Build a health filter closure from passive health params, if configured.
+    ///
+    /// Returns `None` when no passive health is configured (Pingora LB strategies
+    /// handle health internally, EDF/LeastConn fall back to unfiltered selection).
+    fn health_filter(&self) -> Option<impl Fn(&str) -> bool + '_> {
+        self.passive_health.as_ref().map(|ph| {
+            move |addr: &str| -> bool {
+                !ph.tracker.is_unhealthy(addr, ph.max_fails, ph.fail_timeout)
+            }
+        })
+    }
+
     /// Select a peer whose address matches the given sticky cookie hash.
     ///
     /// Iterates all backends to find one whose SHA256 hash prefix matches.
@@ -421,9 +478,13 @@ impl UpstreamGroup {
     pub fn select_peer_by_sticky_hash(&self, cookie_hash: &str) -> Option<Box<HttpPeer>> {
         use sha2::{Digest, Sha256};
 
+        let filter = self.health_filter();
+        let filter_ref: Option<&dyn Fn(&str) -> bool> =
+            filter.as_ref().map(|f| f as &dyn Fn(&str) -> bool);
+
         // Try all backends (up to 256 iterations to handle weighted duplicates)
         for _ in 0..256 {
-            if let Some(backend) = self.lb.select(b"", 256) {
+            if let Some(backend) = self.lb.select(b"", 256, filter_ref) {
                 let addr_str = format!("{}", backend.addr);
                 let hash = format!("{:x}", Sha256::digest(addr_str.as_bytes()));
                 if hash.starts_with(cookie_hash) {
@@ -442,9 +503,13 @@ impl UpstreamGroup {
 
     /// Select a peer using a hash key (for hash-based strategies).
     pub fn select_peer_with_key(&self, key: &[u8]) -> Result<Box<HttpPeer>, UpstreamError> {
+        let filter = self.health_filter();
+        let filter_ref: Option<&dyn Fn(&str) -> bool> =
+            filter.as_ref().map(|f| f as &dyn Fn(&str) -> bool);
+
         let backend = self
             .lb
-            .select(key, 256)
+            .select(key, 256, filter_ref)
             .ok_or_else(|| UpstreamError::NoHealthyBackends(self.name.clone()))?;
 
         let mut peer = HttpPeer::new(
@@ -735,5 +800,221 @@ mod tests {
             peer.options.connection_timeout,
             Some(Duration::from_secs(2))
         );
+    }
+
+    /// Verify the sticky-session fallback contract: when a backend is removed
+    /// (config reload, scale-down), `select_peer_by_sticky_hash` returns `None`
+    /// so the caller can fall back to normal load balancing and issue a new cookie.
+    ///
+    /// The proxy layer (`proxy.rs`) relies on this `None` to:
+    ///  1. Fall back to `select_peer()` (normal LB).
+    ///  2. Set `ctx.sticky_cookie_new = true` so a fresh cookie is sent.
+    #[test]
+    fn sticky_fallback_when_backend_removed() {
+        use sha2::{Digest, Sha256};
+
+        // --- Phase 1: build a group with backend A and B, get sticky hash for A ---
+        let addr_a = "127.0.0.1:9000";
+        let addr_b = "127.0.0.1:9001";
+        let hash_a = format!("{:x}", Sha256::digest(addr_a.as_bytes()));
+        let prefix_a = &hash_a[..8];
+
+        let group_v1 = UpstreamGroup::new(
+            UpstreamName::from("sticky-fallback"),
+            &simple_targets(&[addr_a, addr_b]),
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        // Sticky lookup succeeds while backend A is present
+        let peer = group_v1.select_peer_by_sticky_hash(prefix_a);
+        assert!(peer.is_some(), "backend A is present, sticky should match");
+        assert_eq!(format!("{}", peer.unwrap().address()), addr_a);
+
+        // --- Phase 2: simulate config reload that removes backend A ---
+        let group_v2 = UpstreamGroup::new(
+            UpstreamName::from("sticky-fallback"),
+            &simple_targets(&[addr_b]), // only B remains
+            LbStrategy::RoundRobin,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        // Sticky lookup for removed backend A must return None
+        let peer = group_v2.select_peer_by_sticky_hash(prefix_a);
+        assert!(
+            peer.is_none(),
+            "backend A was removed, sticky must return None so caller falls back"
+        );
+
+        // Normal load balancing still works — the caller would use this path
+        let fallback = group_v2.select_peer();
+        assert!(
+            fallback.is_ok(),
+            "normal LB should succeed with remaining backends"
+        );
+        assert_eq!(format!("{}", fallback.unwrap().address()), addr_b);
+    }
+
+    #[test]
+    fn edf_skips_unhealthy_peers_via_passive_health() {
+        let tracker = Arc::new(PassiveHealthTracker::new());
+        let targets = simple_targets(&["127.0.0.1:3000", "127.0.0.1:3001", "127.0.0.1:3002"]);
+        let mut group = UpstreamGroup::new(
+            UpstreamName::from("edf-health"),
+            &targets,
+            LbStrategy::WeightedEdf,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        group.set_passive_health(PassiveHealthParams {
+            tracker: Arc::clone(&tracker),
+            max_fails: 3,
+            fail_timeout: Duration::from_secs(30),
+        });
+
+        // Mark 127.0.0.1:3000 as unhealthy (3 consecutive failures)
+        tracker.record_failure("127.0.0.1:3000");
+        tracker.record_failure("127.0.0.1:3000");
+        tracker.record_failure("127.0.0.1:3000");
+
+        // Select peers — unhealthy one should be skipped
+        let mut selected_addrs = std::collections::HashSet::new();
+        for _ in 0..50 {
+            let peer = group.select_peer().unwrap();
+            selected_addrs.insert(format!("{}", peer.address()));
+        }
+        assert!(
+            !selected_addrs.contains("127.0.0.1:3000"),
+            "unhealthy peer should be skipped by EDF"
+        );
+        assert!(
+            selected_addrs.contains("127.0.0.1:3001"),
+            "healthy peer :3001 should receive traffic"
+        );
+        assert!(
+            selected_addrs.contains("127.0.0.1:3002"),
+            "healthy peer :3002 should receive traffic"
+        );
+    }
+
+    #[test]
+    fn least_conn_skips_unhealthy_peers_via_passive_health() {
+        let tracker = Arc::new(PassiveHealthTracker::new());
+        let targets = simple_targets(&["127.0.0.1:4000", "127.0.0.1:4001", "127.0.0.1:4002"]);
+        let mut group = UpstreamGroup::new(
+            UpstreamName::from("lc-health"),
+            &targets,
+            LbStrategy::LeastConnections,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        group.set_passive_health(PassiveHealthParams {
+            tracker: Arc::clone(&tracker),
+            max_fails: 2,
+            fail_timeout: Duration::from_secs(30),
+        });
+
+        // Mark 127.0.0.1:4001 as unhealthy (2 consecutive failures)
+        tracker.record_failure("127.0.0.1:4001");
+        tracker.record_failure("127.0.0.1:4001");
+
+        // Select peers — unhealthy one should be skipped
+        let mut selected_addrs = std::collections::HashSet::new();
+        for _ in 0..50 {
+            let peer = group.select_peer().unwrap();
+            selected_addrs.insert(format!("{}", peer.address()));
+        }
+        assert!(
+            !selected_addrs.contains("127.0.0.1:4001"),
+            "unhealthy peer should be skipped by LeastConn"
+        );
+        assert!(
+            selected_addrs.contains("127.0.0.1:4000"),
+            "healthy peer :4000 should receive traffic"
+        );
+        assert!(
+            selected_addrs.contains("127.0.0.1:4002"),
+            "healthy peer :4002 should receive traffic"
+        );
+    }
+
+    #[test]
+    fn edf_without_passive_health_selects_all_peers() {
+        // Without passive health configured, all peers should be selectable
+        let targets = simple_targets(&["127.0.0.1:5000", "127.0.0.1:5001"]);
+        let group = UpstreamGroup::new(
+            UpstreamName::from("edf-no-health"),
+            &targets,
+            LbStrategy::WeightedEdf,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        let mut selected_addrs = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let peer = group.select_peer().unwrap();
+            selected_addrs.insert(format!("{}", peer.address()));
+        }
+        assert_eq!(
+            selected_addrs.len(),
+            2,
+            "both peers should be selected without passive health"
+        );
+    }
+
+    #[test]
+    fn passive_health_recovery_allows_peer_back() {
+        let tracker = Arc::new(PassiveHealthTracker::new());
+        let targets = simple_targets(&["127.0.0.1:6000", "127.0.0.1:6001"]);
+        let mut group = UpstreamGroup::new(
+            UpstreamName::from("edf-recovery"),
+            &targets,
+            LbStrategy::WeightedEdf,
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+
+        group.set_passive_health(PassiveHealthParams {
+            tracker: Arc::clone(&tracker),
+            max_fails: 2,
+            fail_timeout: Duration::from_secs(30),
+        });
+
+        // Mark :6000 as unhealthy
+        tracker.record_failure("127.0.0.1:6000");
+        tracker.record_failure("127.0.0.1:6000");
+
+        // Verify it's skipped
+        let mut saw_6000 = false;
+        for _ in 0..20 {
+            let peer = group.select_peer().unwrap();
+            if format!("{}", peer.address()) == "127.0.0.1:6000" {
+                saw_6000 = true;
+            }
+        }
+        assert!(!saw_6000, ":6000 should be skipped while unhealthy");
+
+        // Record a success to recover the peer
+        tracker.record_success("127.0.0.1:6000");
+
+        // Now :6000 should be selectable again
+        let mut saw_6000 = false;
+        for _ in 0..20 {
+            let peer = group.select_peer().unwrap();
+            if format!("{}", peer.address()) == "127.0.0.1:6000" {
+                saw_6000 = true;
+            }
+        }
+        assert!(saw_6000, ":6000 should be back in rotation after recovery");
     }
 }

@@ -51,6 +51,7 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 parking_lot = { workspace = true }
 ppp = { workspace = true }
+percent-encoding = { workspace = true }
 
 [dev-dependencies]
 axum = { version = "0.8.8", features = ["ws"] }

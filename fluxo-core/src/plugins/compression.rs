@@ -26,6 +26,13 @@ pub struct CompressionConfig {
     /// Default: 256.
     #[serde(default = "default_min_size")]
     pub min_size: u64,
+
+    /// Allowlist of content-type prefixes eligible for compression.
+    /// When non-empty, only responses whose content-type starts with one of
+    /// these prefixes (case-insensitive) will be compressed.
+    /// When empty, the default blocklist behavior is used.
+    #[serde(default)]
+    pub included_content_types: Vec<String>,
 }
 
 fn default_algorithms() -> Vec<String> {
@@ -41,6 +48,7 @@ impl Default for CompressionConfig {
         Self {
             algorithms: default_algorithms(),
             min_size: default_min_size(),
+            included_content_types: Vec::new(),
         }
     }
 }
@@ -53,6 +61,8 @@ pub struct CompressionPlugin {
     algorithms: Vec<CompressionEncoding>,
     /// Minimum byte size to trigger compression.
     min_size: u64,
+    /// Allowlist of content-type prefixes (lowercased). Empty means use blocklist.
+    included_content_types: Vec<String>,
 }
 
 impl CompressionPlugin {
@@ -67,9 +77,15 @@ impl CompressionPlugin {
                 _ => None,
             })
             .collect();
+        let included_content_types = config
+            .included_content_types
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
         Self {
             algorithms,
             min_size: config.min_size,
+            included_content_types,
         }
     }
 
@@ -103,13 +119,24 @@ impl CompressionPlugin {
             None => return,
         };
 
-        // Don't compress binary/already-compressed content types
+        // Check content-type eligibility
         let content_type = resp
             .headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if should_skip_compression(content_type) {
+        if !self.included_content_types.is_empty() {
+            // Allowlist mode: only compress if content-type matches a prefix
+            let ct_lower = content_type.to_lowercase();
+            if !self
+                .included_content_types
+                .iter()
+                .any(|prefix| ct_lower.starts_with(prefix.as_str()))
+            {
+                return;
+            }
+        } else if should_skip_compression(content_type) {
+            // Blocklist mode (default): skip known-compressed types
             return;
         }
 
@@ -170,6 +197,15 @@ mod tests {
         CompressionPlugin::new(&CompressionConfig {
             algorithms: algorithms.iter().map(ToString::to_string).collect(),
             min_size: 0, // no minimum for tests
+            ..Default::default()
+        })
+    }
+
+    fn make_plugin_with_allowlist(algorithms: &[&str], included: &[&str]) -> CompressionPlugin {
+        CompressionPlugin::new(&CompressionConfig {
+            algorithms: algorithms.iter().map(ToString::to_string).collect(),
+            min_size: 0,
+            included_content_types: included.iter().map(ToString::to_string).collect(),
         })
     }
 
@@ -252,5 +288,45 @@ mod tests {
         plugin.on_response(&mut resp, &mut ctx);
         // Content-Length must be removed (compressed size is different)
         assert!(resp.headers.get("content-length").is_none());
+    }
+
+    #[test]
+    fn included_content_types_filters_responses() {
+        let plugin = make_plugin_with_allowlist(&["gzip"], &["text/", "application/json"]);
+
+        // text/html should be compressed (matches "text/" prefix)
+        let mut ctx = make_ctx_with_accept("gzip");
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("content-type", "text/html; charset=utf-8")
+            .unwrap();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert_eq!(ctx.compression_encoding, Some(CompressionEncoding::Gzip));
+
+        // image/png should be skipped (not in allowlist)
+        let mut ctx = make_ctx_with_accept("gzip");
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("content-type", "image/png").unwrap();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert_eq!(ctx.compression_encoding, None);
+    }
+
+    #[test]
+    fn empty_included_uses_blocklist() {
+        // Empty allowlist — falls back to blocklist behavior
+        let plugin = make_plugin_with_allowlist(&["gzip"], &[]);
+
+        // text/html is not on the blocklist — should compress
+        let mut ctx = make_ctx_with_accept("gzip");
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("content-type", "text/html").unwrap();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert_eq!(ctx.compression_encoding, Some(CompressionEncoding::Gzip));
+
+        // image/png is on the blocklist — should skip
+        let mut ctx = make_ctx_with_accept("gzip");
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        resp.insert_header("content-type", "image/png").unwrap();
+        plugin.on_response(&mut resp, &mut ctx);
+        assert_eq!(ctx.compression_encoding, None);
     }
 }
