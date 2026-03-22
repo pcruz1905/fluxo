@@ -64,7 +64,9 @@ impl LeastConnScheduler {
             }
         }
 
-        self.targets[best_idx].active.fetch_add(1, Ordering::Relaxed);
+        self.targets[best_idx]
+            .active
+            .fetch_add(1, Ordering::Relaxed);
         Some((best_idx, &self.targets[best_idx].address))
     }
 
@@ -93,11 +95,7 @@ impl std::fmt::Debug for LeastConnScheduler {
         f.debug_struct("LeastConnScheduler")
             .field(
                 "targets",
-                &self
-                    .targets
-                    .iter()
-                    .map(|t| &t.address)
-                    .collect::<Vec<_>>(),
+                &self.targets.iter().map(|t| &t.address).collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
     }
@@ -110,11 +108,8 @@ mod tests {
 
     #[test]
     fn selects_target_with_fewest_connections() {
-        let scheduler = LeastConnScheduler::new(vec![
-            "a:8080".into(),
-            "b:8080".into(),
-            "c:8080".into(),
-        ]);
+        let scheduler =
+            LeastConnScheduler::new(vec!["a:8080".into(), "b:8080".into(), "c:8080".into()]);
 
         // First selection — all at 0, picks based on rotation
         let (idx0, _) = scheduler.select().unwrap();
@@ -122,7 +117,10 @@ mod tests {
 
         // Next selection should pick a different target (0 active)
         let (idx1, _) = scheduler.select().unwrap();
-        assert_ne!(idx0, idx1, "should pick different target with fewer connections");
+        assert_ne!(
+            idx0, idx1,
+            "should pick different target with fewer connections"
+        );
 
         // Release first, now idx0 is back to 0
         scheduler.release(idx0);
@@ -167,11 +165,8 @@ mod tests {
 
     #[test]
     fn distributes_evenly_when_released() {
-        let scheduler = LeastConnScheduler::new(vec![
-            "a:8080".into(),
-            "b:8080".into(),
-            "c:8080".into(),
-        ]);
+        let scheduler =
+            LeastConnScheduler::new(vec!["a:8080".into(), "b:8080".into(), "c:8080".into()]);
 
         let mut counts = [0u32; 3];
         for _ in 0..300 {

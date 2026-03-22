@@ -68,8 +68,7 @@ impl ConcurrencyLimitPlugin {
             ctx.concurrency_permit = Some(permit);
             super::PluginAction::Continue
         } else {
-            ctx.plugin_response =
-                Some(crate::context::PluginResponse::Error { status: 503 });
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 503 });
             super::PluginAction::Handled(503)
         }
     }
