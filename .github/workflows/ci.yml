@@ -136,15 +136,16 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
-        run: cargo llvm-cov --no-default-features --features rustls --codecov --output-path codecov.json
+        run: cargo llvm-cov --no-default-features --features rustls --lcov --output-path lcov.info
         env:
           RUSTFLAGS: ""
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov.json
-          fail_ci_if_error: false
+          files: lcov.info
+          fail_ci_if_error: true
+          verbose: true
 
   # ── Docs build ────────────────────────────────────────────────────
   doc:
