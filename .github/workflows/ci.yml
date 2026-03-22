@@ -138,7 +138,7 @@ jobs:
       - name: Generate coverage
         run: |
           cargo llvm-cov --no-default-features --features rustls --lcov --output-path lcov.info
-          cargo llvm-cov report --no-default-features --features rustls --summary-only 2>&1 | tee coverage-summary.txt
+          cargo llvm-cov --no-default-features --features rustls --json --output-path coverage.json
         env:
           RUSTFLAGS: ""
       - name: Upload coverage to Codecov
@@ -150,8 +150,11 @@ jobs:
       - name: Extract coverage percentage
         id: cov
         run: |
-          PCT=$(grep 'TOTAL' coverage-summary.txt | awk '{print $NF}' | tr -d '%')
+          LINES=$(jq '.data[0].totals.lines.count' coverage.json)
+          COVERED=$(jq '.data[0].totals.lines.covered' coverage.json)
+          PCT=$(echo "scale=1; $COVERED * 100 / $LINES" | bc)
           echo "percentage=$PCT" >> "$GITHUB_OUTPUT"
+          echo "Coverage: $PCT%"
       - name: Update coverage badge
         if: github.ref == 'refs/heads/main'
         uses: schneegans/dynamic-badges-action@v1.7.0
