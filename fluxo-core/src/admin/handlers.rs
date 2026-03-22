@@ -1,8 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use pingora_cache::Storage;
-
 use crate::observability::MetricsRegistry;
 use crate::proxy::{FluxoProxy, FluxoState};
 
