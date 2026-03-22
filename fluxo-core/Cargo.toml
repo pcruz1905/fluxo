@@ -55,6 +55,11 @@ percent-encoding = { workspace = true }
 memchr = { workspace = true }
 maxminddb = { workspace = true }
 hickory-resolver = { workspace = true }
+tracing-subscriber = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 axum = { version = "0.8.8", features = ["ws"] }

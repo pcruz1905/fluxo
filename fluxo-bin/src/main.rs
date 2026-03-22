@@ -71,18 +71,28 @@ fn main() -> anyhow::Result<()> {
         .as_deref()
         .unwrap_or(&fluxo_config.global.log_level);
 
-    // Initialize tracing (structured logging) — format from config
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
-    match fluxo_config.global.access_log_format {
-        config::AccessLogFormat::Json => {
-            tracing_subscriber::fmt()
-                .json()
-                .with_env_filter(env_filter)
-                .init();
-        }
-        config::AccessLogFormat::Compact => {
-            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Initialize tracing (structured logging + optional OTLP export)
+    // If OTLP is enabled, init_otlp_tracer sets up a combined subscriber (fmt + OTLP).
+    // Otherwise fall back to plain fmt subscriber.
+    let _otlp_guard = fluxo_core::observability::init_otlp_tracer(
+        &fluxo_config.global.tracing,
+        log_level,
+        fluxo_config.global.access_log_format,
+    );
+    if _otlp_guard.is_none() {
+        // OTLP not enabled or failed — use plain tracing subscriber
+        let env_filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+        match fluxo_config.global.access_log_format {
+            config::AccessLogFormat::Json => {
+                tracing_subscriber::fmt()
+                    .json()
+                    .with_env_filter(env_filter)
+                    .init();
+            }
+            config::AccessLogFormat::Compact => {
+                tracing_subscriber::fmt().with_env_filter(env_filter).init();
+            }
         }
     }
 
