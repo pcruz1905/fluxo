@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/pcruz1905/fluxo/actions/workflows/ci.yml"><img src="https://github.com/pcruz1905/fluxo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://codecov.io/gh/pcruz1905/fluxo"><img src="https://codecov.io/gh/pcruz1905/fluxo/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://codecov.io/gh/pcruz1905/fluxo"><img src="https://codecov.io/gh/pcruz1905/fluxo/branch/main/graph/badge.svg?token=f863caec-6ab8-428e-81a7-1eb84fdbb48a" alt="Coverage"></a>
   <a href="https://github.com/pcruz1905/fluxo/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
 </p>
 
