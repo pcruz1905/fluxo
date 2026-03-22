@@ -136,7 +136,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
-        run: cargo llvm-cov --no-default-features --features rustls --lcov --output-path lcov.info
+        run: |
+          cargo llvm-cov --no-default-features --features rustls --lcov --output-path lcov.info
+          cargo llvm-cov report --no-default-features --features rustls --summary-only 2>&1 | tee coverage-summary.txt
         env:
           RUSTFLAGS: ""
       - name: Upload coverage to Codecov
@@ -144,8 +146,24 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          fail_ci_if_error: true
-          verbose: true
+          fail_ci_if_error: false
+      - name: Extract coverage percentage
+        id: cov
+        run: |
+          PCT=$(grep 'TOTAL' coverage-summary.txt | awk '{print $NF}' | tr -d '%')
+          echo "percentage=$PCT" >> "$GITHUB_OUTPUT"
+      - name: Update coverage badge
+        if: github.ref == 'refs/heads/main'
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: 7563502e712efdbbae873ba47a1bb1dd
+          filename: coverage.json
+          label: coverage
+          message: "${{ steps.cov.outputs.percentage }}%"
+          valColorRange: ${{ steps.cov.outputs.percentage }}
+          minColorRange: 0
+          maxColorRange: 100
 
   # ── Docs build ────────────────────────────────────────────────────
   doc:
