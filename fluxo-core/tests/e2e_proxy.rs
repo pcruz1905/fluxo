@@ -17,9 +17,7 @@ fn main() {
         ("static_response_returns_configured_status", || {
             Box::pin(static_response_returns_configured_status())
         }),
-        ("redirect_returns_301", || {
-            Box::pin(redirect_returns_301())
-        }),
+        ("redirect_returns_301", || Box::pin(redirect_returns_301())),
         ("strip_and_add_prefix_rewrites_path", || {
             Box::pin(strip_and_add_prefix_rewrites_path())
         }),

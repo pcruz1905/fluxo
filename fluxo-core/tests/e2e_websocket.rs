@@ -19,7 +19,9 @@ use axum::{
 };
 use fluxo_core::config::FluxoConfig;
 use futures_util::{SinkExt, StreamExt};
-use helpers::{minimal_service, mock_upstream_config, simple_route, start_mock_upstream, start_proxy};
+use helpers::{
+    minimal_service, mock_upstream_config, simple_route, start_mock_upstream, start_proxy,
+};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 fn main() {
@@ -82,7 +84,11 @@ async fn websocket_echo_through_proxy() {
         .send()
         .await
         .unwrap();
-    assert_eq!(health_resp.status(), 200, "HTTP routing through proxy works");
+    assert_eq!(
+        health_resp.status(),
+        200,
+        "HTTP routing through proxy works"
+    );
 
     // 5. Connect via WebSocket through the proxy
     let ws_url = url.replace("http://", "ws://") + "/ws";

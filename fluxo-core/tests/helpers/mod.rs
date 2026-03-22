@@ -30,23 +30,39 @@ pub fn run_tests(
         fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
     )],
 ) {
+    use std::io::Write;
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
     let mut passed = 0;
+    let total = tests.len();
 
     for (name, test_fn) in tests {
-        print!("test {name} ... ");
+        write!(std::io::stderr(), "test {name} ... ").unwrap();
+        std::io::stderr().flush().unwrap();
         rt.block_on(test_fn());
-        println!("ok");
+        writeln!(std::io::stderr(), "ok").unwrap();
+        std::io::stderr().flush().unwrap();
         passed += 1;
     }
 
-    println!(
+    // Write results to a temp file so they survive process::exit().
+    // The file can be checked after the run for definitive proof.
+    let results = format!("test result: ok. {passed}/{total} passed; 0 failed; 0 ignored\n");
+    if let Ok(dir) = std::env::temp_dir().canonicalize() {
+        let path = dir.join("fluxo_test_results.txt");
+        let _ = std::fs::write(&path, &results);
+    }
+
+    writeln!(
+        std::io::stderr(),
         "\ntest result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
-    );
+    )
+    .unwrap();
+    std::io::stderr().flush().unwrap();
     std::process::exit(0);
 }
 
@@ -202,21 +218,17 @@ pub async fn start_proxy(config: FluxoConfig) -> (String, reqwest::Client) {
     (proxy_url, client)
 }
 
-/// Wait for a server to become ready by sending real HTTP requests.
+/// Wait for a server to become ready.
 ///
 /// Pingora binds the TCP socket early but needs time to bootstrap workers.
-/// A successful TCP connect is not enough — we loop until an HTTP request
-/// gets a response (any status), which proves workers are processing.
+/// We wait for TCP accept, then give workers a fixed window to initialize.
+/// HTTP probing doesn't work here because Pingora accepts connections at the
+/// socket level before workers are ready, causing probe requests to hang.
 async fn wait_for_server(url: &str, timeout: Duration) {
     let start = std::time::Instant::now();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(200))
-        .no_proxy()
-        .build()
-        .unwrap();
-
+    let addr = url.trim_start_matches("http://");
     loop {
-        if client.get(format!("{url}/")).send().await.is_ok() {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
             break;
         }
         assert!(
@@ -225,4 +237,6 @@ async fn wait_for_server(url: &str, timeout: Duration) {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // Give Pingora workers time to initialize after the socket is bound
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }
