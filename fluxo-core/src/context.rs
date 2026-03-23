@@ -183,9 +183,9 @@ impl RetryConditions {
             | ErrorType::SocketError
             | ErrorType::TLSHandshakeFailure
             | ErrorType::TLSHandshakeTimedout => self.on_error,
-            ErrorType::ConnectTimedout
-            | ErrorType::ReadTimedout
-            | ErrorType::WriteTimedout => self.on_timeout,
+            ErrorType::ConnectTimedout | ErrorType::ReadTimedout | ErrorType::WriteTimedout => {
+                self.on_timeout
+            }
             ErrorType::HTTPStatus(code) => *code >= 500 && self.on_5xx,
             _ => false,
         }
@@ -911,10 +911,8 @@ mod tests {
     #[test]
     fn reset_clears_retry_conditions() {
         let mut ctx = RequestContext::new();
-        ctx.retry_conditions = RetryConditions::from_config(
-            &["error".to_string(), "5xx".to_string()],
-            3,
-        );
+        ctx.retry_conditions =
+            RetryConditions::from_config(&["error".to_string(), "5xx".to_string()], 3);
         ctx.retry_count = 2;
 
         ctx.reset();

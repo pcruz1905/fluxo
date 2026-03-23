@@ -537,12 +537,9 @@ mod tests {
     #[test]
     fn command_injection_blocked() {
         let plugin = make_plugin();
-        let req = pingora_http::RequestHeader::build(
-            "GET",
-            b"/api?cmd=test%3Bcat%20/etc/passwd",
-            None,
-        )
-        .unwrap();
+        let req =
+            pingora_http::RequestHeader::build("GET", b"/api?cmd=test%3Bcat%20/etc/passwd", None)
+                .unwrap();
         let mut ctx = RequestContext::new();
         assert_eq!(
             plugin.on_request(&req, &mut ctx),

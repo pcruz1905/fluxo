@@ -1600,10 +1600,10 @@ impl ProxyHttp for FluxoProxy {
             .unwrap_or(std::time::Duration::from_secs(1));
 
         // Store compiled retry conditions in context for fail_to_connect / error_while_proxy
-        ctx.retry_conditions = retry_config.map_or_else(
-            crate::context::RetryConditions::default,
-            |r| crate::context::RetryConditions::from_config(&r.on, r.attempts),
-        );
+        ctx.retry_conditions = retry_config
+            .map_or_else(crate::context::RetryConditions::default, |r| {
+                crate::context::RetryConditions::from_config(&r.on, r.attempts)
+            });
 
         // --- Hash key extraction for consistent/FNV hashing ---
         let hash_key_bytes: Vec<u8> = {

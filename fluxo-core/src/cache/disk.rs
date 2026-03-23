@@ -104,9 +104,8 @@ impl DiskCache {
                 let body_path = path.join("body.bin");
                 let meta_path = path.join("meta.bin");
                 if body_path.exists() && meta_path.exists() {
-                    let body_size = std::fs::metadata(&body_path).map(|m| m.len()).unwrap_or(0);
-                    let meta_size = std::fs::metadata(&meta_path).map(|m| m.len()).unwrap_or(0);
-                    total_size += body_size + meta_size;
+                    // Use dir_size to match purge accounting (includes key.txt, tags.txt, etc.)
+                    total_size += dir_size(&path);
 
                     if let Some(hash) = path.file_name().and_then(|n| n.to_str()) {
                         lru.insert(counter, hash.to_string());
