@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Prometheus push configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrometheusPushConfig {
     /// Pushgateway URL (e.g., "<http://pushgateway:9091>").
     /// When set, enables push mode.
@@ -24,6 +24,18 @@ pub struct PrometheusPushConfig {
     /// Additional labels to attach to all pushed metrics.
     #[serde(default)]
     pub labels: std::collections::HashMap<String, String>,
+}
+
+impl Default for PrometheusPushConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            interval: default_push_interval(),
+            job: default_job_name(),
+            instance: None,
+            labels: std::collections::HashMap::new(),
+        }
+    }
 }
 
 fn default_push_interval() -> String {
