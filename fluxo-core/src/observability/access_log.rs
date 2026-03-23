@@ -43,7 +43,7 @@ impl RotatingFileWriter {
         }
     }
 
-    /// Rotate: current → .1, .1 → .2, ..., delete oldest beyond max_backups.
+    /// Rotate: current → `.1`, `.1` → `.2`, ..., delete oldest beyond `max_backups`.
     fn rotate(&mut self) {
         // Flush and drop current writer
         let _ = self.writer.flush();

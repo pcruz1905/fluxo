@@ -223,9 +223,9 @@ fn check_duplicate_routes(config: &FluxoConfig, warnings: &mut Vec<LintWarning>)
         for (i, route) in service.routes.iter().enumerate() {
             // Build a fingerprint from host + path matchers
             let mut hosts: Vec<&str> = route.match_host.iter().map(String::as_str).collect();
-            hosts.sort();
+            hosts.sort_unstable();
             let mut paths: Vec<&str> = route.match_path.iter().map(String::as_str).collect();
-            paths.sort();
+            paths.sort_unstable();
 
             let fingerprint = format!("hosts={hosts:?} paths={paths:?}");
 

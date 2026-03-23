@@ -14,8 +14,7 @@ static SYSLOG: OnceLock<SyslogSender> = OnceLock::new();
 /// Syslog severity levels (RFC 5424 §6.2.1).
 fn severity_from_status(status: u16) -> u8 {
     match status {
-        0..=199 => 6,   // informational
-        200..=399 => 6, // informational
+        0..=399 => 6,   // informational
         400..=499 => 4, // warning
         _ => 3,         // error (5xx and unknown)
     }
@@ -34,7 +33,6 @@ fn parse_facility(name: &str) -> u8 {
         "news" => 7,
         "uucp" => 8,
         "cron" => 9,
-        "local0" => 16,
         "local1" => 17,
         "local2" => 18,
         "local3" => 19,
