@@ -427,10 +427,10 @@ fn apply_tls_options(settings: &mut pingora::listeners::tls::TlsSettings, tls: &
                 tracing::warn!(error = %e, ciphers, "failed to set TLS cipher list");
             }
         }
-        if let Some(ref suites) = tls.tls13_ciphersuites {
-            if let Err(e) = settings.set_ciphersuites(suites) {
-                tracing::warn!(error = %e, suites, "failed to set TLS 1.3 ciphersuites");
-            }
+        if tls.tls13_ciphersuites.is_some() {
+            tracing::warn!(
+                "tls13_ciphersuites is not supported with BoringSSL — TLS 1.3 uses a built-in cipher preference order"
+            );
         }
         if let Some(ref min) = tls.min_version {
             if let Some(ver) = parse_tls_version(min) {
