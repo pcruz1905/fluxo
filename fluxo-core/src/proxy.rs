@@ -2258,4 +2258,435 @@ mod tests {
             Some(std::time::Duration::from_secs(999_999_999))
         );
     }
+
+    // ── should_log_status tests ──────────────────────────────────────
+
+    #[test]
+    fn should_log_status_no_excludes() {
+        assert!(should_log_status(200, &[]));
+        assert!(should_log_status(500, &[]));
+    }
+
+    #[test]
+    fn should_log_status_class_2xx() {
+        let excludes = vec!["2xx".to_string()];
+        assert!(!should_log_status(200, &excludes));
+        assert!(!should_log_status(204, &excludes));
+        assert!(!should_log_status(299, &excludes));
+        assert!(should_log_status(300, &excludes));
+        assert!(should_log_status(199, &excludes));
+    }
+
+    #[test]
+    fn should_log_status_class_all() {
+        assert!(!should_log_status(100, &["1xx".to_string()]));
+        assert!(!should_log_status(301, &["3xx".to_string()]));
+        assert!(!should_log_status(404, &["4xx".to_string()]));
+        assert!(!should_log_status(503, &["5xx".to_string()]));
+    }
+
+    #[test]
+    fn should_log_status_exact_code() {
+        let excludes = vec!["404".to_string()];
+        assert!(!should_log_status(404, &excludes));
+        assert!(should_log_status(200, &excludes));
+        assert!(should_log_status(405, &excludes));
+    }
+
+    #[test]
+    fn should_log_status_range() {
+        let excludes = vec!["200-299".to_string()];
+        assert!(!should_log_status(200, &excludes));
+        assert!(!should_log_status(250, &excludes));
+        assert!(!should_log_status(299, &excludes));
+        assert!(should_log_status(300, &excludes));
+        assert!(should_log_status(199, &excludes));
+    }
+
+    #[test]
+    fn should_log_status_multiple_excludes() {
+        let excludes = vec!["2xx".to_string(), "404".to_string(), "500-504".to_string()];
+        assert!(!should_log_status(200, &excludes));
+        assert!(!should_log_status(404, &excludes));
+        assert!(!should_log_status(502, &excludes));
+        assert!(should_log_status(400, &excludes));
+        assert!(should_log_status(505, &excludes));
+    }
+
+    #[test]
+    fn should_log_status_invalid_pattern_ignored() {
+        let excludes = vec!["abc".to_string(), "x-y".to_string()];
+        assert!(should_log_status(200, &excludes));
+        assert!(should_log_status(500, &excludes));
+    }
+
+    // ── has_tls_configured tests ─────────────────────────────────────
+
+    fn minimal_test_config() -> FluxoConfig {
+        use crate::config::{
+            FluxoConfig, GlobalConfig, ListenerConfig, RouteConfig, ServiceConfig, UpstreamConfig,
+        };
+
+        let mut services = HashMap::new();
+        services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                listeners: vec![ListenerConfig {
+                    address: "127.0.0.1:8080".to_string(),
+                    offer_h2: false,
+                    proxy_protocol: false,
+                }],
+                routes: vec![RouteConfig {
+                    match_path: vec!["/*".to_string()],
+                    upstream: "backend".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let mut upstreams = HashMap::new();
+        upstreams.insert(
+            "backend".to_string(),
+            UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "127.0.0.1:3000".to_string(),
+                )],
+                ..Default::default()
+            },
+        );
+
+        FluxoConfig {
+            global: GlobalConfig::default(),
+            services,
+            upstreams,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn has_tls_configured_false_without_tls() {
+        let config = minimal_test_config();
+        assert!(!has_tls_configured(&config));
+    }
+
+    fn make_tls_config(
+        cert: Option<&str>,
+        key: Option<&str>,
+        acme: bool,
+    ) -> crate::config::TlsConfig {
+        crate::config::TlsConfig {
+            cert_path: cert.map(ToString::to_string),
+            key_path: key.map(ToString::to_string),
+            acme,
+            acme_email: None,
+            acme_directory: None,
+            acme_staging: false,
+            client_ca_path: None,
+            client_auth_type: "none".to_string(),
+            sni_certs: vec![],
+        }
+    }
+
+    #[test]
+    fn has_tls_configured_true_with_manual_certs() {
+        let mut config = minimal_test_config();
+        config.services.get_mut("web").unwrap().tls = Some(make_tls_config(
+            Some("/path/cert.pem"),
+            Some("/path/key.pem"),
+            false,
+        ));
+        assert!(has_tls_configured(&config));
+    }
+
+    #[test]
+    fn has_tls_configured_true_with_acme() {
+        let mut config = minimal_test_config();
+        config.services.get_mut("web").unwrap().tls = Some(make_tls_config(None, None, true));
+        assert!(has_tls_configured(&config));
+    }
+
+    #[test]
+    fn has_tls_configured_false_with_partial_manual() {
+        let mut config = minimal_test_config();
+        // Only cert_path set, no key_path — should not count as TLS configured
+        config.services.get_mut("web").unwrap().tls =
+            Some(make_tls_config(Some("/path/cert.pem"), None, false));
+        assert!(!has_tls_configured(&config));
+    }
+
+    // ── parse_downstream_timeouts tests ──────────────────────────────
+
+    #[test]
+    fn parse_downstream_timeouts_none_by_default() {
+        let config = minimal_test_config();
+        let (body, write) = parse_downstream_timeouts(&config);
+        assert!(body.is_none());
+        assert!(write.is_none());
+    }
+
+    #[test]
+    fn parse_downstream_timeouts_with_values() {
+        let mut config = minimal_test_config();
+        config.global.client_body_timeout = Some("30s".to_string());
+        config.global.client_write_timeout = Some("60s".to_string());
+        let (body, write) = parse_downstream_timeouts(&config);
+        assert_eq!(body, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(write, Some(std::time::Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn parse_downstream_timeouts_invalid_value() {
+        let mut config = minimal_test_config();
+        config.global.client_body_timeout = Some("invalid".to_string());
+        let (body, _) = parse_downstream_timeouts(&config);
+        assert!(body.is_none());
+    }
+
+    // ── parse_trusted_proxies tests ──────────────────────────────────
+
+    #[test]
+    fn parse_trusted_proxies_empty() {
+        let config = minimal_test_config();
+        let proxies = parse_trusted_proxies(&config);
+        assert!(proxies.is_empty());
+    }
+
+    #[test]
+    fn parse_trusted_proxies_with_cidrs() {
+        let mut config = minimal_test_config();
+        config.global.trusted_proxies =
+            vec!["10.0.0.0/8".to_string(), "192.168.1.0/24".to_string()];
+        let proxies = parse_trusted_proxies(&config);
+        assert_eq!(proxies.len(), 2);
+    }
+
+    #[test]
+    fn parse_trusted_proxies_skips_invalid() {
+        let mut config = minimal_test_config();
+        config.global.trusted_proxies = vec!["10.0.0.0/8".to_string(), "not-a-cidr".to_string()];
+        let proxies = parse_trusted_proxies(&config);
+        assert_eq!(proxies.len(), 1);
+    }
+
+    // ── build_composite_upstreams tests ──────────────────────────────
+
+    #[test]
+    fn build_composite_upstreams_empty() {
+        let config = minimal_test_config();
+        let composites = build_composite_upstreams(&config);
+        assert!(composites.is_empty());
+    }
+
+    #[test]
+    fn build_composite_upstreams_weighted() {
+        let mut config = minimal_test_config();
+        config.upstreams.insert(
+            "combo".to_string(),
+            crate::config::UpstreamConfig {
+                upstream_type: Some("weighted".to_string()),
+                services: vec![crate::config::ServiceRef {
+                    upstream: "backend".to_string(),
+                    weight: 3,
+                }],
+                ..Default::default()
+            },
+        );
+        let composites = build_composite_upstreams(&config);
+        assert_eq!(composites.len(), 1);
+        let combo = composites.get(&UpstreamName::from("combo")).unwrap();
+        assert_eq!(combo.mode, CompositeMode::Weighted);
+        assert_eq!(combo.children.len(), 1);
+        assert_eq!(combo.children[0].1, 3);
+    }
+
+    #[test]
+    fn build_composite_upstreams_failover() {
+        let mut config = minimal_test_config();
+        config.upstreams.insert(
+            "ha".to_string(),
+            crate::config::UpstreamConfig {
+                upstream_type: Some("failover".to_string()),
+                services: vec![
+                    crate::config::ServiceRef {
+                        upstream: "primary".to_string(),
+                        weight: 1,
+                    },
+                    crate::config::ServiceRef {
+                        upstream: "secondary".to_string(),
+                        weight: 1,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        let composites = build_composite_upstreams(&config);
+        let ha = composites.get(&UpstreamName::from("ha")).unwrap();
+        assert_eq!(ha.mode, CompositeMode::Failover);
+        assert_eq!(ha.children.len(), 2);
+    }
+
+    #[test]
+    fn build_composite_ignores_non_composite() {
+        let config = minimal_test_config();
+        // "backend" has no upstream_type — should not appear in composites
+        let composites = build_composite_upstreams(&config);
+        assert!(composites.get(&UpstreamName::from("backend")).is_none());
+    }
+
+    // ── resolve_composite_upstream tests ─────────────────────────────
+
+    #[test]
+    fn resolve_composite_returns_none_for_non_composite() {
+        let composites = HashMap::new();
+        let upstreams = HashMap::new();
+        let cb = CircuitBreakerTracker::new();
+        let name = UpstreamName::from("backend");
+        assert!(resolve_composite_upstream(&name, &composites, &upstreams, &cb).is_none());
+    }
+
+    #[test]
+    fn resolve_composite_failover_picks_first_available() {
+        let mut composites = HashMap::new();
+        composites.insert(
+            UpstreamName::from("ha"),
+            CompositeUpstream {
+                mode: CompositeMode::Failover,
+                children: vec![
+                    (UpstreamName::from("primary"), 1),
+                    (UpstreamName::from("secondary"), 1),
+                ],
+            },
+        );
+        let upstreams = HashMap::new();
+        let cb = CircuitBreakerTracker::new();
+        let result =
+            resolve_composite_upstream(&UpstreamName::from("ha"), &composites, &upstreams, &cb);
+        assert_eq!(result, Some(UpstreamName::from("primary")));
+    }
+
+    #[test]
+    fn resolve_composite_failover_skips_open_breaker() {
+        let mut composites = HashMap::new();
+        composites.insert(
+            UpstreamName::from("ha"),
+            CompositeUpstream {
+                mode: CompositeMode::Failover,
+                children: vec![
+                    (UpstreamName::from("primary"), 1),
+                    (UpstreamName::from("secondary"), 1),
+                ],
+            },
+        );
+        let upstreams = HashMap::new();
+        let cb = CircuitBreakerTracker::new();
+        // Register and trip the primary circuit breaker
+        cb.register(
+            UpstreamName::from("primary"),
+            crate::config::CircuitBreakerConfig {
+                failure_threshold: 1,
+                success_threshold: 1,
+                open_duration: "60s".to_string(),
+                error_ratio_threshold: 0.5,
+                min_requests: 0,
+                window: None,
+            },
+        );
+        cb.record_failure(&UpstreamName::from("primary"));
+        let result =
+            resolve_composite_upstream(&UpstreamName::from("ha"), &composites, &upstreams, &cb);
+        assert_eq!(result, Some(UpstreamName::from("secondary")));
+    }
+
+    #[test]
+    fn resolve_composite_weighted_returns_child() {
+        let mut composites = HashMap::new();
+        composites.insert(
+            UpstreamName::from("combo"),
+            CompositeUpstream {
+                mode: CompositeMode::Weighted,
+                children: vec![(UpstreamName::from("only"), 1)],
+            },
+        );
+        let upstreams = HashMap::new();
+        let cb = CircuitBreakerTracker::new();
+        let result =
+            resolve_composite_upstream(&UpstreamName::from("combo"), &composites, &upstreams, &cb);
+        assert_eq!(result, Some(UpstreamName::from("only")));
+    }
+
+    #[test]
+    fn resolve_composite_weighted_zero_weight_returns_none() {
+        let mut composites = HashMap::new();
+        composites.insert(
+            UpstreamName::from("empty"),
+            CompositeUpstream {
+                mode: CompositeMode::Weighted,
+                children: vec![(UpstreamName::from("a"), 0)],
+            },
+        );
+        let upstreams = HashMap::new();
+        let cb = CircuitBreakerTracker::new();
+        let result =
+            resolve_composite_upstream(&UpstreamName::from("empty"), &composites, &upstreams, &cb);
+        assert!(result.is_none());
+    }
+
+    // ── FluxoState build tests ───────────────────────────────────────
+
+    #[test]
+    fn fluxo_state_try_from_config_succeeds() {
+        let config = minimal_test_config();
+        let state = FluxoState::try_from_config(config);
+        assert!(state.is_ok());
+    }
+
+    #[test]
+    fn fluxo_state_build_succeeds() {
+        let config = minimal_test_config();
+        let build = FluxoState::build(config);
+        assert!(build.is_ok());
+    }
+
+    #[test]
+    fn fluxo_proxy_new_and_accessors() {
+        let config = minimal_test_config();
+        let state = FluxoState::try_from_config(config).unwrap();
+        let proxy = FluxoProxy::new(state).unwrap();
+
+        // challenge_state returns an Arc
+        let _ = proxy.challenge_state();
+        // metrics returns an Arc
+        let _ = proxy.metrics();
+        // state_snapshot loads current state
+        let snap = proxy.state_snapshot();
+        assert!(!snap.upstreams.is_empty());
+    }
+
+    #[test]
+    fn fluxo_proxy_reload_swaps_state() {
+        let config = minimal_test_config();
+        let state = FluxoState::try_from_config(config.clone()).unwrap();
+        let proxy = FluxoProxy::new(state).unwrap();
+
+        // Reload with same config should succeed
+        let new_state = FluxoState::try_from_config(config).unwrap();
+        proxy.reload(new_state);
+        let snap = proxy.state_snapshot();
+        assert!(!snap.upstreams.is_empty());
+    }
+
+    #[test]
+    fn fluxo_proxy_precommit_reload() {
+        let config = minimal_test_config();
+        let result = FluxoProxy::precommit_reload(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn composite_mode_equality() {
+        assert_eq!(CompositeMode::Weighted, CompositeMode::Weighted);
+        assert_eq!(CompositeMode::Failover, CompositeMode::Failover);
+        assert_ne!(CompositeMode::Weighted, CompositeMode::Failover);
+    }
 }

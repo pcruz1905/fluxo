@@ -678,4 +678,199 @@ mod tests {
             assert_eq!(proxy.select_target(None), Some("only:80".to_string()));
         }
     }
+
+    // ── TcpProxy::new edge cases ─────────────────────────────────────
+
+    #[test]
+    fn new_parses_connect_timeout() {
+        let mut config = make_config(vec!["a:80"], 0);
+        config.connect_timeout = "10s".to_string();
+        let proxy = TcpProxy::new(config);
+        assert_eq!(proxy.connect_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn new_invalid_timeout_defaults_to_5s() {
+        let mut config = make_config(vec!["a:80"], 0);
+        config.connect_timeout = "invalid".to_string();
+        let proxy = TcpProxy::new(config);
+        assert_eq!(proxy.connect_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn new_millisecond_timeout() {
+        let mut config = make_config(vec!["a:80"], 0);
+        config.connect_timeout = "500ms".to_string();
+        let proxy = TcpProxy::new(config);
+        assert_eq!(proxy.connect_timeout, Duration::from_millis(500));
+    }
+
+    // ── SNI extraction edge cases ────────────────────────────────────
+
+    #[test]
+    fn extract_sni_truncated_handshake_body() {
+        // Valid TLS record header, but handshake body is too short (< 38 bytes)
+        let mut buf = Vec::new();
+        buf.push(0x16); // Handshake
+        buf.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
+        let body_len = 10u16;
+        buf.extend_from_slice(&body_len.to_be_bytes());
+        buf.push(0x01); // ClientHello
+        buf.push(0);
+        buf.extend_from_slice(&7u16.to_be_bytes()); // 3-byte length
+        // Only 7 bytes of body — way shorter than needed 38
+        buf.extend_from_slice(&[0x03, 0x03, 0, 0, 0, 0, 0]);
+        assert_eq!(TcpProxy::extract_sni(&buf), None);
+    }
+
+    #[test]
+    fn extract_sni_with_non_zero_session_id() {
+        // Build a ClientHello with a 32-byte session ID
+        let hostname = "test.example.com";
+        let name_bytes = hostname.as_bytes();
+        let name_len = name_bytes.len();
+
+        let sni_ext_data_len = 2 + 1 + 2 + name_len;
+        let sni_ext_len = 4 + sni_ext_data_len;
+        let extensions_len = 2 + sni_ext_len;
+        let session_id_len: usize = 32;
+
+        // version(2) + random(32) + session_id_len(1) + session_id(32)
+        // + cipher_suites_len(2) + cipher(2) + comp_len(1) + comp(1) + extensions
+        let handshake_body_len = 2 + 32 + 1 + session_id_len + 2 + 2 + 1 + 1 + extensions_len;
+        let handshake_len = 1 + 3 + handshake_body_len;
+
+        let mut buf = Vec::new();
+        buf.push(0x16);
+        buf.extend_from_slice(&[0x03, 0x01]);
+        buf.extend_from_slice(&(handshake_len as u16).to_be_bytes());
+
+        buf.push(0x01); // ClientHello
+        buf.push(0);
+        buf.extend_from_slice(&(handshake_body_len as u16).to_be_bytes());
+
+        buf.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+        buf.extend_from_slice(&[0u8; 32]); // Random
+        buf.push(session_id_len as u8); // Session ID length: 32
+        buf.extend_from_slice(&[0xABu8; 32]); // Session ID data
+        buf.extend_from_slice(&2u16.to_be_bytes()); // Cipher suites length
+        buf.extend_from_slice(&[0x00, 0x2F]);
+        buf.push(1); // Compression methods length
+        buf.push(0);
+
+        // Extensions
+        buf.extend_from_slice(&(sni_ext_len as u16).to_be_bytes());
+        buf.extend_from_slice(&[0x00, 0x00]); // SNI type
+        buf.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
+        buf.extend_from_slice(&((1 + 2 + name_len) as u16).to_be_bytes());
+        buf.push(0x00); // hostname type
+        buf.extend_from_slice(&(name_len as u16).to_be_bytes());
+        buf.extend_from_slice(name_bytes);
+
+        assert_eq!(
+            TcpProxy::extract_sni(&buf),
+            Some("test.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_sni_with_non_sni_extension_before_sni() {
+        // Build a ClientHello with a dummy extension before the SNI extension
+        let hostname = "multi-ext.example.com";
+        let name_bytes = hostname.as_bytes();
+        let name_len = name_bytes.len();
+
+        let sni_ext_data_len = 2 + 1 + 2 + name_len;
+        let sni_ext_header_len = 4 + sni_ext_data_len;
+
+        // Dummy extension (type 0x0010, 4 bytes of data)
+        let dummy_ext_len = 4 + 4; // header(4) + data(4)
+
+        let extensions_total = 2 + dummy_ext_len + sni_ext_header_len;
+        let handshake_body_len = 2 + 32 + 1 + 2 + 2 + 1 + 1 + extensions_total;
+        let handshake_len = 1 + 3 + handshake_body_len;
+
+        let mut buf = Vec::new();
+        buf.push(0x16);
+        buf.extend_from_slice(&[0x03, 0x01]);
+        buf.extend_from_slice(&(handshake_len as u16).to_be_bytes());
+        buf.push(0x01);
+        buf.push(0);
+        buf.extend_from_slice(&(handshake_body_len as u16).to_be_bytes());
+        buf.extend_from_slice(&[0x03, 0x03]);
+        buf.extend_from_slice(&[0u8; 32]);
+        buf.push(0); // session ID length
+        buf.extend_from_slice(&2u16.to_be_bytes());
+        buf.extend_from_slice(&[0x00, 0x2F]);
+        buf.push(1);
+        buf.push(0);
+
+        // Extensions total length
+        buf.extend_from_slice(&((dummy_ext_len + sni_ext_header_len) as u16).to_be_bytes());
+
+        // Dummy extension (type 0x0010 = supported_groups)
+        buf.extend_from_slice(&[0x00, 0x10]); // type
+        buf.extend_from_slice(&4u16.to_be_bytes()); // length
+        buf.extend_from_slice(&[0x00, 0x17, 0x00, 0x18]); // data
+
+        // SNI extension
+        buf.extend_from_slice(&[0x00, 0x00]);
+        buf.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
+        buf.extend_from_slice(&((1 + 2 + name_len) as u16).to_be_bytes());
+        buf.push(0x00);
+        buf.extend_from_slice(&(name_len as u16).to_be_bytes());
+        buf.extend_from_slice(name_bytes);
+
+        assert_eq!(
+            TcpProxy::extract_sni(&buf),
+            Some("multi-ext.example.com".to_string())
+        );
+    }
+
+    // ── Connection management edge cases ─────────────────────────────
+
+    #[test]
+    fn max_connections_of_one() {
+        let proxy = TcpProxy::new(make_config(vec!["a:80"], 1));
+        assert!(proxy.try_acquire_connection());
+        assert!(!proxy.try_acquire_connection());
+        proxy.release_connection();
+        assert!(proxy.try_acquire_connection());
+    }
+
+    #[test]
+    fn release_below_zero_wraps() {
+        // This tests the atomic behavior — releasing without acquiring
+        // should underflow (wrapping). Just ensure it doesn't panic.
+        let proxy = TcpProxy::new(make_config(vec!["a:80"], 0));
+        proxy.release_connection();
+        // Active connections wrapped to u32::MAX — acquire should still work
+        // because max_connections is 0 (unlimited)
+        assert!(proxy.try_acquire_connection());
+    }
+
+    // ── Select target with SNI + no default targets ──────────────────
+
+    #[test]
+    fn select_target_sni_match_no_default_targets() {
+        let mut sni_routes = std::collections::HashMap::new();
+        sni_routes.insert("api.example.com".to_string(), vec!["api:443".to_string()]);
+        let config = TcpServiceConfig {
+            listen: "0.0.0.0:443".to_string(),
+            targets: vec![], // no default targets
+            sni_routes,
+            connect_timeout: "5s".to_string(),
+            proxy_protocol: false,
+            max_connections: 0,
+        };
+        let proxy = TcpProxy::new(config);
+        // SNI match works
+        assert_eq!(
+            proxy.select_target(Some("api.example.com")),
+            Some("api:443".to_string())
+        );
+        // No SNI match + no default targets = None
+        assert_eq!(proxy.select_target(Some("other.com")), None);
+        assert_eq!(proxy.select_target(None), None);
+    }
 }

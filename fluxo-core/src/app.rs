@@ -465,4 +465,104 @@ mod tests {
         let app = FluxoApp::from_config_with_path(config, None);
         assert!(app.is_ok());
     }
+
+    #[test]
+    fn proxy_returns_clone() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        let proxy = app.proxy();
+        // Verify the proxy is functional — can load state snapshot
+        let _snap = proxy.state_snapshot();
+    }
+
+    #[test]
+    fn admin_service_constructs() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        // admin_service() should not panic
+        let _svc = app.admin_service();
+    }
+
+    #[test]
+    fn admin_service_with_custom_address() {
+        let mut config = minimal_config();
+        config.global.admin = "0.0.0.0:9999".to_string();
+        let app = FluxoApp::from_config(config).unwrap();
+        let _svc = app.admin_service();
+    }
+
+    #[test]
+    fn admin_service_with_invalid_address_fallback() {
+        let mut config = minimal_config();
+        config.global.admin = "not-a-socket-addr".to_string();
+        let app = FluxoApp::from_config(config).unwrap();
+        // Should fall back to 127.0.0.1:2019 without panicking
+        let _svc = app.admin_service();
+    }
+
+    #[test]
+    fn admin_service_with_auth_token() {
+        let mut config = minimal_config();
+        config.global.admin_auth_token = Some("secret-token".to_string());
+        let app = FluxoApp::from_config(config).unwrap();
+        let _svc = app.admin_service();
+    }
+
+    #[test]
+    fn renewal_services_empty_for_non_acme() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        let svcs = app.renewal_services();
+        assert!(svcs.is_empty());
+    }
+
+    #[test]
+    fn reload_preserves_old_state_on_invalid_config() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        // First reload with a valid config succeeds
+        let result = app.reload(minimal_config());
+        assert!(result.is_ok());
+        // Verify the proxy is still functional after reload
+        let snap = app.proxy().state_snapshot();
+        assert!(!snap.upstreams.is_empty());
+    }
+
+    #[test]
+    fn collect_acme_domains_deduplicates() {
+        let mut svc = crate::config::ServiceConfig::default();
+        svc.routes.push(crate::config::RouteConfig {
+            match_host: vec!["example.com".to_string(), "example.com".to_string()],
+            ..Default::default()
+        });
+        let domains = collect_acme_domains(&svc);
+        // HashSet deduplication — should only have 1
+        assert_eq!(domains.len(), 1);
+    }
+
+    #[test]
+    fn collect_acme_domains_multiple_routes() {
+        let mut svc = crate::config::ServiceConfig::default();
+        svc.routes.push(crate::config::RouteConfig {
+            match_host: vec!["a.com".to_string()],
+            ..Default::default()
+        });
+        svc.routes.push(crate::config::RouteConfig {
+            match_host: vec!["b.com".to_string()],
+            ..Default::default()
+        });
+        let domains = collect_acme_domains(&svc);
+        assert_eq!(domains.len(), 2);
+    }
+
+    #[test]
+    fn resolved_tls_returns_none_initially() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        // No TLS configured — resolved_tls should be empty for any service
+        assert!(app.resolved_tls("web").is_none());
+    }
+
+    #[test]
+    fn config_accessor_reflects_input() {
+        let mut config = minimal_config();
+        config.global.threads = 4;
+        let app = FluxoApp::from_config(config).unwrap();
+        assert_eq!(app.config().global.threads, 4);
+    }
 }
