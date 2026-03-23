@@ -114,6 +114,20 @@ impl FluxoConfig {
             new_tcp_services.insert(format!("{name}{suffix}"), cfg);
         }
         self.l4.tcp_services = new_tcp_services;
+
+        // Qualify L4 UDP services
+        let mut new_udp_services = HashMap::new();
+        for (name, cfg) in std::mem::take(&mut self.l4.udp_services) {
+            new_udp_services.insert(format!("{name}{suffix}"), cfg);
+        }
+        self.l4.udp_services = new_udp_services;
+
+        // Qualify L4 mail services
+        let mut new_mail_services = HashMap::new();
+        for (name, cfg) in std::mem::take(&mut self.l4.mail_services) {
+            new_mail_services.insert(format!("{name}{suffix}"), cfg);
+        }
+        self.l4.mail_services = new_mail_services;
     }
 
     /// Merge another `FluxoConfig` into this one.
@@ -123,6 +137,8 @@ impl FluxoConfig {
         self.services.extend(other.services);
         self.upstreams.extend(other.upstreams);
         self.l4.tcp_services.extend(other.l4.tcp_services);
+        self.l4.udp_services.extend(other.l4.udp_services);
+        self.l4.mail_services.extend(other.l4.mail_services);
         // Note: Global settings are typically taken from the primary provider (file)
         // or the last one that sent an update. For simplicity, we only merge services/upstreams/l4.
     }
@@ -501,6 +517,11 @@ pub struct RouteConfig {
     /// translated to standard gRPC before forwarding to upstream.
     #[serde(default)]
     pub grpc_web: bool,
+
+    /// FastCGI backend configuration for this route.
+    /// When set, requests matching this route are forwarded via FastCGI protocol
+    /// instead of HTTP. Nginx equivalent: `fastcgi_pass`.
+    pub fastcgi: Option<crate::l4::FastCgiConfig>,
 }
 
 /// Configuration for traffic mirroring to a shadow upstream.

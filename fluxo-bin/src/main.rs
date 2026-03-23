@@ -320,6 +320,41 @@ fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Register L4 UDP proxy services
+    for (name, udp_config) in &fluxo_config.l4.udp_services {
+        let udp_proxy = std::sync::Arc::new(fluxo_core::l4::UdpProxy::new(udp_config.clone()));
+        let listen_addr = udp_config.listen.clone();
+        let svc_name = name.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                service = svc_name,
+                address = listen_addr,
+                "L4 UDP proxy listening"
+            );
+            if let Err(e) = udp_proxy.run().await {
+                tracing::error!(service = svc_name, error = %e, "L4 UDP proxy failed");
+            }
+        });
+    }
+
+    // Register L4 mail proxy services
+    for (name, mail_config) in &fluxo_config.l4.mail_services {
+        let mail_proxy =
+            std::sync::Arc::new(fluxo_core::l4::MailProxy::new(mail_config.clone()));
+        let listen_addr = mail_config.listen.clone();
+        let svc_name = name.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                service = svc_name,
+                address = listen_addr,
+                "L4 mail proxy listening"
+            );
+            if let Err(e) = mail_proxy.run().await {
+                tracing::error!(service = svc_name, error = %e, "L4 mail proxy failed");
+            }
+        });
+    }
+
     // Register Admin API
     let admin_service = app.admin_service();
     server.add_boxed_service(admin_service);
