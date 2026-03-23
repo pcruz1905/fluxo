@@ -270,8 +270,7 @@ mod tests {
             propagation_wait: "30s".to_string(),
         };
         let result = create_provider(&config);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("api_token"));
+        assert!(result.err().unwrap().to_string().contains("api_token"));
     }
 
     #[test]
