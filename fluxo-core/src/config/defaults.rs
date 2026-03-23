@@ -198,6 +198,26 @@ pub fn cache_max_disk_size() -> String {
     "1gb".to_string()
 }
 
+/// Default max access log file size before rotation: 100 MB.
+pub fn access_log_max_size() -> String {
+    "100mb".to_string()
+}
+
+/// Default number of rotated log backups to keep.
+pub fn access_log_max_backups() -> u32 {
+    5
+}
+
+/// Default syslog facility.
+pub fn syslog_facility() -> String {
+    "local0".to_string()
+}
+
+/// Default syslog app name.
+pub fn syslog_app_name() -> String {
+    "fluxo".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -117,6 +117,26 @@ impl std::fmt::Display for ProxyProtocolError {
 
 impl std::error::Error for ProxyProtocolError {}
 
+/// Calculate the byte length of a PROXY protocol header in the given buffer.
+///
+/// Returns `Some(len)` if a valid header prefix is detected, `None` otherwise.
+/// This allows callers to consume exactly the header bytes and pass the rest
+/// as application data.
+pub fn proxy_header_len(input: &[u8]) -> Option<usize> {
+    // V2 binary format: 12-byte signature + version/command(1) + family(1) + length(2) + payload
+    if input.len() >= 16 && input[..12] == ppp::v2::PROTOCOL_PREFIX[..] {
+        let payload_len = u16::from_be_bytes([input[14], input[15]]) as usize;
+        return Some(16 + payload_len);
+    }
+    // V1 text format: "PROXY " ... "\r\n"
+    if input.starts_with(b"PROXY ") {
+        if let Some(pos) = memchr::memmem::find(input, b"\r\n") {
+            return Some(pos + 2);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -186,6 +206,36 @@ mod tests {
             info.dest_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443)
         );
+    }
+
+    #[test]
+    fn header_len_v1() {
+        let input = b"PROXY TCP4 192.168.1.100 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
+        let len = proxy_header_len(input).unwrap();
+        assert_eq!(len, 47); // Up to and including \r\n
+        // Verify the remaining bytes are the HTTP request
+        assert_eq!(&input[len..], b"GET / HTTP/1.1\r\n");
+    }
+
+    #[test]
+    fn header_len_v2() {
+        let mut header = Vec::from(ppp::v2::PROTOCOL_PREFIX);
+        header.extend([0x21, 0x11, 0x00, 0x0C]); // version=2, command=PROXY, IPv4, length=12
+        header.extend([192, 168, 1, 100]); // source
+        header.extend([10, 0, 0, 1]); // dest
+        header.extend(56324u16.to_be_bytes()); // source port
+        header.extend(443u16.to_be_bytes()); // dest port
+        header.extend(b"application data"); // app data after header
+
+        let len = proxy_header_len(&header).unwrap();
+        assert_eq!(len, 28); // 16 (fixed) + 12 (payload)
+        assert_eq!(&header[len..], b"application data");
+    }
+
+    #[test]
+    fn header_len_not_proxy_protocol() {
+        let input = b"GET / HTTP/1.1\r\nHost: example.com\r\n";
+        assert!(proxy_header_len(input).is_none());
     }
 
     #[test]

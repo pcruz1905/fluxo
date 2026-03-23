@@ -2,6 +2,7 @@
 
 mod defaults;
 pub mod file_provider;
+pub mod lint;
 pub mod provider;
 mod types;
 pub mod watcher;
@@ -712,6 +713,13 @@ pub fn default_config_toml() -> String {
 # admin = "127.0.0.1:2019"
 # threads = 0              # 0 = auto-detect CPU count
 # log_level = "info"
+# access_log_file = "/var/log/fluxo/access.log"
+# access_log_max_size = "100mb"   # Rotate when file exceeds this size
+# access_log_max_backups = 5      # Keep N rotated backups
+# [global.syslog]
+# address = "127.0.0.1:514"
+# facility = "local0"
+# app_name = "fluxo"
 
 [services.web]
 

@@ -150,21 +150,63 @@ impl TcpProxy {
     /// Handle a single TCP connection.
     async fn handle_connection(
         self: &Arc<Self>,
-        downstream: TcpStream,
+        mut downstream: TcpStream,
         client_addr: SocketAddr,
     ) -> io::Result<()> {
-        // Peek at first bytes to detect SNI
-        let mut peek_buf = vec![0u8; 1024];
-        let n = downstream.peek(&mut peek_buf).await?;
-        let sni = Self::extract_sni(&peek_buf[..n]);
+        // When PROXY protocol is enabled, read and strip the header first.
+        // The remaining bytes (after the header) are application data that must
+        // be forwarded to the upstream.
+        let (effective_client, sni, leftover) = if self.config.proxy_protocol {
+            use tokio::io::AsyncReadExt;
+
+            // Read enough for PROXY header + start of TLS ClientHello
+            let mut buf = vec![0u8; 1536];
+            let n = downstream.read(&mut buf).await?;
+            buf.truncate(n);
+
+            let (real_client, app_data_start) =
+                match crate::proxy_protocol::proxy_header_len(&buf) {
+                    Some(hlen) if hlen <= n => {
+                        match crate::proxy_protocol::parse_proxy_header(&buf[..hlen]) {
+                            Ok(Some(info)) => {
+                                debug!(
+                                    client = %client_addr,
+                                    real_client = %info.source_addr,
+                                    version = ?info.version,
+                                    "PROXY protocol header parsed"
+                                );
+                                (info.source_addr, hlen)
+                            }
+                            _ => {
+                                warn!(client = %client_addr, "PROXY protocol header parse failed, passing through");
+                                (client_addr, 0)
+                            }
+                        }
+                    }
+                    _ => {
+                        warn!(client = %client_addr, "expected PROXY protocol header not found");
+                        (client_addr, 0)
+                    }
+                };
+
+            let app_data = buf[app_data_start..].to_vec();
+            let sni = Self::extract_sni(&app_data);
+            (real_client, sni, app_data)
+        } else {
+            // No PROXY protocol — peek for SNI without consuming
+            let mut peek_buf = vec![0u8; 1024];
+            let n = downstream.peek(&mut peek_buf).await?;
+            let sni = Self::extract_sni(&peek_buf[..n]);
+            (client_addr, sni, vec![])
+        };
 
         let Some(target) = self.select_target(sni.as_deref()) else {
-            warn!(client = %client_addr, "no upstream target available");
+            warn!(client = %effective_client, "no upstream target available");
             return Ok(());
         };
 
         debug!(
-            client = %client_addr,
+            client = %effective_client,
             target = %target,
             sni = ?sni,
             "TCP proxy connecting"
@@ -185,9 +227,15 @@ impl TcpProxy {
                 }
             };
 
-        // Bidirectional copy
+        // Split streams for bidirectional copy
         let (mut down_read, mut down_write) = downstream.into_split();
         let (mut up_read, mut up_write) = upstream.into_split();
+
+        // Replay buffered application data that was read with the PROXY header
+        if !leftover.is_empty() {
+            use tokio::io::AsyncWriteExt;
+            up_write.write_all(&leftover).await?;
+        }
 
         let client_to_server = tokio::io::copy(&mut down_read, &mut up_write);
         let server_to_client = tokio::io::copy(&mut up_read, &mut down_write);

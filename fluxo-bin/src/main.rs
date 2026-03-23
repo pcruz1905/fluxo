@@ -39,6 +39,10 @@ struct Cli {
     /// Print default config to stdout and exit
     #[arg(long)]
     init: bool,
+
+    /// Lint config for warnings (unused upstreams, security issues, etc.)
+    #[arg(long)]
+    lint: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -96,8 +100,19 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Initialize access log file writer (if configured)
-    fluxo_core::observability::init_file_logger(fluxo_config.global.access_log_file.as_deref());
+    // Initialize access log file writer (if configured) with rotation
+    let log_max_size =
+        fluxo_core::config::parse_size(&fluxo_config.global.access_log_max_size).unwrap_or(0);
+    fluxo_core::observability::init_file_logger(
+        fluxo_config.global.access_log_file.as_deref(),
+        log_max_size,
+        fluxo_config.global.access_log_max_backups,
+    );
+
+    // Initialize syslog output (if configured)
+    if let Some(ref syslog_config) = fluxo_config.global.syslog {
+        fluxo_core::observability::init_syslog(syslog_config);
+    }
 
     // Initialize disk cache storage (if configured)
     if let Some(ref cache_dir) = fluxo_config.global.cache_dir {
@@ -120,6 +135,36 @@ fn main() -> anyhow::Result<()> {
         // Also try to build the state to catch compilation errors
         let _state = fluxo_core::FluxoState::try_from_config(fluxo_config)?;
         tracing::info!("state compiled successfully");
+        return Ok(());
+    }
+
+    // --lint: validate, check for warnings, and exit
+    if cli.lint {
+        tracing::info!("configuration is valid");
+        let warnings = fluxo_core::config::lint::lint(&fluxo_config);
+        if warnings.is_empty() {
+            tracing::info!("no lint warnings found");
+        } else {
+            let warn_count = warnings
+                .iter()
+                .filter(|w| w.level == fluxo_core::config::lint::LintLevel::Warn)
+                .count();
+            let info_count = warnings
+                .iter()
+                .filter(|w| w.level == fluxo_core::config::lint::LintLevel::Info)
+                .count();
+            for w in &warnings {
+                match w.level {
+                    fluxo_core::config::lint::LintLevel::Warn => {
+                        tracing::warn!("{}", w.message);
+                    }
+                    fluxo_core::config::lint::LintLevel::Info => {
+                        tracing::info!("{}", w.message);
+                    }
+                }
+            }
+            tracing::info!("{warn_count} warning(s), {info_count} info(s)");
+        }
         return Ok(());
     }
 

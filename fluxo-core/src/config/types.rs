@@ -15,6 +15,22 @@ pub enum AccessLogFormat {
     Compact,
 }
 
+/// Syslog output configuration (RFC 5424 over UDP).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyslogConfig {
+    /// Syslog server address (e.g., `"127.0.0.1:514"`, `"syslog.internal:1514"`).
+    pub address: String,
+
+    /// Syslog facility. Valid: `kern`, `user`, `daemon`, `local0`–`local7`.
+    /// Default: `"local0"`.
+    #[serde(default = "defaults::syslog_facility")]
+    pub facility: String,
+
+    /// Application name in syslog messages. Default: `"fluxo"`.
+    #[serde(default = "defaults::syslog_app_name")]
+    pub app_name: String,
+}
+
 /// A single upstream target — supports simple string or weighted form.
 ///
 /// Simple:   `targets = ["127.0.0.1:3000"]`
@@ -213,6 +229,22 @@ pub struct GlobalConfig {
     /// `Authorization: Bearer <token>` header. Example: `"my-secret-token"`.
     pub admin_auth_token: Option<String>,
 
+    /// Maximum access log file size before rotation.
+    /// Uses human-readable format: `"100mb"`, `"1gb"`.
+    /// Default: `"100mb"`. Set to `"0"` to disable rotation.
+    #[serde(default = "defaults::access_log_max_size")]
+    pub access_log_max_size: String,
+
+    /// Number of rotated log file backups to keep.
+    /// Rotated files are named `access.log.1`, `access.log.2`, etc.
+    /// Default: 5.
+    #[serde(default = "defaults::access_log_max_backups")]
+    pub access_log_max_backups: u32,
+
+    /// Syslog output configuration.
+    /// When set, access logs are also sent to a syslog server via UDP.
+    pub syslog: Option<SyslogConfig>,
+
     /// Directory for disk-backed HTTP cache storage.
     /// When set, cached responses persist across restarts.
     /// Example: `"/var/cache/fluxo"`.
@@ -249,6 +281,9 @@ impl Default for GlobalConfig {
             access_log_file: None,
             geoip_db_path: None,
             tracing: crate::observability::OtelTracingConfig::default(),
+            access_log_max_size: defaults::access_log_max_size(),
+            access_log_max_backups: defaults::access_log_max_backups(),
+            syslog: None,
             admin_auth_token: None,
             cache_dir: None,
             cache_max_disk_size: defaults::cache_max_disk_size(),
