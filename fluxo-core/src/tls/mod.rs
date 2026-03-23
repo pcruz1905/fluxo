@@ -2,6 +2,7 @@
 
 pub mod acme;
 pub mod challenge;
+pub mod ct;
 pub mod dns_provider;
 pub mod mtls;
 pub mod ocsp;
@@ -10,6 +11,7 @@ pub mod sni;
 pub mod store;
 
 pub use challenge::ChallengeState;
+pub use ct::{CtConfig, CtState};
 pub use dns_provider::{AcmeDnsConfig, DnsProvider};
 pub use mtls::{ClientAuthType, MtlsConfig};
 pub use ocsp::OcspCache;

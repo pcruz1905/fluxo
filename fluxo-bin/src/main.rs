@@ -455,6 +455,41 @@ fn build_tls_settings(
 
     if let Some(tls) = tls_config {
         apply_tls_options(&mut settings, tls, cert_path);
+
+        // Certificate Transparency: extract and validate SCTs at startup
+        if tls.certificate_transparency {
+            match std::fs::read_to_string(cert_path) {
+                Ok(pem) => {
+                    let scts = fluxo_core::tls::ct::extract_scts_from_pem(&pem);
+                    if scts.is_empty() {
+                        if tls.ct_enforce {
+                            tracing::warn!(
+                                cert = cert_path,
+                                "CT enforce: certificate has no embedded SCTs"
+                            );
+                        } else {
+                            tracing::info!(
+                                cert = cert_path,
+                                "CT: no embedded SCTs found in certificate"
+                            );
+                        }
+                    } else {
+                        tracing::info!(
+                            cert = cert_path,
+                            sct_count = scts.len(),
+                            "CT: certificate has valid SCTs"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        cert = cert_path,
+                        error = %e,
+                        "CT: failed to read certificate for SCT extraction"
+                    );
+                }
+            }
+        }
     }
 
     Ok(settings)

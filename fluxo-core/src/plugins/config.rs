@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, digest_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, oauth2, forward_auth, ldap_auth, csrf, referer_restrict, ua_restrict, static_files, traffic_split)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, digest_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, oauth2, forward_auth, ldap_auth, csrf, referer_restrict, ua_restrict, static_files, traffic_split, waf)"
     )]
     UnknownPlugin(String),
 
@@ -42,6 +42,7 @@ pub fn compile_plugins(
         "oauth2",
         "forward_auth",
         "ldap_auth",
+        "waf",
         "csrf",
         "ip_restrict",
         "referer_restrict",
@@ -430,6 +431,20 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
             Ok(BuiltinPlugin::TrafficSplit(
                 super::traffic_split::TrafficSplitPlugin::new(cfg),
             ))
+        }
+        "waf" => {
+            let cfg: super::waf::WafConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::waf::WafPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::Waf(plugin))
         }
         _ => Err(PluginConfigError::UnknownPlugin(name.to_string())),
     }

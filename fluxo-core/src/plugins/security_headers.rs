@@ -27,6 +27,14 @@ pub struct SecurityHeadersConfig {
     pub referrer_policy: Option<String>,
     /// Permissions-Policy value.
     pub permissions_policy: Option<String>,
+    /// `Expect-CT` max-age in seconds. If set, adds `Expect-CT` header.
+    /// Informs browsers to enforce Certificate Transparency.
+    pub expect_ct_max_age: Option<u64>,
+    /// Add "enforce" directive to `Expect-CT`. Default: false.
+    #[serde(default)]
+    pub expect_ct_enforce: bool,
+    /// Report URI for `Expect-CT` failures.
+    pub expect_ct_report_uri: Option<String>,
 }
 
 #[derive(Debug)]
@@ -77,6 +85,15 @@ impl SecurityHeadersPlugin {
 
         if let Some(ref permissions) = self.config.permissions_policy {
             let _ = resp.insert_header("Permissions-Policy", permissions.as_str());
+        }
+
+        if let Some(max_age) = self.config.expect_ct_max_age {
+            let value = crate::tls::ct::expect_ct_header(
+                max_age,
+                self.config.expect_ct_enforce,
+                self.config.expect_ct_report_uri.as_deref(),
+            );
+            let _ = resp.insert_header("Expect-CT", &value);
         }
     }
 }
@@ -166,6 +183,38 @@ mod tests {
         assert!(hsts.contains("max-age=31536000"));
         assert!(hsts.contains("includeSubDomains"));
         assert!(hsts.contains("preload"));
+    }
+
+    #[test]
+    fn adds_expect_ct_header() {
+        let config = SecurityHeadersConfig {
+            expect_ct_max_age: Some(86400),
+            expect_ct_enforce: true,
+            expect_ct_report_uri: Some("https://example.com/ct-report".to_string()),
+            ..Default::default()
+        };
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
+        let ct = resp.headers.get("Expect-CT").unwrap().to_str().unwrap();
+        assert!(ct.contains("max-age=86400"));
+        assert!(ct.contains("enforce"));
+        assert!(ct.contains("report-uri"));
+    }
+
+    #[test]
+    fn expect_ct_basic() {
+        let config = SecurityHeadersConfig {
+            expect_ct_max_age: Some(3600),
+            ..Default::default()
+        };
+        let plugin = SecurityHeadersPlugin::new(config);
+        let mut resp = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let mut ctx = crate::context::RequestContext::new();
+        plugin.on_response(&mut resp, &mut ctx);
+        let ct = resp.headers.get("Expect-CT").unwrap().to_str().unwrap();
+        assert_eq!(ct, "max-age=3600");
     }
 
     #[test]

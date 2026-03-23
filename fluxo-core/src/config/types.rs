@@ -450,6 +450,19 @@ pub struct TlsConfig {
     /// Override URL for the OCSP responder. If not set, the URL is extracted
     /// from the certificate's Authority Information Access extension.
     pub ocsp_responder: Option<String>,
+
+    /// Enable Certificate Transparency (CT) checking. When true, the proxy
+    /// extracts SCTs from the certificate and can inject the `Expect-CT` header.
+    #[serde(default)]
+    pub certificate_transparency: bool,
+
+    /// Enforce Certificate Transparency — log a warning if the certificate
+    /// has no embedded SCTs. Default: false.
+    #[serde(default)]
+    pub ct_enforce: bool,
+
+    /// Optional report URI for `Expect-CT` header.
+    pub ct_report_uri: Option<String>,
 }
 
 /// A single route definition.

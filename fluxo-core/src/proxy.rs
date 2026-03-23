@@ -2524,6 +2524,9 @@ mod tests {
             max_version: None,
             ocsp_stapling: false,
             ocsp_responder: None,
+            certificate_transparency: false,
+            ct_enforce: false,
+            ct_report_uri: None,
         }
     }
 

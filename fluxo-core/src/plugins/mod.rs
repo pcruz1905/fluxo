@@ -39,6 +39,7 @@ pub mod strip_prefix;
 pub mod sub_filter;
 pub mod traffic_split;
 pub mod ua_restrict;
+pub mod waf;
 
 pub use pipeline::PluginPipeline;
 
@@ -82,6 +83,7 @@ pub enum BuiltinPlugin {
     ForwardAuth(forward_auth::ForwardAuthPlugin),
     DigestAuth(digest_auth::DigestAuthPlugin),
     LdapAuth(ldap_auth::LdapAuthPlugin),
+    Waf(waf::WafPlugin),
 }
 
 impl BuiltinPlugin {
@@ -113,6 +115,7 @@ impl BuiltinPlugin {
             Self::ForwardAuth(p) => p.on_request(req, ctx),
             Self::DigestAuth(p) => p.on_request(req, ctx),
             Self::LdapAuth(p) => p.on_request(req, ctx),
+            Self::Waf(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
