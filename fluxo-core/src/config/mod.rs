@@ -1,7 +1,10 @@
 //! Configuration system — TOML parsing, validation, defaults, and merging.
 
 mod defaults;
+pub mod docker_provider;
 pub mod file_provider;
+pub mod kubernetes_provider;
+pub mod kv_provider;
 pub mod lint;
 pub mod provider;
 mod types;

@@ -238,6 +238,52 @@ pub fn cache_tinyufo_capacity() -> usize {
     10000
 }
 
+// --- Docker provider defaults ---
+
+/// Default Docker label prefix for container discovery.
+pub fn docker_label_prefix() -> String {
+    "fluxo".to_string()
+}
+
+/// Default Docker poll interval.
+pub fn docker_poll_interval() -> String {
+    "5s".to_string()
+}
+
+/// Default: watch Docker events for real-time updates.
+pub fn docker_watch_events() -> bool {
+    true
+}
+
+/// Default listener address for Docker-discovered services.
+pub fn docker_default_listener() -> String {
+    "0.0.0.0:80".to_string()
+}
+
+// --- Kubernetes provider defaults ---
+
+/// Default Kubernetes Ingress class filter.
+pub fn k8s_ingress_class() -> String {
+    "fluxo".to_string()
+}
+
+/// Default Kubernetes polling interval.
+pub fn k8s_poll_interval() -> String {
+    "30s".to_string()
+}
+
+// --- KV provider defaults ---
+
+/// Default KV key prefix.
+pub fn kv_prefix() -> String {
+    "fluxo".to_string()
+}
+
+/// Default KV polling interval.
+pub fn kv_poll_interval() -> String {
+    "10s".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

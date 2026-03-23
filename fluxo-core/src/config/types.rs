@@ -322,6 +322,132 @@ pub struct GlobalConfig {
     /// ```
     #[serde(default)]
     pub cache_zones: HashMap<String, CacheZoneConfig>,
+
+    /// Docker container discovery — Traefik-style label-based service discovery.
+    /// Connects to the Docker API and builds routes/upstreams from container labels.
+    pub docker: Option<DockerProviderConfig>,
+
+    /// Kubernetes Ingress discovery — watches Ingress resources and builds routes.
+    /// Connects to the Kubernetes API server (in-cluster or via explicit endpoint).
+    pub kubernetes: Option<KubernetesProviderConfig>,
+
+    /// Key-value store config backend — stores Fluxo config in Consul KV or etcd.
+    /// Optionally discovers upstreams from Consul service catalog.
+    pub kv: Option<KvProviderConfig>,
+}
+
+/// Docker container discovery configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerProviderConfig {
+    /// Docker API endpoint. Examples:
+    /// - `"tcp://localhost:2375"` (unencrypted)
+    /// - `"tcp://docker-host:2376"` (TLS)
+    /// Unix socket support requires OS-level configuration.
+    pub endpoint: String,
+
+    /// Label prefix for Fluxo configuration. Default: `"fluxo"`.
+    /// Containers must have `{prefix}.enable=true` to be discovered.
+    #[serde(default = "defaults::docker_label_prefix")]
+    pub label_prefix: String,
+
+    /// How often to poll Docker for container changes. Default: `"5s"`.
+    #[serde(default = "defaults::docker_poll_interval")]
+    pub poll_interval: String,
+
+    /// Whether to watch Docker events for real-time updates. Default: true.
+    /// Falls back to polling if the event stream disconnects.
+    #[serde(default = "defaults::docker_watch_events")]
+    pub watch_events: bool,
+
+    /// Default listener address for auto-generated services. Default: `"0.0.0.0:80"`.
+    #[serde(default = "defaults::docker_default_listener")]
+    pub default_listener: String,
+
+    /// Skip TLS certificate verification for Docker API. Default: false.
+    #[serde(default)]
+    pub tls_skip_verify: bool,
+}
+
+/// Kubernetes Ingress discovery configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesProviderConfig {
+    /// Kubernetes API server URL. Default: auto-detect in-cluster.
+    /// Example: `"https://kubernetes.default.svc"`.
+    pub api_server: Option<String>,
+
+    /// Bearer token for API server authentication.
+    /// In-cluster: auto-read from service account.
+    pub bearer_token: Option<String>,
+
+    /// Path to kubeconfig file for out-of-cluster access.
+    pub kubeconfig_path: Option<String>,
+
+    /// Namespace to watch. `None` = all namespaces.
+    pub namespace: Option<String>,
+
+    /// Ingress class filter. Only Ingresses with this class are processed.
+    /// Default: `"fluxo"`.
+    #[serde(default = "defaults::k8s_ingress_class")]
+    pub ingress_class: String,
+
+    /// Polling interval for fallback mode. Default: `"30s"`.
+    #[serde(default = "defaults::k8s_poll_interval")]
+    pub poll_interval: String,
+
+    /// Resolve Endpoints to pod IPs instead of using service DNS. Default: false.
+    #[serde(default)]
+    pub use_endpoints: bool,
+
+    /// Skip TLS verification for API server. Default: false.
+    #[serde(default)]
+    pub tls_skip_verify: bool,
+}
+
+/// Key-value store backend type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KvBackend {
+    /// HashiCorp Consul KV store.
+    Consul,
+    /// etcd v3 (via gRPC-gateway HTTP API).
+    Etcd,
+}
+
+/// Key-value store config backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KvProviderConfig {
+    /// Backend type: `consul` or `etcd`.
+    pub backend: KvBackend,
+
+    /// Backend endpoint URLs.
+    /// Examples: `["http://consul:8500"]`, `["http://etcd:2379"]`.
+    pub endpoints: Vec<String>,
+
+    /// Key prefix for Fluxo configuration. Default: `"fluxo"`.
+    #[serde(default = "defaults::kv_prefix")]
+    pub prefix: String,
+
+    /// Authentication token (Consul ACL token or etcd auth token).
+    pub token: Option<String>,
+
+    /// Polling interval for change detection. Default: `"10s"`.
+    #[serde(default = "defaults::kv_poll_interval")]
+    pub poll_interval: String,
+
+    /// Consul datacenter. Default: agent's datacenter.
+    pub consul_datacenter: Option<String>,
+
+    /// Consul Enterprise namespace.
+    pub consul_namespace: Option<String>,
+
+    /// Enable Consul catalog service discovery for upstreams. Default: false.
+    /// When true, healthy Consul services become upstream targets automatically.
+    #[serde(default)]
+    pub service_discovery: bool,
+
+    /// Skip TLS verification. Default: false.
+    #[serde(default)]
+    pub tls_skip_verify: bool,
 }
 
 impl Default for GlobalConfig {
@@ -362,6 +488,9 @@ impl Default for GlobalConfig {
             cache_eviction: defaults::cache_eviction(),
             cache_tinyufo_capacity: defaults::cache_tinyufo_capacity(),
             cache_zones: HashMap::new(),
+            docker: None,
+            kubernetes: None,
+            kv: None,
         }
     }
 }
