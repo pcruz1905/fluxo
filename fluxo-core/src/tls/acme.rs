@@ -1,18 +1,20 @@
 //! ACME client wrapper — certificate acquisition via Let's Encrypt.
 //!
 //! Wraps `instant-acme` to provide a high-level API for obtaining and
-//! renewing TLS certificates using the ACME HTTP-01 challenge flow.
+//! renewing TLS certificates using the ACME HTTP-01 and DNS-01 challenge flows.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use instant_acme::{
     Account, AccountCredentials, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
     RetryPolicy,
 };
 use thiserror::Error;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use super::challenge::ChallengeState;
+use super::dns_provider::{self, AcmeDnsConfig, DnsProviderError};
 use super::store::{CertStore, CertStoreError};
 
 /// Errors from ACME operations.
@@ -32,6 +34,12 @@ pub enum AcmeError {
 
     #[error("no HTTP-01 challenge found for {0}")]
     NoHttp01Challenge(String),
+
+    #[error("no DNS-01 challenge found for {0}")]
+    NoDns01Challenge(String),
+
+    #[error("DNS provider error: {0}")]
+    DnsProvider(#[from] DnsProviderError),
 
     #[error("order failed: {0}")]
     OrderFailed(String),
@@ -112,7 +120,7 @@ impl AcmeManager {
         let identifiers: Vec<Identifier> =
             domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
 
-        info!(domains = ?domains, "starting ACME order");
+        info!(domains = ?domains, "starting ACME order (HTTP-01)");
 
         // Create order
         let mut order = self.account.new_order(&NewOrder::new(&identifiers)).await?;
@@ -163,6 +171,98 @@ impl AcmeManager {
         Ok((cert_pem, key_pem))
     }
 
+    /// Obtain a certificate for the given domains using DNS-01 challenges.
+    ///
+    /// Creates TXT records via the configured DNS provider for domain validation.
+    /// Required for wildcard certificates (`*.example.com`).
+    ///
+    /// Returns the PEM-encoded certificate chain and private key.
+    pub async fn obtain_cert_dns01(
+        &mut self,
+        domains: &[String],
+        dns_config: &AcmeDnsConfig,
+    ) -> Result<(String, String), AcmeError> {
+        let provider = dns_provider::create_provider(dns_config)?;
+
+        let identifiers: Vec<Identifier> =
+            domains.iter().map(|d| Identifier::Dns(d.clone())).collect();
+
+        info!(domains = ?domains, "starting ACME order (DNS-01)");
+
+        let mut order = self.account.new_order(&NewOrder::new(&identifiers)).await?;
+
+        // Track created DNS records for cleanup
+        let mut dns_record_ids: Vec<String> = Vec::new();
+
+        // Process authorizations
+        let mut authorizations = order.authorizations();
+        while let Some(authz) = authorizations.next().await {
+            let mut authz = authz?;
+
+            let identifier_name = authz.identifier().to_string();
+            let mut challenge = authz
+                .challenge(ChallengeType::Dns01)
+                .ok_or_else(|| AcmeError::NoDns01Challenge(identifier_name.clone()))?;
+
+            // DNS-01: TXT record at _acme-challenge.<domain> with dns_value
+            let dns_value = challenge.key_authorization().dns_value();
+            let record_name = format!("_acme-challenge.{identifier_name}");
+
+            debug!(
+                domain = %identifier_name,
+                record_name = %record_name,
+                "creating DNS TXT record for ACME challenge"
+            );
+
+            let record_id = provider
+                .create_txt_record(&identifier_name, &record_name, &dns_value)
+                .await?;
+            dns_record_ids.push(record_id);
+
+            // Wait for DNS propagation
+            let wait =
+                parse_duration(&dns_config.propagation_wait).unwrap_or(Duration::from_secs(30));
+            info!(
+                wait_secs = wait.as_secs(),
+                domain = %identifier_name,
+                "waiting for DNS propagation"
+            );
+            tokio::time::sleep(wait).await;
+
+            // Tell the ACME server we're ready
+            challenge.set_ready().await?;
+
+            info!(domain = %identifier_name, "DNS-01 challenge set ready");
+        }
+
+        // Wait for order to become ready
+        let retry = RetryPolicy::new();
+        let ready_result = order.poll_ready(&retry).await;
+
+        // Clean up DNS records regardless of outcome
+        for record_id in &dns_record_ids {
+            if let Err(e) = provider.delete_txt_record(record_id).await {
+                warn!(record_id = %record_id, error = %e, "failed to clean up DNS TXT record");
+            }
+        }
+
+        ready_result?;
+
+        info!("ACME order ready, finalizing");
+
+        let key_pem = order.finalize().await?;
+        let cert_pem = order.poll_certificate(&retry).await?;
+
+        let primary_domain = domains
+            .first()
+            .ok_or_else(|| AcmeError::Other("no domains provided".into()))?;
+        self.store.save_cert(primary_domain, &cert_pem, &key_pem)?;
+
+        info!(domain = %primary_domain, "certificate obtained via DNS-01 and saved");
+
+        Ok((cert_pem, key_pem))
+    }
+
     /// Get the cert store reference.
     pub fn store(&self) -> &CertStore {
         &self.store
@@ -177,6 +277,30 @@ impl AcmeManager {
     pub fn lets_encrypt_staging() -> &'static str {
         LetsEncrypt::Staging.url()
     }
+}
+
+/// Parse a human-friendly duration string like "30s", "5m", "1h".
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (num_str, unit) = if s.ends_with('s') {
+        (&s[..s.len() - 1], 1u64)
+    } else if s.ends_with('m') {
+        (&s[..s.len() - 1], 60u64)
+    } else if s.ends_with('h') {
+        (&s[..s.len() - 1], 3600u64)
+    } else {
+        // Assume seconds if no unit
+        (s, 1u64)
+    };
+
+    num_str
+        .parse::<u64>()
+        .ok()
+        .map(|n| Duration::from_secs(n * unit))
 }
 
 /// Extract the host portion from a URL for use as a storage key.
@@ -261,5 +385,48 @@ mod tests {
         assert_ne!(prod, staging);
         assert!(prod.starts_with("https://"));
         assert!(staging.starts_with("https://"));
+    }
+
+    #[test]
+    fn parse_duration_seconds() {
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("0s"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_duration("120s"), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert_eq!(parse_duration("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_duration("1m"), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn parse_duration_hours() {
+        assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
+        assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+    }
+
+    #[test]
+    fn parse_duration_no_unit() {
+        assert_eq!(parse_duration("60"), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn parse_duration_empty() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("  "), None);
+    }
+
+    #[test]
+    fn parse_duration_invalid() {
+        assert_eq!(parse_duration("abc"), None);
+        assert_eq!(parse_duration("xs"), None);
+    }
+
+    #[test]
+    fn acme_error_dns01_display() {
+        let err = AcmeError::NoDns01Challenge("example.com".to_string());
+        assert!(err.to_string().contains("example.com"));
+        assert!(err.to_string().contains("DNS-01"));
     }
 }

@@ -546,7 +546,10 @@ fn apply_mtls_boringssl(
                     tracing::warn!(error = %e, path = ca_path, "failed to load client CA file");
                 }
             }
-            tracing::info!(auth_type = "request", "mTLS client cert verification enabled");
+            tracing::info!(
+                auth_type = "request",
+                "mTLS client cert verification enabled"
+            );
         }
         ClientAuthType::Require => {
             // Require client cert but don't validate against CA
@@ -626,10 +629,7 @@ fn apply_ocsp_stapling_boringssl(
 ///
 /// Uses `WebPkiClientVerifier` to build a client cert verifier from the CA file.
 #[cfg(not(feature = "boringssl"))]
-fn apply_mtls_rustls(
-    settings: &mut pingora::listeners::tls::TlsSettings,
-    tls: &config::TlsConfig,
-) {
+fn apply_mtls_rustls(settings: &mut pingora::listeners::tls::TlsSettings, tls: &config::TlsConfig) {
     use fluxo_core::tls::ClientAuthType;
 
     let auth_type: ClientAuthType = match tls.client_auth_type.parse() {

@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 
 use super::acme::AcmeManager;
 use super::challenge::ChallengeState;
+use super::dns_provider::AcmeDnsConfig;
 use super::store::CertStore;
 
 /// Configuration for the renewal service.
@@ -28,6 +29,10 @@ pub struct RenewalConfig {
     pub email: String,
     /// Domains to manage.
     pub domains: Vec<String>,
+    /// Challenge type: "http-01" (default) or "dns-01".
+    pub challenge_type: String,
+    /// DNS provider configuration (required when challenge_type is "dns-01").
+    pub dns_config: Option<AcmeDnsConfig>,
 }
 
 /// Background service that checks and renews ACME certificates.
@@ -122,10 +127,20 @@ impl CertRenewalService {
             }
         };
 
-        match acme
-            .obtain_cert(&self.config.domains, &self.challenge_state)
-            .await
-        {
+        let result = if self.config.challenge_type == "dns-01" {
+            if let Some(ref dns_config) = self.config.dns_config {
+                acme.obtain_cert_dns01(&self.config.domains, dns_config)
+                    .await
+            } else {
+                error!("DNS-01 challenge configured but no dns_config provided");
+                return;
+            }
+        } else {
+            acme.obtain_cert(&self.config.domains, &self.challenge_state)
+                .await
+        };
+
+        match result {
             Ok(_) => {
                 info!(
                     domain = primary_domain,
@@ -156,6 +171,8 @@ mod tests {
             directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory".to_string(),
             email: "admin@example.com".to_string(),
             domains: vec!["example.com".to_string(), "www.example.com".to_string()],
+            challenge_type: "http-01".to_string(),
+            dns_config: None,
         }
     }
 
@@ -203,6 +220,8 @@ mod tests {
             directory_url: "https://example.com".to_string(),
             email: String::new(),
             domains: vec![],
+            challenge_type: "http-01".to_string(),
+            dns_config: None,
         };
         assert!(cfg.domains.is_empty());
     }
@@ -215,6 +234,8 @@ mod tests {
             directory_url: "https://example.com/dir".to_string(),
             email: "user@test.com".to_string(),
             domains: vec!["single.example.com".to_string()],
+            challenge_type: "http-01".to_string(),
+            dns_config: None,
         };
         assert_eq!(cfg.renew_before_days, 7);
         assert_eq!(cfg.domains.len(), 1);

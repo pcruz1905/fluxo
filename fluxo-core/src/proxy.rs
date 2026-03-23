@@ -2513,6 +2513,8 @@ mod tests {
             acme_email: None,
             acme_directory: None,
             acme_staging: false,
+            acme_challenge: "http-01".to_string(),
+            acme_dns: None,
             client_ca_path: None,
             client_auth_type: "none".to_string(),
             sni_certs: vec![],

@@ -398,6 +398,15 @@ pub struct TlsConfig {
     #[serde(default)]
     pub acme_staging: bool,
 
+    /// ACME challenge type: "http-01" (default) or "dns-01".
+    /// DNS-01 is required for wildcard certificates.
+    #[serde(default = "default_acme_challenge")]
+    pub acme_challenge: String,
+
+    /// DNS provider configuration for ACME DNS-01 challenges.
+    /// Required when `acme_challenge = "dns-01"`.
+    pub acme_dns: Option<crate::tls::AcmeDnsConfig>,
+
     /// Path to CA certificate file for client cert verification (mTLS).
     /// Nginx equivalent: `ssl_client_certificate`.
     pub client_ca_path: Option<String>,
@@ -601,6 +610,10 @@ fn forward_auth_default_timeout() -> String {
 
 fn default_client_auth_type() -> String {
     "none".to_string()
+}
+
+fn default_acme_challenge() -> String {
+    "http-01".to_string()
 }
 
 /// Response body text substitution — Nginx `sub_filter` equivalent.

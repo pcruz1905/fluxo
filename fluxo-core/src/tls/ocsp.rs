@@ -53,7 +53,11 @@ impl OcspCache {
 fn parse_pem_chain(cert_pem_path: &str) -> Option<Vec<Vec<u8>>> {
     let pem_data = std::fs::read(cert_pem_path).ok()?;
     let pems = pem_crate::parse_many(&pem_data).ok()?;
-    Some(pems.into_iter().map(pem_crate::Pem::into_contents).collect())
+    Some(
+        pems.into_iter()
+            .map(pem_crate::Pem::into_contents)
+            .collect(),
+    )
 }
 
 /// Extract the OCSP responder URL from a PEM-encoded certificate chain.
@@ -120,11 +124,7 @@ fn build_ocsp_request(cert_pem_path: &str) -> Option<Vec<u8>> {
 }
 
 /// DER-encode an OCSP request with a single `CertID` using SHA-256.
-fn encode_ocsp_request(
-    issuer_name_hash: &[u8],
-    issuer_key_hash: &[u8],
-    serial: &[u8],
-) -> Vec<u8> {
+fn encode_ocsp_request(issuer_name_hash: &[u8], issuer_key_hash: &[u8], serial: &[u8]) -> Vec<u8> {
     // SHA-256 AlgorithmIdentifier: SEQUENCE { OID 2.16.840.1.101.3.4.2.1, NULL }
     let sha256_oid: &[u8] = &[
         0x30, 0x0d, // SEQUENCE, 13 bytes

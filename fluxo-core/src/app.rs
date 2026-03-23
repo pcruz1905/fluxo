@@ -149,7 +149,14 @@ impl FluxoApp {
             let challenge_state = self.proxy.challenge_state();
 
             let mut acme = AcmeManager::new(email, directory_url, cert_store.clone()).await?;
-            acme.obtain_cert(&domains, &challenge_state).await?;
+            if tls.acme_challenge == "dns-01" {
+                let dns_config = tls.acme_dns.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("acme_challenge = \"dns-01\" requires [acme_dns] configuration")
+                })?;
+                acme.obtain_cert_dns01(&domains, dns_config).await?;
+            } else {
+                acme.obtain_cert(&domains, &challenge_state).await?;
+            }
 
             self.resolved_tls.insert(
                 service_name.clone(),
@@ -246,6 +253,8 @@ impl FluxoApp {
                 directory_url,
                 email: tls.acme_email.clone().unwrap_or_default(),
                 domains,
+                challenge_type: tls.acme_challenge.clone(),
+                dns_config: tls.acme_dns.clone(),
             };
 
             let renewal_svc = CertRenewalService::new(
