@@ -356,6 +356,10 @@ pub struct ServiceConfig {
 }
 
 /// A listener address and protocol settings.
+///
+/// Supports HTTP/1.1 and HTTP/2 (with `offer_h2`). HTTP/3 (QUIC) is not yet
+/// available — Pingora does not support QUIC listeners as of v0.8. Planned for
+/// a future release via `tokio-quiche` or native Pingora HTTP/3 support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListenerConfig {
     /// Listen address (e.g., "0.0.0.0:443").

@@ -21,6 +21,7 @@ pub mod headers;
 pub mod ip_restrict;
 pub mod jwt_auth;
 pub mod key_auth;
+pub mod oauth2;
 pub mod path_rewrite;
 pub mod pipeline;
 pub mod rate_limit;
@@ -74,6 +75,7 @@ pub enum BuiltinPlugin {
     UaRestrict(ua_restrict::UaRestrictPlugin),
     StaticFiles(static_files::StaticFilesPlugin),
     TrafficSplit(traffic_split::TrafficSplitPlugin),
+    OAuth2(oauth2::OAuth2Plugin),
 }
 
 impl BuiltinPlugin {
@@ -101,6 +103,7 @@ impl BuiltinPlugin {
             Self::UaRestrict(p) => p.on_request(req, ctx),
             Self::StaticFiles(p) => p.on_request(req, ctx),
             Self::TrafficSplit(p) => p.on_request(req, ctx),
+            Self::OAuth2(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
@@ -118,6 +121,7 @@ impl BuiltinPlugin {
             Self::AddPrefix(p) => p.on_upstream_request(upstream_req, ctx),
             Self::PathRewrite(p) => p.on_upstream_request(upstream_req, ctx),
             Self::KeyAuth(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::OAuth2(p) => p.on_upstream_request(upstream_req, ctx),
             _ => {}
         }
     }

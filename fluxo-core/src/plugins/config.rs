@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, csrf, referer_restrict, ua_restrict, static_files, traffic_split)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, oauth2, csrf, referer_restrict, ua_restrict, static_files, traffic_split)"
     )]
     UnknownPlugin(String),
 
@@ -38,6 +38,7 @@ pub fn compile_plugins(
         "jwt_auth", // Auth first — reject unauthorized before doing any work
         "key_auth",
         "basic_auth",
+        "oauth2",
         "csrf",
         "ip_restrict",
         "referer_restrict",
@@ -306,6 +307,20 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                 }
             })?;
             Ok(BuiltinPlugin::KeyAuth(plugin))
+        }
+        "oauth2" => {
+            let cfg: super::oauth2::OAuth2Config =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::oauth2::OAuth2Plugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::OAuth2(plugin))
         }
         "csrf" => {
             let cfg: super::csrf::CsrfConfig =

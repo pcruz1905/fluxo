@@ -227,6 +227,10 @@ pub struct RequestContext {
     /// Dropped automatically when the context is dropped (end of request).
     pub concurrency_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 
+    // --- OAuth2/OIDC state ---
+    /// Bearer token extracted by the `OAuth2` plugin, forwarded to upstream.
+    pub oauth2_token: Option<String>,
+
     // --- Extensions map (Nginx $variable inspired) ---
     /// Arbitrary key-value data for inter-plugin communication.
     /// Plugins can store values in the request phase and read them in the response phase.
@@ -309,6 +313,7 @@ impl RequestContext {
             request_buffer_max_bytes: None,
             bandwidth_limit_bps: None,
             concurrency_permit: None,
+            oauth2_token: None,
             extensions: HashMap::new(),
         }
     }
