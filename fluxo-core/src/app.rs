@@ -316,3 +316,153 @@ impl FluxoApp {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn minimal_config() -> FluxoConfig {
+        use crate::config::{
+            FluxoConfig, GlobalConfig, ListenerConfig, RouteConfig, ServiceConfig, UpstreamConfig,
+        };
+
+        let mut services = HashMap::new();
+        services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                listeners: vec![ListenerConfig {
+                    address: "127.0.0.1:8080".to_string(),
+                    offer_h2: false,
+                    proxy_protocol: false,
+                }],
+                routes: vec![RouteConfig {
+                    match_path: vec!["/*".to_string()],
+                    upstream: "backend".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let mut upstreams = HashMap::new();
+        upstreams.insert(
+            "backend".to_string(),
+            UpstreamConfig {
+                targets: vec![crate::config::TargetConfig::Simple(
+                    "127.0.0.1:3000".to_string(),
+                )],
+                ..Default::default()
+            },
+        );
+
+        FluxoConfig {
+            global: GlobalConfig::default(),
+            services,
+            upstreams,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn from_config_succeeds() {
+        let config = minimal_config();
+        let app = FluxoApp::from_config(config);
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn config_returns_original() {
+        let config = minimal_config();
+        let app = FluxoApp::from_config(config.clone()).unwrap();
+        assert_eq!(app.config().global.admin, config.global.admin);
+    }
+
+    #[test]
+    fn resolved_tls_none_for_unknown_service() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        assert!(app.resolved_tls("nonexistent").is_none());
+    }
+
+    #[test]
+    fn cert_store_default_dir() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        let store = app.cert_store();
+        // Verify it doesn't panic — the store is constructed
+        let _ = format!("{store:?}");
+    }
+
+    #[test]
+    fn cert_store_custom_dir() {
+        let mut config = minimal_config();
+        config.global.cert_dir = Some("/tmp/test-certs".to_string());
+        let app = FluxoApp::from_config(config).unwrap();
+        let _store = app.cert_store();
+    }
+
+    #[test]
+    fn take_health_check_services_drains() {
+        let mut app = FluxoApp::from_config(minimal_config()).unwrap();
+        let svcs = app.take_health_check_services();
+        // After taking, vec should be empty
+        let svcs2 = app.take_health_check_services();
+        assert!(svcs2.is_empty());
+        // First call may or may not have services depending on config
+        let _ = svcs;
+    }
+
+    #[test]
+    fn reload_with_valid_config() {
+        let app = FluxoApp::from_config(minimal_config()).unwrap();
+        let result = app.reload(minimal_config());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn collect_acme_domains_no_wildcard() {
+        let mut svc = crate::config::ServiceConfig::default();
+        svc.routes.push(crate::config::RouteConfig {
+            match_host: vec!["example.com".to_string(), "api.example.com".to_string()],
+            ..Default::default()
+        });
+        let domains = collect_acme_domains(&svc);
+        assert!(domains.contains(&"example.com".to_string()));
+        assert!(domains.contains(&"api.example.com".to_string()));
+    }
+
+    #[test]
+    fn collect_acme_domains_filters_wildcards() {
+        let mut svc = crate::config::ServiceConfig::default();
+        svc.routes.push(crate::config::RouteConfig {
+            match_host: vec!["*.example.com".to_string(), "exact.com".to_string()],
+            ..Default::default()
+        });
+        let domains = collect_acme_domains(&svc);
+        assert!(!domains.iter().any(|d| d.starts_with('*')));
+        assert!(domains.contains(&"exact.com".to_string()));
+    }
+
+    #[test]
+    fn collect_acme_domains_empty_routes() {
+        let svc = crate::config::ServiceConfig::default();
+        let domains = collect_acme_domains(&svc);
+        assert!(domains.is_empty());
+    }
+
+    #[test]
+    fn from_config_with_path() {
+        let config = minimal_config();
+        let app = FluxoApp::from_config_with_path(
+            config,
+            Some(std::path::PathBuf::from("/etc/fluxo.toml")),
+        );
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn from_config_with_no_path() {
+        let config = minimal_config();
+        let app = FluxoApp::from_config_with_path(config, None);
+        assert!(app.is_ok());
+    }
+}

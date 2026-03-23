@@ -156,4 +156,76 @@ mod tests {
         );
         assert_eq!(fp.poll_interval, Duration::from_secs(10));
     }
+
+    #[test]
+    fn default_poll_interval() {
+        let fp = FileProvider::new(PathBuf::from("/tmp/test.toml"));
+        assert_eq!(fp.poll_interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn path_stored_correctly() {
+        let fp = FileProvider::new(PathBuf::from("/etc/fluxo/fluxo.toml"));
+        assert_eq!(fp.path, PathBuf::from("/etc/fluxo/fluxo.toml"));
+    }
+
+    #[test]
+    fn load_config_missing_file() {
+        let fp = FileProvider::new(PathBuf::from("/nonexistent/path/fluxo.toml"));
+        assert!(fp.load_config().is_err());
+    }
+
+    #[test]
+    fn load_config_valid_file() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("fluxo.toml");
+        let mut file = std::fs::File::create(&config_path).unwrap();
+        write!(
+            file,
+            r#"
+[global]
+admin = "127.0.0.1:2019"
+
+[services.web]
+listeners = [{{ address = "0.0.0.0:8080" }}]
+
+[[services.web.routes]]
+match_path = ["/*"]
+upstream = "backend"
+
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#
+        )
+        .unwrap();
+        drop(file);
+
+        let fp = FileProvider::new(config_path);
+        let result = fp.load_config();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_config_invalid_toml() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("bad.toml");
+        let mut file = std::fs::File::create(&config_path).unwrap();
+        write!(file, "this is not valid [[ toml {{}}").unwrap();
+        drop(file);
+
+        let fp = FileProvider::new(config_path);
+        assert!(fp.load_config().is_err());
+    }
+
+    #[test]
+    fn with_poll_interval_stores_path() {
+        let fp = FileProvider::with_poll_interval(
+            PathBuf::from("/custom/path.toml"),
+            Duration::from_secs(30),
+        );
+        assert_eq!(fp.path, PathBuf::from("/custom/path.toml"));
+        assert_eq!(fp.poll_interval, Duration::from_secs(30));
+    }
 }

@@ -201,3 +201,161 @@ impl pingora_core::services::background::BackgroundService for AdminService {
         connections.shutdown().await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    /// Mirror of the auth logic in `AdminService::check_auth`, extracted for
+    /// unit-testability without needing to construct `Request<Incoming>`.
+    ///
+    /// Returns `true` when the request is authorized (i.e. `check_auth` would
+    /// return `None`).
+    fn is_authorized(path: &str, auth_header: Option<&str>, expected_token: Option<&str>) -> bool {
+        let Some(expected) = expected_token else {
+            return true;
+        };
+
+        if path == "/health" {
+            return true;
+        }
+
+        auth_header
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .is_some_and(|token| token == expected)
+    }
+
+    // ---- no auth configured ----
+
+    #[test]
+    fn no_auth_configured_always_passes() {
+        assert!(is_authorized("/metrics", None, None));
+        assert!(is_authorized("/config", None, None));
+        assert!(is_authorized("/reload", None, None));
+        assert!(is_authorized("/health", None, None));
+    }
+
+    // ---- /health exemption ----
+
+    #[test]
+    fn health_exempt_without_header() {
+        assert!(is_authorized("/health", None, Some("secret")));
+    }
+
+    #[test]
+    fn health_exempt_with_wrong_token() {
+        assert!(is_authorized(
+            "/health",
+            Some("Bearer wrong"),
+            Some("secret")
+        ));
+    }
+
+    #[test]
+    fn health_exempt_with_garbage_header() {
+        assert!(is_authorized("/health", Some("garbage"), Some("secret")));
+    }
+
+    // ---- valid bearer token ----
+
+    #[test]
+    fn valid_bearer_token_passes() {
+        assert!(is_authorized(
+            "/metrics",
+            Some("Bearer secret"),
+            Some("secret"),
+        ));
+    }
+
+    #[test]
+    fn valid_bearer_token_different_path() {
+        assert!(is_authorized(
+            "/config",
+            Some("Bearer my-token"),
+            Some("my-token"),
+        ));
+    }
+
+    // ---- invalid / missing token ----
+
+    #[test]
+    fn wrong_bearer_token_rejected() {
+        assert!(!is_authorized(
+            "/metrics",
+            Some("Bearer wrong"),
+            Some("secret"),
+        ));
+    }
+
+    #[test]
+    fn missing_auth_header_rejected() {
+        assert!(!is_authorized("/metrics", None, Some("secret")));
+    }
+
+    #[test]
+    fn non_bearer_scheme_rejected() {
+        assert!(!is_authorized(
+            "/metrics",
+            Some("Basic dXNlcjpwYXNz"),
+            Some("secret"),
+        ));
+    }
+
+    #[test]
+    fn empty_bearer_value_rejected() {
+        assert!(!is_authorized("/metrics", Some("Bearer "), Some("secret")));
+    }
+
+    #[test]
+    fn bearer_prefix_without_space_rejected() {
+        assert!(!is_authorized(
+            "/metrics",
+            Some("Bearersecret"),
+            Some("secret"),
+        ));
+    }
+
+    // ---- all non-health paths require auth ----
+
+    #[test]
+    fn all_paths_require_auth_except_health() {
+        let paths = [
+            "/metrics",
+            "/config",
+            "/reload",
+            "/cache/purge",
+            "/upstreams",
+        ];
+        for path in &paths {
+            assert!(
+                !is_authorized(path, None, Some("token")),
+                "path {path} should require auth when no header is provided",
+            );
+        }
+    }
+
+    // ---- edge cases ----
+
+    #[test]
+    fn token_with_whitespace_must_match_exactly() {
+        assert!(is_authorized(
+            "/metrics",
+            Some("Bearer  spaces "),
+            Some(" spaces "),
+        ));
+        assert!(!is_authorized(
+            "/metrics",
+            Some("Bearer spaces"),
+            Some(" spaces "),
+        ));
+    }
+
+    #[test]
+    fn case_sensitive_token() {
+        assert!(!is_authorized(
+            "/metrics",
+            Some("Bearer SECRET"),
+            Some("secret"),
+        ));
+    }
+}

@@ -212,4 +212,54 @@ mod tests {
         assert!(AcmeManager::lets_encrypt_production().contains("acme-v02"));
         assert!(AcmeManager::lets_encrypt_staging().contains("staging"));
     }
+
+    #[test]
+    fn extract_host_no_scheme() {
+        assert_eq!(extract_host("example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn extract_host_http_scheme() {
+        assert_eq!(extract_host("http://localhost:8080/api"), "localhost:8080");
+    }
+
+    #[test]
+    fn extract_host_bare_domain() {
+        assert_eq!(extract_host("example.com"), "example.com");
+    }
+
+    #[test]
+    fn extract_host_trailing_slash() {
+        assert_eq!(
+            extract_host("https://acme.example.com/"),
+            "acme.example.com"
+        );
+    }
+
+    #[test]
+    fn extract_host_empty_string() {
+        assert_eq!(extract_host(""), "");
+    }
+
+    #[test]
+    fn acme_error_display() {
+        let err = AcmeError::NoHttp01Challenge("example.com".to_string());
+        assert!(err.to_string().contains("example.com"));
+        assert!(err.to_string().contains("HTTP-01"));
+
+        let err = AcmeError::OrderFailed("timeout".to_string());
+        assert!(err.to_string().contains("timeout"));
+
+        let err = AcmeError::Other("something went wrong".to_string());
+        assert!(err.to_string().contains("something went wrong"));
+    }
+
+    #[test]
+    fn lets_encrypt_urls_are_different() {
+        let prod = AcmeManager::lets_encrypt_production();
+        let staging = AcmeManager::lets_encrypt_staging();
+        assert_ne!(prod, staging);
+        assert!(prod.starts_with("https://"));
+        assert!(staging.starts_with("https://"));
+    }
 }

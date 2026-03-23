@@ -399,4 +399,283 @@ mod tests {
     fn extract_sni_too_short() {
         assert_eq!(TcpProxy::extract_sni(&[0x16, 0x03, 0x01]), None);
     }
+
+    // ── Helper ────────────────────────────────────────────────────────
+
+    /// Build a minimal TLS 1.2 ClientHello with an SNI extension.
+    fn build_client_hello_with_sni(hostname: &str) -> Vec<u8> {
+        let name_bytes = hostname.as_bytes();
+        let name_len = name_bytes.len();
+
+        // SNI extension data: list_len(2) + type(1) + name_len(2) + name
+        let sni_ext_data_len = 2 + 1 + 2 + name_len;
+        // Extension header: type(2) + length(2) + data
+        let sni_ext_len = 4 + sni_ext_data_len;
+        // Extensions block: total_len(2) + extensions
+        let extensions_len = 2 + sni_ext_len;
+
+        // Handshake body: version(2) + random(32) + session_id_len(1)
+        //   + cipher_suites_len(2) + cipher(2) + comp_len(1) + comp(1) + extensions
+        let handshake_body_len = 2 + 32 + 1 + 2 + 2 + 1 + 1 + extensions_len;
+        let handshake_len = 1 + 3 + handshake_body_len; // type + 3-byte length + body
+
+        let mut buf = Vec::new();
+
+        // TLS record header
+        buf.push(0x16); // ContentType: Handshake
+        buf.extend_from_slice(&[0x03, 0x01]); // TLS 1.0 record version
+        buf.extend_from_slice(&(handshake_len as u16).to_be_bytes());
+
+        // Handshake header
+        buf.push(0x01); // HandshakeType: ClientHello
+        // 3-byte length
+        buf.push(0);
+        buf.extend_from_slice(&(handshake_body_len as u16).to_be_bytes());
+
+        // ClientHello body
+        buf.extend_from_slice(&[0x03, 0x03]); // Version: TLS 1.2
+        buf.extend_from_slice(&[0u8; 32]); // Random
+        buf.push(0); // Session ID length: 0
+        buf.extend_from_slice(&2u16.to_be_bytes()); // Cipher suites length: 2
+        buf.extend_from_slice(&[0x00, 0x2F]); // TLS_RSA_WITH_AES_128_CBC_SHA
+        buf.push(1); // Compression methods length: 1
+        buf.push(0); // null compression
+
+        // Extensions
+        buf.extend_from_slice(&(sni_ext_len as u16).to_be_bytes()); // Extensions total length
+
+        // SNI extension
+        buf.extend_from_slice(&[0x00, 0x00]); // Extension type: SNI
+        buf.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
+        buf.extend_from_slice(&((1 + 2 + name_len) as u16).to_be_bytes()); // Server name list length
+        buf.push(0x00); // Name type: hostname
+        buf.extend_from_slice(&(name_len as u16).to_be_bytes());
+        buf.extend_from_slice(name_bytes);
+
+        buf
+    }
+
+    /// Build a minimal TLS 1.2 ClientHello with NO extensions at all.
+    fn build_client_hello_no_extensions() -> Vec<u8> {
+        // Handshake body: version(2) + random(32) + session_id_len(1)
+        //   + cipher_suites_len(2) + cipher(2) + comp_len(1) + comp(1) = 41
+        let handshake_body_len: usize = 2 + 32 + 1 + 2 + 2 + 1 + 1;
+        let handshake_len = 1 + 3 + handshake_body_len;
+
+        let mut buf = Vec::new();
+
+        // TLS record header
+        buf.push(0x16);
+        buf.extend_from_slice(&[0x03, 0x01]);
+        buf.extend_from_slice(&(handshake_len as u16).to_be_bytes());
+
+        // Handshake header
+        buf.push(0x01); // ClientHello
+        buf.push(0);
+        buf.extend_from_slice(&(handshake_body_len as u16).to_be_bytes());
+
+        // ClientHello body (no extensions)
+        buf.extend_from_slice(&[0x03, 0x03]);
+        buf.extend_from_slice(&[0u8; 32]);
+        buf.push(0); // session ID len
+        buf.extend_from_slice(&2u16.to_be_bytes());
+        buf.extend_from_slice(&[0x00, 0x2F]);
+        buf.push(1);
+        buf.push(0);
+
+        buf
+    }
+
+    fn make_config(targets: Vec<&str>, max_connections: u32) -> TcpServiceConfig {
+        TcpServiceConfig {
+            listen: "0.0.0.0:0".to_string(),
+            targets: targets.into_iter().map(String::from).collect(),
+            sni_routes: Default::default(),
+            connect_timeout: "5s".to_string(),
+            proxy_protocol: false,
+            max_connections,
+        }
+    }
+
+    // ── SNI extraction tests ──────────────────────────────────────────
+
+    #[test]
+    fn extract_sni_valid_client_hello() {
+        let buf = build_client_hello_with_sni("example.com");
+        assert_eq!(TcpProxy::extract_sni(&buf), Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn extract_sni_long_hostname() {
+        let hostname = "very-long-subdomain.deeply.nested.example.com";
+        let buf = build_client_hello_with_sni(hostname);
+        assert_eq!(TcpProxy::extract_sni(&buf), Some(hostname.to_string()));
+    }
+
+    #[test]
+    fn extract_sni_no_extensions() {
+        let buf = build_client_hello_no_extensions();
+        assert_eq!(TcpProxy::extract_sni(&buf), None);
+    }
+
+    #[test]
+    fn extract_sni_empty_buffer() {
+        assert_eq!(TcpProxy::extract_sni(&[]), None);
+    }
+
+    #[test]
+    fn extract_sni_tls_record_header_only() {
+        // 5 bytes: valid TLS record header but handshake_len says more data
+        // than is present.
+        let buf = [0x16, 0x03, 0x01, 0x00, 0x50]; // claims 80 bytes follow
+        assert_eq!(TcpProxy::extract_sni(&buf), None);
+    }
+
+    #[test]
+    fn extract_sni_wrong_handshake_type() {
+        // Build a valid-looking TLS record but with handshake type 0x02
+        // (ServerHello) instead of 0x01 (ClientHello).
+        let mut buf = build_client_hello_with_sni("example.com");
+        // The handshake type byte is at offset 5 (right after 5-byte record header).
+        buf[5] = 0x02;
+        assert_eq!(TcpProxy::extract_sni(&buf), None);
+    }
+
+    #[test]
+    fn extract_sni_not_tls_content_type() {
+        // Content type 0x17 = Application Data, not Handshake (0x16)
+        let buf = [0x17, 0x03, 0x01, 0x00, 0x05, 0x01, 0x00, 0x00, 0x01, 0x00];
+        assert_eq!(TcpProxy::extract_sni(&buf), None);
+    }
+
+    // ── Connection limiting tests ─────────────────────────────────────
+
+    #[test]
+    fn try_acquire_unlimited_always_allows() {
+        let proxy = TcpProxy::new(make_config(vec!["a:80"], 0));
+        // Should always succeed when max_connections = 0
+        for _ in 0..100 {
+            assert!(proxy.try_acquire_connection());
+        }
+    }
+
+    #[test]
+    fn try_acquire_respects_limit() {
+        let proxy = TcpProxy::new(make_config(vec!["a:80"], 2));
+        assert!(proxy.try_acquire_connection()); // 1st
+        assert!(proxy.try_acquire_connection()); // 2nd
+        assert!(!proxy.try_acquire_connection()); // 3rd — rejected
+    }
+
+    #[test]
+    fn release_allows_new_connection() {
+        let proxy = TcpProxy::new(make_config(vec!["a:80"], 2));
+        assert!(proxy.try_acquire_connection());
+        assert!(proxy.try_acquire_connection());
+        assert!(!proxy.try_acquire_connection()); // full
+
+        proxy.release_connection(); // free one slot
+        assert!(proxy.try_acquire_connection()); // should succeed now
+        assert!(!proxy.try_acquire_connection()); // full again
+    }
+
+    #[test]
+    fn concurrent_acquire_release_correct_count() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let proxy = Arc::new(TcpProxy::new(make_config(vec!["a:80"], 0)));
+        let mut handles = vec![];
+
+        // Spawn threads that each acquire, then release
+        for _ in 0..50 {
+            let p = Arc::clone(&proxy);
+            handles.push(thread::spawn(move || {
+                assert!(p.try_acquire_connection());
+                // Simulate work
+                thread::yield_now();
+                p.release_connection();
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        // All connections released — counter should be back to 0
+        assert_eq!(
+            proxy
+                .active_connections
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    // ── Select target edge cases ──────────────────────────────────────
+
+    #[test]
+    fn select_target_sni_route_round_robin() {
+        let mut sni_routes = std::collections::HashMap::new();
+        sni_routes.insert(
+            "db.example.com".to_string(),
+            vec![
+                "db1:3306".to_string(),
+                "db2:3306".to_string(),
+                "db3:3306".to_string(),
+            ],
+        );
+        let config = TcpServiceConfig {
+            listen: "0.0.0.0:3306".to_string(),
+            targets: vec!["default:3306".to_string()],
+            sni_routes,
+            connect_timeout: "5s".to_string(),
+            proxy_protocol: false,
+            max_connections: 0,
+        };
+        let proxy = TcpProxy::new(config);
+        assert_eq!(
+            proxy.select_target(Some("db.example.com")),
+            Some("db1:3306".to_string())
+        );
+        assert_eq!(
+            proxy.select_target(Some("db.example.com")),
+            Some("db2:3306".to_string())
+        );
+        assert_eq!(
+            proxy.select_target(Some("db.example.com")),
+            Some("db3:3306".to_string())
+        );
+        // Wraps around
+        assert_eq!(
+            proxy.select_target(Some("db.example.com")),
+            Some("db1:3306".to_string())
+        );
+    }
+
+    #[test]
+    fn select_target_sni_route_empty_targets_falls_through() {
+        let mut sni_routes = std::collections::HashMap::new();
+        sni_routes.insert("empty.example.com".to_string(), vec![]);
+        let config = TcpServiceConfig {
+            listen: "0.0.0.0:443".to_string(),
+            targets: vec!["fallback:443".to_string()],
+            sni_routes,
+            connect_timeout: "5s".to_string(),
+            proxy_protocol: false,
+            max_connections: 0,
+        };
+        let proxy = TcpProxy::new(config);
+        // Empty SNI route should fall through to default targets
+        assert_eq!(
+            proxy.select_target(Some("empty.example.com")),
+            Some("fallback:443".to_string())
+        );
+    }
+
+    #[test]
+    fn select_target_single_default_always_same() {
+        let proxy = TcpProxy::new(make_config(vec!["only:80"], 0));
+        for _ in 0..10 {
+            assert_eq!(proxy.select_target(None), Some("only:80".to_string()));
+        }
+    }
 }

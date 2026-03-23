@@ -72,4 +72,67 @@ mod tests {
         assert_eq!(state.get("a"), Some("auth-a".to_string()));
         assert_eq!(state.get("b"), Some("auth-b".to_string()));
     }
+
+    #[test]
+    fn overwrite_existing_token() {
+        let state = ChallengeState::new();
+        state.set("token1".to_string(), "auth1".to_string());
+        state.set("token1".to_string(), "auth2".to_string());
+        assert_eq!(state.get("token1"), Some("auth2".to_string()));
+    }
+
+    #[test]
+    fn remove_nonexistent_token() {
+        let state = ChallengeState::new();
+        state.remove("nonexistent"); // should not panic
+        assert!(state.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn default_is_empty() {
+        let state = ChallengeState::default();
+        assert!(state.get("any").is_none());
+    }
+
+    #[test]
+    fn new_is_empty() {
+        let state = ChallengeState::new();
+        assert!(state.get("token").is_none());
+    }
+
+    #[test]
+    fn concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let state = Arc::new(ChallengeState::new());
+        let mut handles = vec![];
+
+        for i in 0..10 {
+            let s = Arc::clone(&state);
+            handles.push(thread::spawn(move || {
+                let token = format!("token_{i}");
+                let auth = format!("auth_{i}");
+                s.set(token.clone(), auth.clone());
+                assert_eq!(s.get(&token), Some(auth));
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All 10 tokens should be present
+        for i in 0..10 {
+            assert!(state.get(&format!("token_{i}")).is_some());
+        }
+    }
+
+    #[test]
+    fn debug_format() {
+        let state = ChallengeState::new();
+        state.set("tok".to_string(), "auth".to_string());
+        let debug = format!("{state:?}");
+        assert!(debug.contains("ChallengeState"));
+    }
 }
