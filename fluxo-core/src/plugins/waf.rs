@@ -683,9 +683,12 @@ mod tests {
         );
 
         // XSS should pass since it's disabled
-        let req2 =
-            pingora_http::RequestHeader::build("GET", b"/page?q=<script>alert(1)</script>", None)
-                .unwrap();
+        let req2 = pingora_http::RequestHeader::build(
+            "GET",
+            b"/page?q=%3Cscript%3Ealert(1)%3C/script%3E",
+            None,
+        )
+        .unwrap();
         let mut ctx2 = RequestContext::new();
         assert_eq!(plugin.on_request(&req2, &mut ctx2), PluginAction::Continue);
     }
