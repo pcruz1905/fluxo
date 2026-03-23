@@ -42,11 +42,10 @@ enum RefererPattern {
 
 impl RefererPattern {
     fn parse(pattern: &str) -> Self {
-        if let Some(suffix) = pattern.strip_prefix("*.") {
-            Self::WildcardSuffix(suffix.to_lowercase())
-        } else {
-            Self::Exact(pattern.to_lowercase())
-        }
+        pattern.strip_prefix("*.").map_or_else(
+            || Self::Exact(pattern.to_lowercase()),
+            |suffix| Self::WildcardSuffix(suffix.to_lowercase()),
+        )
     }
 
     fn matches(&self, domain: &str) -> bool {
@@ -63,7 +62,7 @@ impl RefererPattern {
 }
 
 impl RefererRestrictPlugin {
-    pub fn new(cfg: RefererRestrictConfig) -> Self {
+    pub fn new(cfg: &RefererRestrictConfig) -> Self {
         Self {
             allow: cfg.allow.iter().map(|p| RefererPattern::parse(p)).collect(),
             deny: cfg.deny.iter().map(|p| RefererPattern::parse(p)).collect(),
@@ -137,7 +136,7 @@ mod tests {
 
     #[test]
     fn exact_match_allows() {
-        let plugin = RefererRestrictPlugin::new(RefererRestrictConfig {
+        let plugin = RefererRestrictPlugin::new(&RefererRestrictConfig {
             allow: vec!["example.com".to_string()],
             deny: vec![],
             allow_empty: true,
@@ -151,7 +150,7 @@ mod tests {
 
     #[test]
     fn wildcard_match_allows() {
-        let plugin = RefererRestrictPlugin::new(RefererRestrictConfig {
+        let plugin = RefererRestrictPlugin::new(&RefererRestrictConfig {
             allow: vec!["*.example.com".to_string()],
             deny: vec![],
             allow_empty: true,
@@ -165,7 +164,7 @@ mod tests {
 
     #[test]
     fn deny_list_blocks() {
-        let plugin = RefererRestrictPlugin::new(RefererRestrictConfig {
+        let plugin = RefererRestrictPlugin::new(&RefererRestrictConfig {
             allow: vec![],
             deny: vec!["evil.com".to_string()],
             allow_empty: true,
@@ -182,7 +181,7 @@ mod tests {
 
     #[test]
     fn empty_referer_allowed_by_default() {
-        let plugin = RefererRestrictPlugin::new(RefererRestrictConfig {
+        let plugin = RefererRestrictPlugin::new(&RefererRestrictConfig {
             allow: vec!["example.com".to_string()],
             deny: vec![],
             allow_empty: true,
@@ -194,7 +193,7 @@ mod tests {
 
     #[test]
     fn empty_referer_blocked_when_configured() {
-        let plugin = RefererRestrictPlugin::new(RefererRestrictConfig {
+        let plugin = RefererRestrictPlugin::new(&RefererRestrictConfig {
             allow: vec!["example.com".to_string()],
             deny: vec![],
             allow_empty: false,

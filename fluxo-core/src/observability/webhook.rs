@@ -67,10 +67,9 @@ impl WebhookSender {
     }
 
     /// Send a notification to all configured webhooks that match the event type.
-    pub fn notify(&self, payload: WebhookPayload) {
-        let json = match serde_json::to_string(&payload) {
-            Ok(j) => j,
-            Err(_) => return,
+    pub fn notify(&self, payload: &WebhookPayload) {
+        let Ok(json) = serde_json::to_string(&payload) else {
+            return;
         };
 
         for config in &self.configs {
@@ -103,7 +102,7 @@ impl WebhookSender {
     /// Send a health change notification.
     pub fn notify_health_change(&self, upstream: &str, target: &str, healthy: bool) {
         let status = if healthy { "healthy" } else { "unhealthy" };
-        self.notify(WebhookPayload {
+        self.notify(&WebhookPayload {
             event: "health_change".to_string(),
             timestamp: super::access_log::chrono_now_rfc3339(),
             message: format!("upstream {upstream} target {target} is now {status}"),
@@ -122,7 +121,7 @@ impl WebhookSender {
 
     /// Send a config reload notification.
     pub fn notify_config_reload(&self, success: bool, error: Option<&str>) {
-        self.notify(WebhookPayload {
+        self.notify(&WebhookPayload {
             event: "config_reload".to_string(),
             timestamp: super::access_log::chrono_now_rfc3339(),
             message: if success {
@@ -144,7 +143,7 @@ impl WebhookSender {
 
     /// Send a circuit breaker state change notification.
     pub fn notify_circuit_breaker(&self, upstream: &str, state: &str) {
-        self.notify(WebhookPayload {
+        self.notify(&WebhookPayload {
             event: "circuit_breaker".to_string(),
             timestamp: super::access_log::chrono_now_rfc3339(),
             message: format!("circuit breaker for upstream {upstream} is now {state}"),
@@ -164,7 +163,8 @@ impl WebhookSender {
 impl std::fmt::Debug for WebhookSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebhookSender")
-            .field("webhook_count", &self.configs.len())
+            .field("configs", &self.configs)
+            .field("client", &"reqwest::Client")
             .finish()
     }
 }

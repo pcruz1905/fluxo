@@ -150,6 +150,7 @@ impl TrafficSplitPlugin {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn read_sticky_cookie(
         &self,
         req: &pingora_http::RequestHeader,

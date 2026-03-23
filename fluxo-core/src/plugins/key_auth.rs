@@ -83,9 +83,7 @@ impl KeyAuthPlugin {
         req: &pingora_http::RequestHeader,
         ctx: &mut RequestContext,
     ) -> PluginAction {
-        let key = if let Some(k) = self.extract_key(req) {
-            k
-        } else {
+        let Some(key) = self.extract_key(req) else {
             ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
             return PluginAction::Handled(401);
         };

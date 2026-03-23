@@ -66,9 +66,7 @@ impl StaticFilesPlugin {
         let path = req.uri.path();
 
         // Resolve the file path, preventing directory traversal
-        let resolved = if let Some(p) = self.resolve_path(path) {
-            p
-        } else {
+        let Some(resolved) = self.resolve_path(path) else {
             ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 403 });
             return PluginAction::Handled(403);
         };
@@ -132,30 +130,29 @@ impl StaticFilesPlugin {
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn serve_file(
         &self,
         path: &std::path::Path,
         req: &pingora_http::RequestHeader,
         ctx: &mut RequestContext,
     ) -> PluginAction {
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => {
-                return PluginAction::Continue; // Fall through
-            }
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return PluginAction::Continue; // Fall through
         };
 
         let size = metadata.len();
 
         // ETag from modification time + size
-        let etag = if let Ok(modified) = metadata.modified() {
-            let dur = modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            format!("\"{:x}-{:x}\"", dur.as_secs(), size)
-        } else {
-            format!("\"{size:x}\"")
-        };
+        let etag = metadata.modified().map_or_else(
+            |_| format!("\"{size:x}\""),
+            |modified| {
+                let dur = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                format!("\"{:x}-{:x}\"", dur.as_secs(), size)
+            },
+        );
 
         // Check If-None-Match for 304
         if let Some(inm) = req
@@ -174,9 +171,7 @@ impl StaticFilesPlugin {
         }
 
         // Read the file
-        let body = if let Ok(b) = std::fs::read(path) {
-            b
-        } else {
+        let Ok(body) = std::fs::read(path) else {
             ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 500 });
             return PluginAction::Handled(500);
         };
@@ -213,6 +208,7 @@ impl StaticFilesPlugin {
         PluginAction::Handled(200)
     }
 
+    #[allow(clippy::unused_self)]
     fn serve_directory_listing(
         &self,
         dir: &std::path::Path,
@@ -220,9 +216,7 @@ impl StaticFilesPlugin {
         ctx: &mut RequestContext,
     ) -> PluginAction {
         let mut entries = Vec::new();
-        let read_dir = if let Ok(rd) = std::fs::read_dir(dir) {
-            rd
-        } else {
+        let Ok(read_dir) = std::fs::read_dir(dir) else {
             ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 500 });
             return PluginAction::Handled(500);
         };

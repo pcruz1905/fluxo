@@ -413,7 +413,7 @@ fn build_tls_settings(
 /// On `BoringSSL`, `TlsSettings` derefs to `SslAcceptorBuilder` which exposes the full
 /// OpenSSL configuration API. On rustls, these settings are not configurable via Pingora's
 /// API, so this is a no-op (a warning is logged if the user specified custom settings).
-#[allow(unused_variables)]
+#[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
 fn apply_tls_options(settings: &mut pingora::listeners::tls::TlsSettings, tls: &config::TlsConfig) {
     let has_custom = tls.cipher_list.is_some()
         || tls.tls13_ciphersuites.is_some()

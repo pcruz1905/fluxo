@@ -121,14 +121,12 @@ impl JwtAuthPlugin {
         req: &pingora_http::RequestHeader,
         ctx: &mut RequestContext,
     ) -> PluginAction {
-        let token = if let Some(t) = self.extract_token(req) {
-            t
-        } else {
+        let Some(token) = self.extract_token(req) else {
             ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
             return PluginAction::Handled(401);
         };
 
-        if let Ok(()) = self.validate_token(&token) {
+        if self.validate_token(&token) == Ok(()) {
             PluginAction::Continue
         } else {
             ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
@@ -141,13 +139,12 @@ impl JwtAuthPlugin {
             TokenSource::Header => {
                 let val = req.headers.get(&self.header_name)?.to_str().ok()?;
                 // Strip "Bearer " prefix if present
-                if let Some(stripped) = val.strip_prefix("Bearer ") {
-                    Some(stripped.to_string())
-                } else if let Some(stripped) = val.strip_prefix("bearer ") {
-                    Some(stripped.to_string())
-                } else {
-                    Some(val.to_string())
-                }
+                Some(
+                    val.strip_prefix("Bearer ")
+                        .or_else(|| val.strip_prefix("bearer "))
+                        .unwrap_or(val)
+                        .to_string(),
+                )
             }
             TokenSource::Query => {
                 let uri = &req.uri;

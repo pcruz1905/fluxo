@@ -36,7 +36,7 @@ fn default_job_name() -> String {
 
 /// Start the Prometheus push background task.
 pub fn start_prometheus_push(
-    config: PrometheusPushConfig,
+    config: &PrometheusPushConfig,
     registry: Arc<crate::observability::MetricsRegistry>,
 ) {
     let Some(url) = config.url.clone() else {
@@ -50,19 +50,18 @@ pub fn start_prometheus_push(
         .instance
         .clone()
         .unwrap_or_else(|| hostname().unwrap_or_else(|| "unknown".to_string()));
-    let labels = config.labels;
+    let labels = config.labels.clone();
     let log_url = url.clone();
 
     tokio::spawn(async move {
-        let client = match reqwest::Client::builder()
+        let Ok(client) = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
+            .inspect_err(|e| {
                 tracing::error!(error = %e, "failed to create HTTP client for Prometheus push");
-                return;
-            }
+            })
+        else {
+            return;
         };
 
         let mut ticker = tokio::time::interval(interval);

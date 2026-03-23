@@ -328,7 +328,7 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                     reason: e.to_string(),
                 })?;
             Ok(BuiltinPlugin::RefererRestrict(
-                super::referer_restrict::RefererRestrictPlugin::new(cfg),
+                super::referer_restrict::RefererRestrictPlugin::new(&cfg),
             ))
         }
         "ua_restrict" => {
