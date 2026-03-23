@@ -102,7 +102,7 @@ impl std::fmt::Debug for CacheLockManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CacheLockManager")
             .field("lock_timeout", &self.lock_timeout)
-            .field("active_locks", &self.active_locks())
+            .field("locks", &self.active_locks())
             .finish()
     }
 }

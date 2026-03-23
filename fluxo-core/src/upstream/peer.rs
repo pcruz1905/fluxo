@@ -693,6 +693,8 @@ mod tests {
             dns_hostname: None,
             dns_port: 80,
             dns_refresh_interval: "30s".to_string(),
+            hash_key: "url".to_string(),
+            hash_key_name: None,
         };
         let t = UpstreamTimeouts::from_config(&uc);
         assert_eq!(t.connect, Duration::from_secs(3));
