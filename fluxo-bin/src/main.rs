@@ -126,8 +126,12 @@ fn main() -> anyhow::Result<()> {
         fluxo_core::observability::init_syslog(syslog_config);
     }
 
-    // Initialize disk cache storage (if configured)
-    if let Some(ref cache_dir) = fluxo_config.global.cache_dir {
+    // Initialize cache storage based on eviction strategy
+    if fluxo_config.global.cache_eviction == "tinyufo" {
+        let capacity = fluxo_config.global.cache_tinyufo_capacity;
+        fluxo_core::proxy::init_tinyufo_cache(capacity);
+        tracing::info!(capacity, "TinyUFO in-memory cache initialized");
+    } else if let Some(ref cache_dir) = fluxo_config.global.cache_dir {
         let max_size =
             fluxo_core::cache::DiskCache::parse_max_size(&fluxo_config.global.cache_max_disk_size);
         let cache_path = std::path::PathBuf::from(cache_dir);
@@ -136,6 +140,24 @@ fn main() -> anyhow::Result<()> {
         } else {
             fluxo_core::proxy::init_disk_cache(cache_path, max_size);
             tracing::info!(path = %cache_dir, max_size_bytes = max_size, "disk cache initialized");
+        }
+    }
+
+    // Initialize named cache zones
+    if !fluxo_config.global.cache_zones.is_empty() {
+        let mut zones = std::collections::HashMap::new();
+        for (name, zone_cfg) in &fluxo_config.global.cache_zones {
+            let zone_path = std::path::PathBuf::from(&zone_cfg.path);
+            let max_size = fluxo_core::cache::DiskCache::parse_max_size(&zone_cfg.max_size);
+            if let Err(e) = std::fs::create_dir_all(&zone_path) {
+                tracing::warn!(zone = %name, path = %zone_cfg.path, error = %e, "failed to create cache zone directory");
+                continue;
+            }
+            tracing::info!(zone = %name, path = %zone_cfg.path, max_size_bytes = max_size, "cache zone initialized");
+            zones.insert(name.clone(), (zone_path, max_size));
+        }
+        if !zones.is_empty() {
+            fluxo_core::proxy::init_cache_zones(zones);
         }
     }
 

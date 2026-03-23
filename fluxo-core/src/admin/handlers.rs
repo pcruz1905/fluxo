@@ -175,18 +175,24 @@ pub fn handle_reload(
     }
 }
 
-/// POST /cache/purge — purge cached entries by key.
+/// POST /cache/purge — purge cached entries.
 ///
-/// Accepts JSON body with fields to build the cache key:
-/// ```json
-/// { "host": "example.com", "path": "/api/users", "method": "GET" }
-/// ```
+/// Supports four purge modes:
+///
+/// **Exact** (by key): `{ "host": "example.com", "path": "/api/users", "method": "GET" }`
 /// - `host` (required): the Host header value
-/// - `path` (required): the request path (include query string if the route caches it)
+/// - `path` (required): the request path
 /// - `method` (optional, default "GET"): the HTTP method
+/// - Returns `{"purged": true|false}`
 ///
-/// Returns `{"purged": true}` if the entry was found and removed,
-/// `{"purged": false}` if no matching entry existed.
+/// **Pattern** (glob on primary key): `{ "pattern": "*example.com/api/*" }`
+/// - Returns `{"purged_count": N}`
+///
+/// **Tag** (match stored cache tags): `{ "tag": "product-123" }`
+/// - Returns `{"purged_count": N}`
+///
+/// **All** (purge everything): `{ "purge_all": true }`
+/// - Returns `{"purged_count": N}`
 pub async fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
     let request: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -198,6 +204,53 @@ pub async fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
         }
     };
 
+    // --- Purge all ---
+    if request
+        .get("purge_all")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return match crate::proxy::global_disk_cache() {
+            Some(disk) => {
+                let count = disk.purge_all();
+                json_response(200, &serde_json::json!({"purged_count": count}))
+            }
+            None => json_response(
+                400,
+                &serde_json::json!({"error": "disk cache not configured; purge_all requires disk cache"}),
+            ),
+        };
+    }
+
+    // --- Pattern-based purge ---
+    if let Some(pattern) = request.get("pattern").and_then(|v| v.as_str()) {
+        return match crate::proxy::global_disk_cache() {
+            Some(disk) => {
+                let count = disk.purge_by_pattern(pattern);
+                json_response(200, &serde_json::json!({"purged_count": count}))
+            }
+            None => json_response(
+                400,
+                &serde_json::json!({"error": "disk cache not configured; pattern purge requires disk cache"}),
+            ),
+        };
+    }
+
+    // --- Tag-based purge ---
+    if let Some(tag) = request.get("tag").and_then(|v| v.as_str()) {
+        return match crate::proxy::global_disk_cache() {
+            Some(disk) => {
+                let count = disk.purge_by_tag(tag);
+                json_response(200, &serde_json::json!({"purged_count": count}))
+            }
+            None => json_response(
+                400,
+                &serde_json::json!({"error": "disk cache not configured; tag purge requires disk cache"}),
+            ),
+        };
+    }
+
+    // --- Exact key purge (existing behavior) ---
     let Some(host) = request.get("host").and_then(|v| v.as_str()) else {
         return json_response(
             400,
@@ -898,5 +951,56 @@ match_host = ["test.com"]
             assert!(status == 200 || status == 500);
             let _ = body;
         }
+    }
+
+    // --- Pattern / tag / purge_all handler tests ---
+    // These test the handler logic without a disk cache (verifies error paths).
+
+    #[tokio::test]
+    async fn cache_purge_pattern_no_disk_cache() {
+        let body = br#"{"pattern": "*example.com/api/*"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        // Without disk cache initialized, pattern purge returns 400
+        assert_eq!(status, 400);
+        assert!(resp.contains("disk cache not configured"));
+        assert!(resp.contains("pattern"));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_tag_no_disk_cache() {
+        let body = br#"{"tag": "product-123"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("disk cache not configured"));
+        assert!(resp.contains("tag"));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_all_no_disk_cache() {
+        let body = br#"{"purge_all": true}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("disk cache not configured"));
+        assert!(resp.contains("purge_all"));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_all_false_falls_through_to_exact() {
+        // purge_all: false should not trigger the purge_all path
+        let body = br#"{"purge_all": false, "host": "example.com", "path": "/test"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        // Falls through to exact purge, which succeeds (entry not found)
+        assert_eq!(status, 200);
+        assert!(resp.contains(r#""purged""#));
+    }
+
+    #[tokio::test]
+    async fn cache_purge_pattern_takes_precedence_over_exact() {
+        // When both pattern and host/path are present, pattern is checked first
+        let body = br#"{"pattern": "*api*", "host": "example.com", "path": "/foo"}"#;
+        let (status, resp, _) = handle_cache_purge(body).await;
+        // Pattern path is tried first, returns error because no disk cache
+        assert_eq!(status, 400);
+        assert!(resp.contains("pattern"));
     }
 }

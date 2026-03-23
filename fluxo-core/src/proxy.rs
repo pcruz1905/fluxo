@@ -44,6 +44,14 @@ pub(crate) fn global_mem_cache() -> &'static MemCache {
 /// Initialized once at startup via `init_disk_cache`.
 static DISK_CACHE: OnceLock<crate::cache::DiskCache> = OnceLock::new();
 
+/// Global TinyUFO in-memory cache (used when `cache_eviction = "tinyufo"`).
+/// Initialized once at startup via `init_tinyufo_cache`.
+static TINYUFO_CACHE: OnceLock<crate::cache::TinyUfoCache> = OnceLock::new();
+
+/// Named cache zones — separate `DiskCache` instances keyed by zone name.
+/// Initialized once at startup via `init_cache_zones`.
+static CACHE_ZONES: OnceLock<HashMap<String, crate::cache::DiskCache>> = OnceLock::new();
+
 /// Global cache lock for stampede/thundering herd protection.
 /// Initialized once at startup via `init_cache_lock`.
 static CACHE_LOCK: OnceLock<pingora_cache::lock::CacheLock> = OnceLock::new();
@@ -58,13 +66,55 @@ pub fn init_disk_cache(root: std::path::PathBuf, max_size: u64) {
     let _ = DISK_CACHE.get_or_init(|| crate::cache::DiskCache::new(root, max_size));
 }
 
-/// Get the appropriate cache storage: disk if configured, otherwise in-memory.
+/// Initialize the global TinyUFO in-memory cache.
+/// Called once at startup when `cache_eviction = "tinyufo"`.
+pub fn init_tinyufo_cache(capacity: usize) {
+    let _ = TINYUFO_CACHE.get_or_init(|| crate::cache::TinyUfoCache::new(capacity));
+}
+
+/// Initialize named cache zones from config.
+/// Each zone gets its own `DiskCache` instance with a separate storage path and size budget.
+pub fn init_cache_zones(zones: HashMap<String, (std::path::PathBuf, u64)>) {
+    let _ = CACHE_ZONES.get_or_init(|| {
+        zones
+            .into_iter()
+            .map(|(name, (root, max_size))| (name, crate::cache::DiskCache::new(root, max_size)))
+            .collect()
+    });
+}
+
+/// Get the appropriate cache storage: TinyUFO if configured, then disk, then in-memory.
 pub(crate) fn global_cache_storage() -> &'static (dyn pingora_cache::storage::Storage + Sync) {
-    if let Some(disk) = DISK_CACHE.get() {
+    if let Some(tinyufo) = TINYUFO_CACHE.get() {
+        tinyufo
+    } else if let Some(disk) = DISK_CACHE.get() {
         disk
     } else {
         global_mem_cache()
     }
+}
+
+/// Get the cache storage for a specific zone, falling back to global cache storage.
+pub(crate) fn zone_cache_storage(
+    zone: Option<&str>,
+) -> &'static (dyn pingora_cache::storage::Storage + Sync) {
+    if let Some(zone_name) = zone {
+        if let Some(zones) = CACHE_ZONES.get() {
+            if let Some(disk) = zones.get(zone_name) {
+                return disk;
+            }
+        }
+        tracing::warn!(zone = zone_name, "unknown cache zone, falling back to global");
+    }
+    global_cache_storage()
+}
+
+/// Get a reference to the global disk cache, if initialized.
+///
+/// Used by the admin API for pattern-based, tag-based, and bulk purge operations
+/// that bypass Pingora's `Storage::purge` trait method.
+pub fn global_disk_cache() -> Option<&'static crate::cache::DiskCache> {
+    DISK_CACHE.get()
 }
 
 /// Parse max-age or s-maxage from a Cache-Control header value.
@@ -1031,12 +1081,15 @@ impl ProxyHttp for FluxoProxy {
             return Ok(());
         }
 
+        // Select cache storage: zone-specific if configured, otherwise global
+        let storage = zone_cache_storage(cache_config.zone.as_deref());
+
         // Enable Pingora's cache for this request
         let cache_lock = CACHE_LOCK
             .get()
             .map(|l| l as &'static pingora_cache::lock::CacheKeyLockImpl);
         session.cache.enable(
-            global_cache_storage(),
+            storage,
             None,       // no eviction manager for v0.1
             None,       // no predictor
             cache_lock, // stampede protection
@@ -1066,12 +1119,13 @@ impl ProxyHttp for FluxoProxy {
 
         // Build primary key: method + host + path (+ optional query)
         let state = self.state.load();
-        let include_query = ctx
+        let cache_config = ctx
             .matched_route
             .as_ref()
             .and_then(|r| state.router.routes().get(r.index))
-            .and_then(|r| r.cache.as_ref())
-            .is_none_or(|c| c.include_query);
+            .and_then(|r| r.cache.as_ref());
+
+        let include_query = cache_config.is_none_or(|c| c.include_query);
 
         let primary = if include_query {
             let pq = req
@@ -1083,7 +1137,29 @@ impl ProxyHttp for FluxoProxy {
             format!("{method}{host}{}", req.uri.path())
         };
 
-        Ok(CacheKey::new("fluxo", primary, ""))
+        // Build variance key from configured vary headers
+        let variance = cache_config
+            .map(|c| {
+                if c.vary_headers.is_empty() {
+                    String::new()
+                } else {
+                    c.vary_headers
+                        .iter()
+                        .map(|h| {
+                            let val = req
+                                .headers
+                                .get(h.as_str())
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("");
+                            format!("{h}={val}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("&")
+                }
+            })
+            .unwrap_or_default();
+
+        Ok(CacheKey::new("fluxo", primary, variance))
     }
 
     fn response_cache_filter(
@@ -2830,5 +2906,81 @@ mod tests {
         assert_eq!(CompositeMode::Weighted, CompositeMode::Weighted);
         assert_eq!(CompositeMode::Failover, CompositeMode::Failover);
         assert_ne!(CompositeMode::Weighted, CompositeMode::Failover);
+    }
+
+    // ── vary-aware cache key tests ──────────────────────────────────
+
+    /// Helper: build a variance string using the same logic as `cache_key_callback`.
+    fn build_variance(vary_headers: &[&str], request_headers: &[(&str, &str)]) -> String {
+        if vary_headers.is_empty() {
+            return String::new();
+        }
+        vary_headers
+            .iter()
+            .map(|h| {
+                let val = request_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(h))
+                    .map_or("", |(_, v)| v);
+                format!("{h}={val}")
+            })
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    #[test]
+    fn vary_key_empty_when_no_vary_headers() {
+        let variance = build_variance(&[], &[("accept-encoding", "gzip")]);
+        assert!(variance.is_empty());
+    }
+
+    #[test]
+    fn vary_key_includes_single_header() {
+        let variance = build_variance(
+            &["accept-encoding"],
+            &[("accept-encoding", "gzip")],
+        );
+        assert_eq!(variance, "accept-encoding=gzip");
+    }
+
+    #[test]
+    fn vary_key_includes_multiple_headers() {
+        let variance = build_variance(
+            &["accept-encoding", "accept-language"],
+            &[
+                ("accept-encoding", "br"),
+                ("accept-language", "en-US"),
+            ],
+        );
+        assert_eq!(variance, "accept-encoding=br&accept-language=en-US");
+    }
+
+    #[test]
+    fn vary_key_missing_header_uses_empty_string() {
+        let variance = build_variance(
+            &["accept-encoding", "accept-language"],
+            &[("accept-encoding", "gzip")],
+        );
+        assert_eq!(variance, "accept-encoding=gzip&accept-language=");
+    }
+
+    #[test]
+    fn vary_key_different_values_produce_different_keys() {
+        let v1 = build_variance(&["accept-encoding"], &[("accept-encoding", "gzip")]);
+        let v2 = build_variance(&["accept-encoding"], &[("accept-encoding", "br")]);
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    fn vary_key_order_matches_config_order() {
+        let v1 = build_variance(
+            &["accept-encoding", "accept-language"],
+            &[
+                ("accept-language", "fr"),
+                ("accept-encoding", "zstd"),
+            ],
+        );
+        // Order follows vary_headers config, not request header order
+        assert_eq!(v1, "accept-encoding=zstd&accept-language=fr");
     }
 }

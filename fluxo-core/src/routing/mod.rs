@@ -135,6 +135,10 @@ pub struct CompiledCache {
     pub include_query: bool,
     /// Force caching regardless of upstream Cache-Control.
     pub force_cache: bool,
+    /// Request headers to include in cache key variance (lowercased).
+    pub vary_headers: Vec<String>,
+    /// Optional cache zone name (references a named `DiskCache` instance).
+    pub zone: Option<String>,
 }
 
 /// Pre-compiled forward auth configuration for a route.
@@ -412,14 +416,29 @@ impl RouteTable {
                 percent: m.percent,
             }),
             cache: config.cache.as_ref().and_then(|c| {
-                let default_ttl = crate::config::parse_duration(&c.default_ttl).ok()?;
+                let mut default_ttl = crate::config::parse_duration(&c.default_ttl).ok()?;
                 let max_file_size = crate::config::parse_size(&c.max_file_size).ok()?;
-                let swr = crate::config::parse_duration(&c.stale_while_revalidate)
+                let mut swr = crate::config::parse_duration(&c.stale_while_revalidate)
                     .ok()
                     .map_or(0, |d| d.as_secs() as u32);
                 let sie = crate::config::parse_duration(&c.stale_if_error)
                     .ok()
                     .map_or(0, |d| d.as_secs() as u32);
+                let mut force_cache = c.force_cache;
+
+                // micro_cache shorthand: 1s TTL, force cache, 1s stale-while-revalidate
+                if c.micro_cache {
+                    if c.default_ttl == crate::config::defaults::cache_default_ttl() {
+                        default_ttl = std::time::Duration::from_secs(1);
+                    }
+                    if !c.force_cache {
+                        force_cache = true;
+                    }
+                    if swr == 0 {
+                        swr = 1;
+                    }
+                }
+
                 Some(CompiledCache {
                     default_ttl,
                     max_file_size,
@@ -427,7 +446,9 @@ impl RouteTable {
                     stale_if_error: sie,
                     methods: c.methods.clone(),
                     include_query: c.include_query,
-                    force_cache: c.force_cache,
+                    force_cache,
+                    vary_headers: c.vary_headers.iter().map(|h| h.to_lowercase()).collect(),
+                    zone: c.zone.clone(),
                 })
             }),
             forward_auth: config.forward_auth.as_ref().map(|fa| CompiledForwardAuth {

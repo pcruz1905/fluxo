@@ -228,6 +228,16 @@ pub fn cache_lock_timeout() -> String {
     "3s".to_string()
 }
 
+/// Default cache eviction strategy: LRU (disk-backed).
+pub fn cache_eviction() -> String {
+    "lru".to_string()
+}
+
+/// Default maximum number of entries for TinyUFO in-memory cache.
+pub fn cache_tinyufo_capacity() -> usize {
+    10000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +475,17 @@ mod tests {
     #[test]
     fn default_health_check_follow_redirects_is_true() {
         assert!(health_check_follow_redirects());
+    }
+
+    // --- Cache eviction defaults ---
+
+    #[test]
+    fn default_cache_eviction_is_lru() {
+        assert_eq!(cache_eviction(), "lru");
+    }
+
+    #[test]
+    fn default_cache_tinyufo_capacity_is_10000() {
+        assert_eq!(cache_tinyufo_capacity(), 10000);
     }
 }

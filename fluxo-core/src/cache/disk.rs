@@ -147,6 +147,126 @@ impl DiskCache {
         CacheMeta::deserialize(&meta0, &meta1)
     }
 
+    /// Key file path for a cache entry (stores the original primary key string).
+    fn key_path(&self, hash: &str) -> PathBuf {
+        self.entry_dir(hash).join("key.txt")
+    }
+
+    /// Tags file path for a cache entry (stores cache tags, one per line).
+    fn tags_path(&self, hash: &str) -> PathBuf {
+        self.entry_dir(hash).join("tags.txt")
+    }
+
+    /// Purge entries matching a glob pattern on the original cache key.
+    /// Returns the number of entries purged.
+    pub fn purge_by_pattern(&self, pattern: &str) -> usize {
+        let Ok(matcher) = glob::Pattern::new(pattern) else {
+            return 0;
+        };
+
+        let mut purged = 0;
+        let hashes = self.all_entry_hashes();
+
+        let mut removed_hashes = Vec::new();
+        for hash in &hashes {
+            let key_path = self.key_path(hash);
+            let Ok(key_str) = std::fs::read_to_string(&key_path) else {
+                continue;
+            };
+            if matcher.matches(&key_str) {
+                let dir = self.entry_dir(hash);
+                let freed = dir_size(&dir);
+                let _ = std::fs::remove_dir_all(&dir);
+                self.current_size.fetch_sub(freed, Ordering::Relaxed);
+                removed_hashes.push(hash.clone());
+                purged += 1;
+            }
+        }
+
+        if purged > 0 {
+            let mut lru = self.lru.write();
+            lru.retain(|_, v| !removed_hashes.contains(v));
+        }
+
+        purged
+    }
+
+    /// Purge entries with a matching cache tag.
+    /// Returns the number of entries purged.
+    pub fn purge_by_tag(&self, tag: &str) -> usize {
+        let mut purged = 0;
+        let hashes = self.all_entry_hashes();
+
+        let mut removed_hashes = Vec::new();
+        for hash in &hashes {
+            let tags_path = self.tags_path(hash);
+            let Ok(tags_content) = std::fs::read_to_string(&tags_path) else {
+                continue;
+            };
+            let has_tag = tags_content.lines().any(|line| line.trim() == tag);
+            if has_tag {
+                let dir = self.entry_dir(hash);
+                let freed = dir_size(&dir);
+                let _ = std::fs::remove_dir_all(&dir);
+                self.current_size.fetch_sub(freed, Ordering::Relaxed);
+                removed_hashes.push(hash.clone());
+                purged += 1;
+            }
+        }
+
+        if purged > 0 {
+            let mut lru = self.lru.write();
+            lru.retain(|_, v| !removed_hashes.contains(v));
+        }
+
+        purged
+    }
+
+    /// Purge all cache entries.
+    /// Returns the number of entries purged.
+    pub fn purge_all(&self) -> usize {
+        let hashes = self.all_entry_hashes();
+        let count = hashes.len();
+
+        for hash in &hashes {
+            let dir = self.entry_dir(hash);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        self.current_size.store(0, Ordering::Relaxed);
+        self.lru.write().clear();
+
+        count
+    }
+
+    /// Collect all entry hashes from the cache directory tree.
+    fn all_entry_hashes(&self) -> Vec<String> {
+        let mut hashes = Vec::new();
+        let Ok(prefixes) = std::fs::read_dir(&self.root) else {
+            return hashes;
+        };
+
+        for prefix_entry in prefixes.flatten() {
+            if !prefix_entry.path().is_dir() {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(prefix_entry.path()) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                if let Some(hash) = path.file_name().and_then(|n| n.to_str()) {
+                    hashes.push(hash.to_string());
+                }
+            }
+        }
+
+        hashes
+    }
+
     /// Write meta to disk.
     fn write_meta(path: &Path, meta: &CacheMeta) -> Result<()> {
         let (meta0, meta1) = meta.serialize()?;
@@ -283,6 +403,10 @@ struct DiskMissHandler {
     current_size: &'static AtomicU64,
     lru: &'static RwLock<BTreeMap<u64, String>>,
     lru_counter: &'static AtomicU64,
+    /// Original primary key string (written to `key.txt` for pattern-based purge).
+    primary_key: String,
+    /// Cache tags extracted from upstream response headers (written to `tags.txt`).
+    cache_tags: Vec<String>,
 }
 
 #[async_trait]
@@ -307,6 +431,16 @@ impl HandleMiss for DiskMissHandler {
         let meta_path = dir.join("meta.bin");
         std::fs::write(&meta_path, &self.meta_bytes)
             .map_err(|e| Error::explain(ErrorType::WriteError, format!("cache meta write: {e}")))?;
+
+        // Write primary key for pattern-based purge
+        let key_path = dir.join("key.txt");
+        let _ = std::fs::write(&key_path, &self.primary_key);
+
+        // Write cache tags (one per line) for tag-based purge
+        if !self.cache_tags.is_empty() {
+            let tags_path = dir.join("tags.txt");
+            let _ = std::fs::write(&tags_path, self.cache_tags.join("\n"));
+        }
 
         let body_size = self.body.len();
         let meta_size = std::fs::metadata(&meta_path).map(|m| m.len()).unwrap_or(0);
@@ -390,7 +524,8 @@ impl Storage for DiskCache {
         meta: &CacheMeta,
         _trace: &SpanHandle,
     ) -> Result<MissHandler> {
-        let hash = Self::hash_key(&key.combined());
+        let combined = key.combined();
+        let hash = Self::hash_key(&combined);
 
         // Pre-serialize meta so we don't need to hold CacheMeta (not Clone)
         let (meta0, meta1) = meta.serialize()?;
@@ -402,6 +537,20 @@ impl Storage for DiskCache {
         meta_bytes.extend_from_slice(&meta0);
         meta_bytes.extend_from_slice(&meta1);
 
+        // Extract cache tags from upstream response headers (Cache-Tag, Surrogate-Key)
+        let headers = meta.headers();
+        let mut cache_tags = Vec::new();
+        for header_name in &["cache-tag", "surrogate-key"] {
+            if let Some(val) = headers.get(*header_name).and_then(|v| v.to_str().ok()) {
+                for tag in val.split(',') {
+                    let tag = tag.trim();
+                    if !tag.is_empty() {
+                        cache_tags.push(tag.to_string());
+                    }
+                }
+            }
+        }
+
         let miss_handler = DiskMissHandler {
             body: Vec::new(),
             meta_bytes,
@@ -411,6 +560,8 @@ impl Storage for DiskCache {
             current_size: &self.current_size,
             lru: &self.lru,
             lru_counter: &self.lru_counter,
+            primary_key: combined,
+            cache_tags,
         };
         Ok(Box::new(miss_handler))
     }
@@ -819,5 +970,239 @@ mod tests {
         let result = DiskCache::read_meta(&meta_path);
         // We just verify it doesn't panic; it may succeed or error
         let _ = result;
+    }
+
+    // --- Pattern and tag purge tests ---
+
+    /// Helper: plant a cache entry with optional key.txt and tags.txt files.
+    fn plant_entry(root: &Path, key: &str, tags: &[&str]) -> String {
+        let hash = DiskCache::hash_key(key);
+        let prefix = &hash[..2];
+        let entry_dir = root.join(prefix).join(&hash);
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::write(entry_dir.join("body.bin"), b"body").unwrap();
+        std::fs::write(entry_dir.join("meta.bin"), b"meta").unwrap();
+        std::fs::write(entry_dir.join("key.txt"), key).unwrap();
+        if !tags.is_empty() {
+            let tags_content: Vec<&str> = tags.to_vec();
+            std::fs::write(entry_dir.join("tags.txt"), tags_content.join("\n")).unwrap();
+        }
+        hash
+    }
+
+    #[test]
+    fn purge_by_pattern_matches_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/api/users", &[]);
+        plant_entry(&root, "GETexample.com/api/posts", &[]);
+        plant_entry(&root, "GETexample.com/static/logo.png", &[]);
+        plant_entry(&root, "GETother.com/api/data", &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        assert_eq!(cache.lru.read().len(), 4);
+
+        // Purge all /api/* entries on example.com
+        let purged = cache.purge_by_pattern("GET*example.com/api/*");
+        assert_eq!(purged, 2);
+        assert_eq!(cache.lru.read().len(), 2);
+
+        // The remaining entries should be the static and other.com ones
+        let remaining = cache.all_entry_hashes();
+        assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn purge_by_pattern_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/page", &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        let purged = cache.purge_by_pattern("*nomatch*");
+        assert_eq!(purged, 0);
+        assert_eq!(cache.lru.read().len(), 1);
+    }
+
+    #[test]
+    fn purge_by_pattern_invalid_glob_returns_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/page", &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        // "[" is an invalid glob pattern (unclosed bracket)
+        let purged = cache.purge_by_pattern("[");
+        assert_eq!(purged, 0);
+    }
+
+    #[test]
+    fn purge_by_tag_removes_tagged_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(
+            &root,
+            "GETexample.com/product/1",
+            &["product-1", "category-electronics"],
+        );
+        plant_entry(
+            &root,
+            "GETexample.com/product/2",
+            &["product-2", "category-electronics"],
+        );
+        plant_entry(&root, "GETexample.com/product/3", &["product-3"]);
+        plant_entry(&root, "GETexample.com/about", &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        assert_eq!(cache.lru.read().len(), 4);
+
+        // Purge by tag "category-electronics" — should remove 2 entries
+        let purged = cache.purge_by_tag("category-electronics");
+        assert_eq!(purged, 2);
+        assert_eq!(cache.lru.read().len(), 2);
+
+        // Purge by tag "product-3" — should remove 1 entry
+        let purged = cache.purge_by_tag("product-3");
+        assert_eq!(purged, 1);
+        assert_eq!(cache.lru.read().len(), 1);
+    }
+
+    #[test]
+    fn purge_by_tag_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/page", &["tag-a"]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        let purged = cache.purge_by_tag("nonexistent-tag");
+        assert_eq!(purged, 0);
+        assert_eq!(cache.lru.read().len(), 1);
+    }
+
+    #[test]
+    fn purge_by_tag_ignores_entries_without_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/page", &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        let purged = cache.purge_by_tag("any-tag");
+        assert_eq!(purged, 0);
+        assert_eq!(cache.lru.read().len(), 1);
+    }
+
+    #[test]
+    fn purge_all_clears_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/a", &["tag-a"]);
+        plant_entry(&root, "GETexample.com/b", &[]);
+        plant_entry(&root, "GETexample.com/c", &["tag-c"]);
+
+        let cache = DiskCache::new(root.clone(), 1024 * 1024);
+        assert_eq!(cache.lru.read().len(), 3);
+        assert!(cache.current_size.load(Ordering::Relaxed) > 0);
+
+        let purged = cache.purge_all();
+        assert_eq!(purged, 3);
+        assert!(cache.lru.read().is_empty());
+        assert_eq!(cache.current_size.load(Ordering::Relaxed), 0);
+
+        // All entry directories should be gone
+        let remaining = cache.all_entry_hashes();
+        assert_eq!(remaining.len(), 0);
+    }
+
+    #[test]
+    fn purge_all_empty_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        let purged = cache.purge_all();
+        assert_eq!(purged, 0);
+    }
+
+    #[test]
+    fn key_and_tags_files_written_on_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        // Plant entry with key and tags (simulating what DiskMissHandler::finish does)
+        let key = "GETexample.com/api/data";
+        let tags = &["product-1", "api-v2"];
+        let hash = plant_entry(&root, key, tags);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+
+        // Verify key.txt exists and contains the primary key
+        let key_path = cache.key_path(&hash);
+        let stored_key = std::fs::read_to_string(&key_path).unwrap();
+        assert_eq!(stored_key, key);
+
+        // Verify tags.txt exists and contains the tags
+        let tags_path = cache.tags_path(&hash);
+        let stored_tags = std::fs::read_to_string(&tags_path).unwrap();
+        assert!(stored_tags.contains("product-1"));
+        assert!(stored_tags.contains("api-v2"));
+        let tag_lines: Vec<&str> = stored_tags.lines().collect();
+        assert_eq!(tag_lines.len(), 2);
+    }
+
+    #[test]
+    fn key_file_written_without_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        let key = "GETexample.com/page";
+        let hash = plant_entry(&root, key, &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+
+        // key.txt should exist
+        let key_path = cache.key_path(&hash);
+        assert!(key_path.exists());
+        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), key);
+
+        // tags.txt should NOT exist
+        let tags_path = cache.tags_path(&hash);
+        assert!(!tags_path.exists());
+    }
+
+    #[test]
+    fn purge_by_pattern_updates_current_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        plant_entry(&root, "GETexample.com/a", &[]);
+        plant_entry(&root, "GETexample.com/b", &[]);
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        let initial_size = cache.current_size.load(Ordering::Relaxed);
+        assert!(initial_size > 0);
+
+        cache.purge_by_pattern("*example.com/a");
+        let after_purge = cache.current_size.load(Ordering::Relaxed);
+        assert!(after_purge < initial_size);
+    }
+
+    #[test]
+    fn all_entry_hashes_nonexistent_root() {
+        let cache = DiskCache {
+            root: PathBuf::from("/nonexistent/cache/root"),
+            max_size: 1024,
+            current_size: AtomicU64::new(0),
+            lru: RwLock::new(BTreeMap::new()),
+            lru_counter: AtomicU64::new(0),
+        };
+        let hashes = cache.all_entry_hashes();
+        assert!(hashes.is_empty());
     }
 }

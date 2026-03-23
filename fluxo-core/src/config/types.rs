@@ -299,6 +299,29 @@ pub struct GlobalConfig {
     /// Default: "3s". Set to "0s" to disable.
     #[serde(default = "defaults::cache_lock_timeout")]
     pub cache_lock_timeout: String,
+
+    /// Cache eviction strategy: `"lru"` (default, disk-backed) or `"tinyufo"` (in-memory, TinyLFU).
+    /// TinyUFO uses frequency-aware eviction for better hit rates on skewed workloads.
+    #[serde(default = "defaults::cache_eviction")]
+    pub cache_eviction: String,
+
+    /// Maximum number of cache entries for TinyUFO in-memory cache. Default: 10000.
+    #[serde(default = "defaults::cache_tinyufo_capacity")]
+    pub cache_tinyufo_capacity: usize,
+
+    /// Named cache zones with separate storage and size budgets.
+    /// Example:
+    /// ```toml
+    /// [global.cache_zones.static_assets]
+    /// path = "/var/cache/fluxo/static"
+    /// max_size = "5gb"
+    ///
+    /// [global.cache_zones.api]
+    /// path = "/var/cache/fluxo/api"
+    /// max_size = "500mb"
+    /// ```
+    #[serde(default)]
+    pub cache_zones: HashMap<String, CacheZoneConfig>,
 }
 
 impl Default for GlobalConfig {
@@ -336,6 +359,9 @@ impl Default for GlobalConfig {
             access_log_template: None,
             access_log_compress: false,
             cache_lock_timeout: defaults::cache_lock_timeout(),
+            cache_eviction: defaults::cache_eviction(),
+            cache_tinyufo_capacity: defaults::cache_tinyufo_capacity(),
+            cache_zones: HashMap::new(),
         }
     }
 }
@@ -572,6 +598,16 @@ pub struct MirrorConfig {
     pub percent: u8,
 }
 
+/// Configuration for a named cache zone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheZoneConfig {
+    /// Directory path for this cache zone's storage.
+    pub path: String,
+    /// Maximum size for this zone. Example: `"1gb"`, `"500mb"`.
+    #[serde(default = "defaults::cache_max_disk_size")]
+    pub max_size: String,
+}
+
 /// Per-route HTTP caching configuration (Pingora-native).
 /// When present on a route, enables Pingora's built-in HTTP cache for matching requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -605,6 +641,22 @@ pub struct CacheConfig {
     /// Like Nginx `proxy_cache_valid` — forces caching even without upstream headers.
     #[serde(default)]
     pub force_cache: bool,
+
+    /// Headers to vary cache entries on (e.g., ["Accept-Encoding", "Accept-Language"]).
+    /// When set, cache keys include the values of these request headers, so different
+    /// values produce separate cache entries. Default: empty (no variance).
+    #[serde(default)]
+    pub vary_headers: Vec<String>,
+
+    /// Named cache zone to use. If not set, uses the default global cache.
+    /// Must match a key in `[global.cache_zones]`.
+    pub zone: Option<String>,
+
+    /// Enable micro-caching — cache responses for 1 second to absorb request bursts.
+    /// This is a convenience shorthand: sets `default_ttl` to `"1s"`, `force_cache` to `true`,
+    /// and `stale_while_revalidate` to `"1s"` if not explicitly configured.
+    #[serde(default)]
+    pub micro_cache: bool,
 }
 
 /// Forward authentication — delegate auth decisions to an external service.
@@ -1399,5 +1451,103 @@ mod tests {
         assert_eq!(json, r#""compact""#);
         let parsed: AccessLogFormat = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, AccessLogFormat::Compact);
+    }
+
+    // ── Cache eviction config defaults ───────────────────────────────
+
+    #[test]
+    fn global_config_default_cache_eviction_is_lru() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.cache_eviction, "lru");
+    }
+
+    #[test]
+    fn global_config_default_cache_tinyufo_capacity() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.cache_tinyufo_capacity, 10000);
+    }
+
+    #[test]
+    fn global_config_default_cache_zones_empty() {
+        let g = GlobalConfig::default();
+        assert!(g.cache_zones.is_empty());
+    }
+
+    // ── CacheZoneConfig deserialization ──────────────────────────────
+
+    #[test]
+    fn cache_zone_config_deserialize_with_defaults() {
+        let toml_str = r#"path = "/var/cache/fluxo/static""#;
+        let cfg: CacheZoneConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.path, "/var/cache/fluxo/static");
+        assert_eq!(cfg.max_size, "1gb");
+    }
+
+    #[test]
+    fn cache_zone_config_deserialize_custom_max_size() {
+        let toml_str = r#"
+            path = "/var/cache/fluxo/api"
+            max_size = "500mb"
+        "#;
+        let cfg: CacheZoneConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.path, "/var/cache/fluxo/api");
+        assert_eq!(cfg.max_size, "500mb");
+    }
+
+    #[test]
+    fn global_config_with_cache_zones() {
+        let toml_str = r#"
+            [global.cache_zones.static_assets]
+            path = "/var/cache/fluxo/static"
+            max_size = "5gb"
+
+            [global.cache_zones.api]
+            path = "/var/cache/fluxo/api"
+            max_size = "500mb"
+        "#;
+        let cfg: FluxoConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.global.cache_zones.len(), 2);
+        assert_eq!(cfg.global.cache_zones["static_assets"].path, "/var/cache/fluxo/static");
+        assert_eq!(cfg.global.cache_zones["static_assets"].max_size, "5gb");
+        assert_eq!(cfg.global.cache_zones["api"].path, "/var/cache/fluxo/api");
+        assert_eq!(cfg.global.cache_zones["api"].max_size, "500mb");
+    }
+
+    // ── CacheConfig micro_cache and zone deserialization ─────────────
+
+    #[test]
+    fn cache_config_micro_cache_default_false() {
+        let toml_str = r#"default_ttl = "60s""#;
+        let cfg: CacheConfig = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.micro_cache);
+        assert!(cfg.zone.is_none());
+    }
+
+    #[test]
+    fn cache_config_micro_cache_enabled() {
+        let toml_str = r#"micro_cache = true"#;
+        let cfg: CacheConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.micro_cache);
+    }
+
+    #[test]
+    fn cache_config_zone_set() {
+        let toml_str = r#"zone = "static_assets""#;
+        let cfg: CacheConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.zone.as_deref(), Some("static_assets"));
+    }
+
+    // ── TinyUFO eviction config ─────────────────────────────────────
+
+    #[test]
+    fn global_config_tinyufo_eviction() {
+        let toml_str = r#"
+            [global]
+            cache_eviction = "tinyufo"
+            cache_tinyufo_capacity = 50000
+        "#;
+        let cfg: FluxoConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.global.cache_eviction, "tinyufo");
+        assert_eq!(cfg.global.cache_tinyufo_capacity, 50000);
     }
 }

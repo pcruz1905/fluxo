@@ -62,6 +62,7 @@ opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 reqwest = { workspace = true }
+tinyufo = { workspace = true }
 
 [dev-dependencies]
 axum = { version = "0.8.8", features = ["ws"] }
