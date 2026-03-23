@@ -127,6 +127,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize cache stampede protection (Pingora cache lock)
+    let cache_lock_timeout =
+        fluxo_core::config::parse_duration(&fluxo_config.global.cache_lock_timeout)
+            .unwrap_or(std::time::Duration::from_secs(3));
+    fluxo_core::proxy::init_cache_lock(cache_lock_timeout);
+
     tracing::info!("starting fluxo v{}", env!("CARGO_PKG_VERSION"));
 
     // --test: validate and exit
@@ -239,7 +245,12 @@ fn main() -> anyhow::Result<()> {
         for listener in &service_config.listeners {
             // Check for resolved TLS (from ACME or manual config via ensure_certs)
             if let Some(resolved) = app.resolved_tls(service_name) {
-                svc.add_tls(&listener.address, &resolved.cert_path, &resolved.key_path)?;
+                let settings = build_tls_settings(
+                    &resolved.cert_path,
+                    &resolved.key_path,
+                    service_config.tls.as_ref(),
+                )?;
+                svc.add_tls_with_settings(&listener.address, None, settings);
                 tracing::info!(
                     service = service_name,
                     address = &listener.address,
@@ -257,7 +268,8 @@ fn main() -> anyhow::Result<()> {
                         let Some(key) = tls.key_path.as_ref() else {
                             continue;
                         };
-                        svc.add_tls(&listener.address, cert, key)?;
+                        let settings = build_tls_settings(cert, key, Some(tls))?;
+                        svc.add_tls_with_settings(&listener.address, None, settings);
                         tracing::info!(
                             service = service_name,
                             address = &listener.address,
@@ -377,4 +389,87 @@ fn main() -> anyhow::Result<()> {
     // so the guard is held for the lifetime of the process, flushing spans on shutdown.
     let _otlp_keep = otlp_guard;
     server.run_forever();
+}
+
+/// Build `TlsSettings` from cert/key paths, applying cipher and version configuration
+/// from the service's TLS config block.
+fn build_tls_settings(
+    cert_path: &str,
+    key_path: &str,
+    tls_config: Option<&config::TlsConfig>,
+) -> anyhow::Result<pingora::listeners::tls::TlsSettings> {
+    let mut settings = pingora::listeners::tls::TlsSettings::intermediate(cert_path, key_path)
+        .map_err(|e| anyhow::anyhow!("failed to create TLS settings: {e}"))?;
+
+    if let Some(tls) = tls_config {
+        apply_tls_options(&mut settings, tls);
+    }
+
+    Ok(settings)
+}
+
+/// Apply cipher list, TLS 1.3 ciphersuites, and version bounds to TLS settings.
+///
+/// On BoringSSL, `TlsSettings` derefs to `SslAcceptorBuilder` which exposes the full
+/// OpenSSL configuration API. On rustls, these settings are not configurable via Pingora's
+/// API, so this is a no-op (a warning is logged if the user specified custom settings).
+#[allow(unused_variables)]
+fn apply_tls_options(settings: &mut pingora::listeners::tls::TlsSettings, tls: &config::TlsConfig) {
+    let has_custom = tls.cipher_list.is_some()
+        || tls.tls13_ciphersuites.is_some()
+        || tls.min_version.is_some()
+        || tls.max_version.is_some();
+
+    #[cfg(feature = "boringssl")]
+    {
+        if let Some(ref ciphers) = tls.cipher_list {
+            if let Err(e) = settings.set_cipher_list(ciphers) {
+                tracing::warn!(error = %e, ciphers, "failed to set TLS cipher list");
+            }
+        }
+        if let Some(ref suites) = tls.tls13_ciphersuites {
+            if let Err(e) = settings.set_ciphersuites(suites) {
+                tracing::warn!(error = %e, suites, "failed to set TLS 1.3 ciphersuites");
+            }
+        }
+        if let Some(ref min) = tls.min_version {
+            if let Some(ver) = parse_tls_version(min) {
+                if let Err(e) = settings.set_min_proto_version(Some(ver)) {
+                    tracing::warn!(error = %e, version = min, "failed to set min TLS version");
+                }
+            }
+        }
+        if let Some(ref max) = tls.max_version {
+            if let Some(ver) = parse_tls_version(max) {
+                if let Err(e) = settings.set_max_proto_version(Some(ver)) {
+                    tracing::warn!(error = %e, version = max, "failed to set max TLS version");
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "boringssl"))]
+    {
+        if has_custom {
+            tracing::warn!(
+                "cipher_list, tls13_ciphersuites, min_version, max_version are only supported with the boringssl feature"
+            );
+        }
+    }
+}
+
+/// Parse a TLS version string ("1.0", "1.1", "1.2", "1.3") to an OpenSSL `SslVersion`.
+#[cfg(feature = "boringssl")]
+fn parse_tls_version(s: &str) -> Option<pingora::tls::ssl::SslVersion> {
+    use pingora::tls::ssl::SslVersion;
+    match s {
+        "1.0" => Some(SslVersion::TLS1),
+        "1.1" => Some(SslVersion::TLS1_1),
+        "1.2" => Some(SslVersion::TLS1_2),
+        "1.3" => Some(SslVersion::TLS1_3),
+        _ => {
+            tracing::warn!(version = s, "unknown TLS version, expected 1.0/1.1/1.2/1.3");
+            None
+        }
+    }
 }

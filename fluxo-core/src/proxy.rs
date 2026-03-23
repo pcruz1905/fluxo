@@ -44,6 +44,15 @@ pub(crate) fn global_mem_cache() -> &'static MemCache {
 /// Initialized once at startup via `init_disk_cache`.
 static DISK_CACHE: OnceLock<crate::cache::DiskCache> = OnceLock::new();
 
+/// Global cache lock for stampede/thundering herd protection.
+/// Initialized once at startup via `init_cache_lock`.
+static CACHE_LOCK: OnceLock<pingora_cache::lock::CacheLock> = OnceLock::new();
+
+/// Initialize the global cache lock with the configured timeout.
+pub fn init_cache_lock(timeout: std::time::Duration) {
+    let _ = CACHE_LOCK.get_or_init(|| pingora_cache::lock::CacheLock::new(timeout));
+}
+
 /// Initialize the global disk cache. Called once at startup when `cache_dir` is set.
 pub fn init_disk_cache(root: std::path::PathBuf, max_size: u64) {
     let _ = DISK_CACHE.get_or_init(|| crate::cache::DiskCache::new(root, max_size));
@@ -562,6 +571,64 @@ fn load_geoip_db(config: &FluxoConfig) -> Option<crate::routing::geoip::GeoIpDb>
     })
 }
 
+/// Extract a hash key from the request based on the upstream's `hash_key` configuration.
+///
+/// Used by consistent hash and FNV hash load balancing strategies to determine
+/// which backend receives the request. Supports: url, ip, header, cookie, query, path.
+fn extract_hash_key(
+    req: &pingora_http::RequestHeader,
+    ctx: &RequestContext,
+    hash_key_type: &str,
+    hash_key_name: Option<&str>,
+) -> Vec<u8> {
+    match hash_key_type {
+        "ip" => ctx.client_ip.as_deref().unwrap_or("").as_bytes().to_vec(),
+        "path" => req.uri.path().as_bytes().to_vec(),
+        "header" => hash_key_name
+            .and_then(|name| req.headers.get(name))
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .as_bytes()
+            .to_vec(),
+        "cookie" => {
+            let cookie_name = hash_key_name.unwrap_or("");
+            req.headers
+                .get("cookie")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cookies| {
+                    cookies.split(';').find_map(|c| {
+                        let c = c.trim();
+                        let (name, value) = c.split_once('=')?;
+                        if name.trim() == cookie_name {
+                            Some(value.trim().as_bytes().to_vec())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap_or_default()
+        }
+        "query" => {
+            let param_name = hash_key_name.unwrap_or("");
+            req.uri
+                .query()
+                .and_then(|q| {
+                    q.split('&').find_map(|pair| {
+                        let (key, value) = pair.split_once('=')?;
+                        if key == param_name {
+                            Some(value.as_bytes().to_vec())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap_or_default()
+        }
+        // "url" or default — full URI as hash key
+        _ => req.uri.to_string().into_bytes(),
+    }
+}
+
 fn is_trusted_proxy(
     peer_addr: &pingora_core::protocols::l4::socket::SocketAddr,
     trusted: &[ipnet::IpNet],
@@ -965,12 +1032,15 @@ impl ProxyHttp for FluxoProxy {
         }
 
         // Enable Pingora's cache for this request
+        let cache_lock = CACHE_LOCK
+            .get()
+            .map(|l| l as &'static pingora_cache::lock::CacheKeyLockImpl);
         session.cache.enable(
             global_cache_storage(),
-            None, // no eviction manager for v0.1
-            None, // no predictor
-            None, // no cache lock
-            None, // no option overrides
+            None,       // no eviction manager for v0.1
+            None,       // no predictor
+            cache_lock, // stampede protection
+            None,       // no option overrides
         );
 
         // Set max file size for this request
@@ -1383,7 +1453,7 @@ impl ProxyHttp for FluxoProxy {
 
     async fn upstream_peer(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>, Box<Error>> {
         let state = self.state.load();
@@ -1395,15 +1465,22 @@ impl ProxyHttp for FluxoProxy {
             )
         })?;
 
+        // --- Traffic split override ---
+        // If the traffic_split plugin assigned an alternate upstream, use it.
+        let split_upstream = ctx
+            .get_extension("traffic_split_upstream")
+            .and_then(|v| v.as_str().map(|s| UpstreamName::from(s)));
+        let base_upstream = split_upstream.as_ref().unwrap_or(&route.upstream);
+
         // --- Resolve composite upstreams (Traefik-inspired service composition) ---
         // If the route points to a composite upstream, resolve it to an actual child upstream.
         let resolved_upstream = resolve_composite_upstream(
-            &route.upstream,
+            base_upstream,
             &state.composites,
             &state.upstreams,
             &self.static_state.circuit_breakers,
         );
-        let effective_upstream = resolved_upstream.as_ref().unwrap_or(&route.upstream);
+        let effective_upstream = resolved_upstream.as_ref().unwrap_or(base_upstream);
 
         // --- Circuit breaker check ---
         if self.static_state.circuit_breakers.check(effective_upstream) == Some(CircuitStatus::Open)
@@ -1443,6 +1520,15 @@ impl ProxyHttp for FluxoProxy {
             .and_then(|r| crate::config::parse_duration(&r.max_interval).ok())
             .unwrap_or(std::time::Duration::from_secs(1));
 
+        // --- Hash key extraction for consistent/FNV hashing ---
+        let hash_key_bytes: Vec<u8> = {
+            let upstream_cfg = state.config.upstreams.get(&upstream_name_str);
+            let hash_key_type = upstream_cfg.map(|c| c.hash_key.as_str()).unwrap_or("url");
+            let hash_key_name = upstream_cfg.and_then(|c| c.hash_key_name.as_deref());
+            let req = session.req_header();
+            extract_hash_key(req, ctx, hash_key_type, hash_key_name)
+        };
+
         let mut last_err = None;
         let mut peer_result: Option<Box<HttpPeer>> = None;
 
@@ -1463,13 +1549,13 @@ impl ProxyHttp for FluxoProxy {
                         Ok(p)
                     } else {
                         ctx.sticky_cookie_new = true;
-                        upstream_group.select_peer()
+                        upstream_group.select_peer_with_key(&hash_key_bytes)
                     }
                 } else if sticky_config.is_some() {
                     ctx.sticky_cookie_new = true;
-                    upstream_group.select_peer()
+                    upstream_group.select_peer_with_key(&hash_key_bytes)
                 } else {
-                    upstream_group.select_peer()
+                    upstream_group.select_peer_with_key(&hash_key_bytes)
                 };
 
             match result {
@@ -2385,6 +2471,10 @@ mod tests {
             client_ca_path: None,
             client_auth_type: "none".to_string(),
             sni_certs: vec![],
+            cipher_list: None,
+            tls13_ciphersuites: None,
+            min_version: None,
+            max_version: None,
         }
     }
 
