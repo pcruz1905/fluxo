@@ -2418,7 +2418,10 @@ targets = ["127.0.0.1:3000"]
 max_fails = 0
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err.to_string().contains("passive_health.max_fails must be >= 1"));
+        assert!(
+            err.to_string()
+                .contains("passive_health.max_fails must be >= 1")
+        );
     }
 
     // --- Keepalive timeout ---
@@ -2545,9 +2548,10 @@ targets = ["127.0.0.1:3000"]
 failure_threshold = 0
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("circuit_breaker.failure_threshold must be >= 1"));
+        assert!(
+            err.to_string()
+                .contains("circuit_breaker.failure_threshold must be >= 1")
+        );
     }
 
     #[test]
@@ -2564,9 +2568,10 @@ targets = ["127.0.0.1:3000"]
 success_threshold = 0
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("circuit_breaker.success_threshold must be >= 1"));
+        assert!(
+            err.to_string()
+                .contains("circuit_breaker.success_threshold must be >= 1")
+        );
     }
 
     #[test]
@@ -2583,9 +2588,7 @@ targets = ["127.0.0.1:3000"]
 open_duration = "bad"
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("circuit_breaker.open_duration"));
+        assert!(err.to_string().contains("circuit_breaker.open_duration"));
     }
 
     #[test]
@@ -2602,9 +2605,10 @@ targets = ["127.0.0.1:3000"]
 error_ratio_threshold = 1.5
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("error_ratio_threshold must be between"));
+        assert!(
+            err.to_string()
+                .contains("error_ratio_threshold must be between")
+        );
     }
 
     #[test]
@@ -2621,9 +2625,10 @@ targets = ["127.0.0.1:3000"]
 error_ratio_threshold = -0.1
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("error_ratio_threshold must be between"));
+        assert!(
+            err.to_string()
+                .contains("error_ratio_threshold must be between")
+        );
     }
 
     #[test]
@@ -2640,9 +2645,10 @@ targets = ["127.0.0.1:3000"]
 min_requests = 0
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("circuit_breaker.min_requests must be >= 1"));
+        assert!(
+            err.to_string()
+                .contains("circuit_breaker.min_requests must be >= 1")
+        );
     }
 
     #[test]
@@ -2678,9 +2684,10 @@ targets = ["127.0.0.1:3000"]
 cookie_name = ""
 "#;
         let err = load_from_str(toml).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("sticky.cookie_name must not be empty"));
+        assert!(
+            err.to_string()
+                .contains("sticky.cookie_name must not be empty")
+        );
     }
 
     // --- Mirror config ---

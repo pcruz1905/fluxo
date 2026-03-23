@@ -312,11 +312,7 @@ mod tests {
 
     #[test]
     fn lookup_returns_domains_in_entry() {
-        let map = make_map(&[(
-            vec!["example.com", "www.example.com"],
-            "cert",
-            "key",
-        )]);
+        let map = make_map(&[(vec!["example.com", "www.example.com"], "cert", "key")]);
         let entry = map.lookup("example.com").unwrap();
         assert_eq!(entry.domains.len(), 2);
         assert_eq!(entry.domains[0], "example.com");
@@ -449,9 +445,7 @@ mod tests {
 
     #[test]
     fn sni_cert_map_clone() {
-        let map = make_map(&[
-            (vec!["a.com", "*.a.com"], "cert-a", "key-a"),
-        ]);
+        let map = make_map(&[(vec!["a.com", "*.a.com"], "cert-a", "key-a")]);
         let cloned = map;
         assert_eq!(cloned.len(), 1);
         assert!(cloned.lookup("a.com").is_some());

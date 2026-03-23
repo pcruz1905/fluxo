@@ -168,14 +168,14 @@ mod tests {
     #[test]
     fn severity_from_status_edge_cases() {
         // Zero and boundary values
-        assert_eq!(severity_from_status(0), 6);   // 0 is in 0..=399 range
-        assert_eq!(severity_from_status(100), 6);  // informational HTTP range
-        assert_eq!(severity_from_status(199), 6);  // end of 1xx
-        assert_eq!(severity_from_status(399), 6);  // last info value
-        assert_eq!(severity_from_status(400), 4);  // first warning value
-        assert_eq!(severity_from_status(499), 4);  // last warning value
-        assert_eq!(severity_from_status(500), 3);  // first error value
-        assert_eq!(severity_from_status(599), 3);  // end of 5xx
+        assert_eq!(severity_from_status(0), 6); // 0 is in 0..=399 range
+        assert_eq!(severity_from_status(100), 6); // informational HTTP range
+        assert_eq!(severity_from_status(199), 6); // end of 1xx
+        assert_eq!(severity_from_status(399), 6); // last info value
+        assert_eq!(severity_from_status(400), 4); // first warning value
+        assert_eq!(severity_from_status(499), 4); // last warning value
+        assert_eq!(severity_from_status(500), 3); // first error value
+        assert_eq!(severity_from_status(599), 3); // end of 5xx
     }
 
     #[test]

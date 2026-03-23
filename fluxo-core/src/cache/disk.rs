@@ -775,9 +775,8 @@ mod tests {
 
         // Plant two entries under different prefixes
         for i in 0..2 {
-            let hash = format!(
-                "{i:02x}00000000000000000000000000000000000000000000000000000000000000"
-            );
+            let hash =
+                format!("{i:02x}00000000000000000000000000000000000000000000000000000000000000");
             let prefix = &hash[..2];
             let entry_dir = root.join(prefix).join(&hash);
             std::fs::create_dir_all(&entry_dir).unwrap();

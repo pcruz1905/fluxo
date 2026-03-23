@@ -118,7 +118,10 @@ mod tests {
         let pipeline = PluginPipeline::empty();
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = crate::context::RequestContext::new();
-        assert_eq!(pipeline.run_request(&req, &mut ctx), super::super::PluginAction::Continue);
+        assert_eq!(
+            pipeline.run_request(&req, &mut ctx),
+            super::super::PluginAction::Continue
+        );
     }
 
     #[test]
@@ -133,7 +136,10 @@ mod tests {
         let pipeline = PluginPipeline::new(plugins);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = crate::context::RequestContext::new();
-        assert_eq!(pipeline.run_request(&req, &mut ctx), super::super::PluginAction::Continue);
+        assert_eq!(
+            pipeline.run_request(&req, &mut ctx),
+            super::super::PluginAction::Continue
+        );
     }
 
     #[test]
@@ -164,11 +170,9 @@ mod tests {
             body: Some("maintenance".to_string()),
             content_type: None,
         };
-        let plugins = vec![
-            BuiltinPlugin::StaticResponse(
-                super::super::static_response::StaticResponsePlugin::new(static_cfg),
-            ),
-        ];
+        let plugins = vec![BuiltinPlugin::StaticResponse(
+            super::super::static_response::StaticResponsePlugin::new(static_cfg),
+        )];
         let pipeline = PluginPipeline::new(plugins);
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = crate::context::RequestContext::new();
@@ -219,7 +223,9 @@ mod tests {
         };
         // Strip /api first, then add /v2
         let plugins = vec![
-            BuiltinPlugin::StripPrefix(super::super::strip_prefix::StripPrefixPlugin::new(strip_cfg)),
+            BuiltinPlugin::StripPrefix(super::super::strip_prefix::StripPrefixPlugin::new(
+                strip_cfg,
+            )),
             BuiltinPlugin::AddPrefix(super::super::add_prefix::AddPrefixPlugin::new(add_cfg)),
         ];
         let pipeline = PluginPipeline::new(plugins);
@@ -231,9 +237,9 @@ mod tests {
 
     #[test]
     fn run_upstream_request_request_id_injects_header() {
-        let plugins = vec![
-            BuiltinPlugin::RequestId(super::super::request_id::RequestIdPlugin::default()),
-        ];
+        let plugins = vec![BuiltinPlugin::RequestId(
+            super::super::request_id::RequestIdPlugin::default(),
+        )];
         let pipeline = PluginPipeline::new(plugins);
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let ctx = crate::context::RequestContext::new();

@@ -442,13 +442,9 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.message.contains("slow")
-                    && w.message.contains("read_timeout")
-                    && w.message.contains("> 5m"))
-        );
+        assert!(warnings.iter().any(|w| w.message.contains("slow")
+            && w.message.contains("read_timeout")
+            && w.message.contains("> 5m")));
     }
 
     #[test]
@@ -499,13 +495,9 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.message.contains("catchall")
-                    && w.message.contains("not last")
-                    && w.level == LintLevel::Warn)
-        );
+        assert!(warnings.iter().any(|w| w.message.contains("catchall")
+            && w.message.contains("not last")
+            && w.level == LintLevel::Warn));
     }
 
     #[test]
@@ -535,13 +527,9 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(
-            warnings
-                .iter()
-                .any(|w| w.message.contains("fallback")
-                    && w.message.contains("catch-all route")
-                    && w.level == LintLevel::Info)
-        );
+        assert!(warnings.iter().any(|w| w.message.contains("fallback")
+            && w.message.contains("catch-all route")
+            && w.level == LintLevel::Info));
     }
 
     #[test]
@@ -563,11 +551,7 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(
-            !warnings
-                .iter()
-                .any(|w| w.message.contains("catch-all"))
-        );
+        assert!(!warnings.iter().any(|w| w.message.contains("catch-all")));
     }
 
     #[test]

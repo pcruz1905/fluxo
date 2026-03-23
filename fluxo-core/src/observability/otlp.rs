@@ -233,7 +233,10 @@ mod tests {
         assert_eq!(config.service_name, "my-proxy");
         assert_eq!(config.resource_attributes.len(), 2);
         assert_eq!(
-            config.resource_attributes.get("deployment.environment").unwrap(),
+            config
+                .resource_attributes
+                .get("deployment.environment")
+                .unwrap(),
             "staging"
         );
     }

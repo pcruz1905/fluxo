@@ -219,10 +219,7 @@ mod tests {
             parse_duration("86400s").unwrap(),
             Duration::from_secs(86400)
         );
-        assert_eq!(
-            parse_duration("1440m").unwrap(),
-            Duration::from_secs(86400)
-        );
+        assert_eq!(parse_duration("1440m").unwrap(), Duration::from_secs(86400));
         assert_eq!(parse_duration("24h").unwrap(), Duration::from_secs(86400));
     }
 
