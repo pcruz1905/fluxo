@@ -13,7 +13,7 @@ use pingora_cache::meta::CacheMeta;
 use pingora_cache::storage::HitHandler;
 use pingora_cache::{ForcedFreshness, MemCache, NoCacheReason, RespCacheable};
 use pingora_core::Error;
-use pingora_core::upstreams::peer::{HttpPeer, Peer};
+use pingora_core::upstreams::peer::{ALPN, HttpPeer, Peer};
 use pingora_proxy::{ProxyHttp, Session};
 use std::sync::OnceLock;
 use tracing::{debug, info, warn};
@@ -1569,7 +1569,7 @@ impl ProxyHttp for FluxoProxy {
             }
         }
 
-        let peer = peer_result.ok_or_else(|| {
+        let mut peer = peer_result.ok_or_else(|| {
             let err_msg =
                 last_err.map_or_else(|| "no healthy backends".to_string(), |e| format!("{e}"));
             Error::explain(
@@ -1580,6 +1580,12 @@ impl ProxyHttp for FluxoProxy {
                 ),
             )
         })?;
+
+        // --- gRPC-web: force HTTP/2 to upstream ---
+        // gRPC requires HTTP/2; override ALPN so Pingora negotiates h2.
+        if state.router.routes()[route.index].grpc_web {
+            peer.options.alpn = ALPN::H2;
+        }
 
         if let Some(addr) = peer.address().as_inet() {
             ctx.selected_peer = Some(SelectedPeer {
@@ -1654,6 +1660,22 @@ impl ProxyHttp for FluxoProxy {
                 .unwrap_or_default();
             for (name, val) in fwd_headers {
                 let _ = upstream_request.insert_header(name, val);
+            }
+
+            // --- gRPC-web protocol translation (request) ---
+            // Browsers send gRPC-web content-types; translate to standard gRPC
+            // before forwarding to the upstream so it sees native gRPC.
+            if compiled.grpc_web {
+                if let Some(ct) = upstream_request.headers.get("content-type") {
+                    if let Ok(ct_str) = ct.to_str() {
+                        if ct_str.starts_with("application/grpc-web") {
+                            let new_ct = ct_str.replace("application/grpc-web", "application/grpc");
+                            let _ = upstream_request.insert_header("content-type", &new_ct);
+                        }
+                    }
+                }
+                // TE: trailers is required by the gRPC specification.
+                let _ = upstream_request.insert_header("te", "trailers");
             }
 
             // --- Traffic mirroring (Traefik-inspired) ---
@@ -1774,6 +1796,29 @@ impl ProxyHttp for FluxoProxy {
                         "response_content_type".to_string(),
                         serde_json::json!(ct_str),
                     );
+                }
+            }
+
+            // --- gRPC-web protocol translation (response) ---
+            // Translate the upstream's standard gRPC content-type back to gRPC-web
+            // so that browser clients can process the response correctly.
+            if compiled.grpc_web {
+                if let Some(ct) = upstream_response.headers.get("content-type") {
+                    if let Ok(ct_str) = ct.to_str() {
+                        if ct_str.starts_with("application/grpc") && !ct_str.contains("grpc-web") {
+                            let new_ct = ct_str.replace("application/grpc", "application/grpc-web");
+                            let _ = upstream_response.insert_header("content-type", &new_ct);
+                        }
+                    }
+                }
+                // Expose gRPC trailers so browser clients can read status codes.
+                if upstream_response
+                    .headers
+                    .get("access-control-expose-headers")
+                    .is_none()
+                {
+                    let _ = upstream_response
+                        .insert_header("access-control-expose-headers", "grpc-status,grpc-message");
                 }
             }
 

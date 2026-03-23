@@ -103,6 +103,8 @@ pub struct CompiledRoute {
     pub intercept_errors: Option<bool>,
     /// Pre-compiled `sub_filter` for response body rewriting.
     pub sub_filter: Option<crate::plugins::sub_filter::CompiledSubFilter>,
+    /// Enable gRPC-web protocol translation and HTTP/2 upstream forcing.
+    pub grpc_web: bool,
 }
 
 /// Pre-compiled mirror configuration for a route.
@@ -442,6 +444,7 @@ impl RouteTable {
                 .sub_filter
                 .as_ref()
                 .map(crate::plugins::sub_filter::CompiledSubFilter::from_config),
+            grpc_web: config.grpc_web,
         })
     }
 
@@ -1407,5 +1410,51 @@ targets = ["127.0.0.1:3000"]
             .find(|r| r.name.as_deref() == Some("api-users"))
             .unwrap();
         assert_eq!(grandchild.pipeline.len(), 1); // inherited security_headers
+    }
+
+    #[test]
+    fn grpc_web_compiled_from_config() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "grpc-route"
+  upstream = "grpc-backend"
+  grpc_web = true
+
+  [[services.web.routes]]
+  name = "plain-route"
+  upstream = "grpc-backend"
+
+[upstreams.grpc-backend]
+targets = ["127.0.0.1:50051"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        assert_eq!(table.len(), 2);
+
+        let grpc_route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("grpc-route"))
+            .unwrap();
+        assert!(
+            grpc_route.grpc_web,
+            "grpc_web should be true for grpc-route"
+        );
+
+        let plain_route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("plain-route"))
+            .unwrap();
+        assert!(
+            !plain_route.grpc_web,
+            "grpc_web should default to false for plain-route"
+        );
     }
 }
