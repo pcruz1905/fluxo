@@ -20,6 +20,8 @@ pub struct TcpProxy {
     connect_timeout: Duration,
     /// Round-robin index for load balancing.
     next_target: std::sync::atomic::AtomicUsize,
+    /// Current number of active connections (for `max_connections` enforcement).
+    active_connections: std::sync::atomic::AtomicU32,
 }
 
 impl TcpProxy {
@@ -30,7 +32,47 @@ impl TcpProxy {
             config,
             connect_timeout,
             next_target: std::sync::atomic::AtomicUsize::new(0),
+            active_connections: std::sync::atomic::AtomicU32::new(0),
         }
+    }
+
+    /// Check if accepting a new connection is allowed under `max_connections`.
+    /// Returns `true` if the connection should be accepted.
+    fn try_acquire_connection(&self) -> bool {
+        let max = self.config.max_connections;
+        if max == 0 {
+            // Unlimited
+            self.active_connections
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return true;
+        }
+        // CAS loop to atomically check-and-increment
+        loop {
+            let current = self
+                .active_connections
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if current >= max {
+                return false;
+            }
+            if self
+                .active_connections
+                .compare_exchange_weak(
+                    current,
+                    current + 1,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    /// Release a connection slot.
+    fn release_connection(&self) {
+        self.active_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Select the next upstream target (round-robin).
@@ -266,11 +308,21 @@ impl TcpProxy {
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
+                    if !self.try_acquire_connection() {
+                        warn!(
+                            client = %addr,
+                            max = self.config.max_connections,
+                            "TCP proxy max connections reached, rejecting"
+                        );
+                        drop(stream);
+                        continue;
+                    }
                     let proxy = Arc::clone(&self);
                     tokio::spawn(async move {
                         if let Err(e) = proxy.handle_connection(stream, addr).await {
                             error!(error = %e, "TCP proxy connection error");
                         }
+                        proxy.release_connection();
                     });
                 }
                 Err(e) => {

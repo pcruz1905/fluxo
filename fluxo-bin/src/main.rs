@@ -199,6 +199,13 @@ fn main() -> anyhow::Result<()> {
             conf.graceful_shutdown_timeout_seconds = Some(d.as_secs());
         }
     }
+    // Wire pid_file and upgrade_socket to Pingora
+    if let Some(ref pid_file) = fluxo_config.global.pid_file {
+        conf.pid_file = pid_file.clone();
+    }
+    if let Some(ref upgrade_socket) = fluxo_config.global.upgrade_socket {
+        conf.upgrade_sock = upgrade_socket.clone();
+    }
     // Preserve thread count from our config
     if fluxo_config.global.threads > 0 {
         conf.threads = fluxo_config.global.threads;
