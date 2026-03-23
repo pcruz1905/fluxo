@@ -592,7 +592,7 @@ fn apply_tls_options(
     }
 }
 
-/// Apply mTLS client certificate verification on BoringSSL.
+/// Apply mTLS client certificate verification on `BoringSSL`.
 ///
 /// Uses OpenSSL API: `set_verify()` to control verification mode and `set_ca_file()` to
 /// load the trusted CA pool.
@@ -655,7 +655,7 @@ fn apply_mtls_boringssl(
     }
 }
 
-/// Configure OCSP stapling on BoringSSL.
+/// Configure OCSP stapling on `BoringSSL`.
 ///
 /// Creates an `OcspCache`, spawns a background task to periodically fetch OCSP
 /// responses, and registers a TLS status callback that provides the cached
