@@ -73,7 +73,11 @@ impl CsrfPlugin {
     ) -> PluginAction {
         // Safe methods are exempt from CSRF checking
         let method = req.method.as_str();
-        if self.safe_methods.iter().any(|m| m.eq_ignore_ascii_case(method)) {
+        if self
+            .safe_methods
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(method))
+        {
             // For GET requests, generate and set a CSRF token cookie
             let token = self.generate_token();
             ctx.set_extension("csrf_token", serde_json::json!(token));
@@ -106,11 +110,7 @@ impl CsrfPlugin {
         }
     }
 
-    pub fn on_response(
-        &self,
-        resp: &mut pingora_http::ResponseHeader,
-        ctx: &mut RequestContext,
-    ) {
+    pub fn on_response(&self, resp: &mut pingora_http::ResponseHeader, ctx: &mut RequestContext) {
         // Set CSRF cookie on safe method responses
         if let Some(token) = ctx.get_extension("csrf_token").and_then(|v| v.as_str()) {
             let cookie = format!(
@@ -131,7 +131,8 @@ impl CsrfPlugin {
 
         // HMAC-SHA256 the payload
         let mac = hmac_sha256(&self.secret, payload.as_bytes());
-        let mac_b64 = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &mac);
+        let mac_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &mac);
 
         format!("{payload}.{mac_b64}")
     }
@@ -266,7 +267,10 @@ mod tests {
         let plugin = make_plugin();
         let req = pingora_http::RequestHeader::build("POST", b"/", None).unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(403));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(403)
+        );
     }
 
     #[test]

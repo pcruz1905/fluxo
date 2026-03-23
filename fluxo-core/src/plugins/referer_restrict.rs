@@ -143,7 +143,8 @@ mod tests {
             allow_empty: true,
         });
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        req.insert_header("referer", "https://example.com/page").unwrap();
+        req.insert_header("referer", "https://example.com/page")
+            .unwrap();
         let mut ctx = RequestContext::new();
         assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Continue);
     }
@@ -156,7 +157,8 @@ mod tests {
             allow_empty: true,
         });
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        req.insert_header("referer", "https://sub.example.com/page").unwrap();
+        req.insert_header("referer", "https://sub.example.com/page")
+            .unwrap();
         let mut ctx = RequestContext::new();
         assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Continue);
     }
@@ -169,9 +171,13 @@ mod tests {
             allow_empty: true,
         });
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
-        req.insert_header("referer", "https://evil.com/attack").unwrap();
+        req.insert_header("referer", "https://evil.com/attack")
+            .unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(403));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(403)
+        );
     }
 
     #[test]
@@ -195,16 +201,25 @@ mod tests {
         });
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(403));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(403)
+        );
     }
 
     #[test]
     fn extract_domain_https() {
-        assert_eq!(extract_domain("https://example.com/page"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_domain("https://example.com/page"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
     fn extract_domain_with_port() {
-        assert_eq!(extract_domain("http://example.com:8080/page"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_domain("http://example.com:8080/page"),
+            Some("example.com".to_string())
+        );
     }
 }

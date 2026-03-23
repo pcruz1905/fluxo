@@ -66,7 +66,7 @@ impl KeyAuthPlugin {
             other => {
                 return Err(format!(
                     "unsupported key_source: {other} (valid: header, query)"
-                ))
+                ));
             }
         };
         Ok(Self {
@@ -196,7 +196,10 @@ mod tests {
         let plugin = make_plugin();
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(401));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(401)
+        );
     }
 
     #[test]
@@ -214,6 +217,9 @@ mod tests {
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         req.insert_header("X-API-Key", "wrong-key").unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(401));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(401)
+        );
     }
 }

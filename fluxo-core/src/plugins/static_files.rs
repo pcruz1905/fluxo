@@ -157,7 +157,11 @@ impl StaticFilesPlugin {
         };
 
         // Check If-None-Match for 304
-        if let Some(inm) = req.headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+        if let Some(inm) = req
+            .headers
+            .get("if-none-match")
+            .and_then(|v| v.to_str().ok())
+        {
             if inm == etag || inm == "*" {
                 ctx.plugin_response = Some(crate::context::PluginResponse::Static {
                     status: 304,
@@ -186,10 +190,7 @@ impl StaticFilesPlugin {
                 let slice = &body[start as usize..=end as usize];
                 let range_body = String::from_utf8_lossy(slice).into_owned();
                 // Store range info in extensions for response phase
-                ctx.set_extension(
-                    "static_file_etag",
-                    serde_json::json!(etag),
-                );
+                ctx.set_extension("static_file_etag", serde_json::json!(etag));
                 ctx.set_extension(
                     "static_file_range",
                     serde_json::json!(format!("bytes {start}-{end}/{size}")),

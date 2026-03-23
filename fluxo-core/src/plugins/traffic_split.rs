@@ -120,17 +120,11 @@ impl TrafficSplitPlugin {
 
             cumulative = cumulative.saturating_add(rule.weight);
             if roll < cumulative {
-                ctx.set_extension(
-                    "traffic_split_upstream",
-                    serde_json::json!(rule.upstream),
-                );
+                ctx.set_extension("traffic_split_upstream", serde_json::json!(rule.upstream));
 
                 // Set sticky cookie if configured
                 if self.sticky_cookie.is_some() {
-                    ctx.set_extension(
-                        "traffic_split_sticky",
-                        serde_json::json!(rule.upstream),
-                    );
+                    ctx.set_extension("traffic_split_sticky", serde_json::json!(rule.upstream));
                 }
                 return PluginAction::Continue;
             }
@@ -140,11 +134,7 @@ impl TrafficSplitPlugin {
         PluginAction::Continue
     }
 
-    pub fn on_response(
-        &self,
-        resp: &mut pingora_http::ResponseHeader,
-        ctx: &mut RequestContext,
-    ) {
+    pub fn on_response(&self, resp: &mut pingora_http::ResponseHeader, ctx: &mut RequestContext) {
         // Set sticky cookie if a split was assigned
         if let Some(ref cookie_name) = self.sticky_cookie {
             if let Some(upstream) = ctx

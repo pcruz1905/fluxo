@@ -16,18 +16,25 @@ pub mod compression;
 pub mod concurrency_limit;
 pub mod config;
 pub mod cors;
+pub mod csrf;
 pub mod headers;
 pub mod ip_restrict;
+pub mod jwt_auth;
+pub mod key_auth;
 pub mod path_rewrite;
 pub mod pipeline;
 pub mod rate_limit;
 pub mod redirect;
+pub mod referer_restrict;
 pub mod request_buffer;
 pub mod request_id;
 pub mod security_headers;
+pub mod static_files;
 pub mod static_response;
 pub mod strip_prefix;
 pub mod sub_filter;
+pub mod traffic_split;
+pub mod ua_restrict;
 
 pub use pipeline::PluginPipeline;
 
@@ -60,6 +67,13 @@ pub enum BuiltinPlugin {
     PathRewrite(path_rewrite::PathRewritePlugin),
     ConcurrencyLimit(concurrency_limit::ConcurrencyLimitPlugin),
     RequestBuffer(request_buffer::RequestBufferPlugin),
+    JwtAuth(jwt_auth::JwtAuthPlugin),
+    KeyAuth(key_auth::KeyAuthPlugin),
+    Csrf(csrf::CsrfPlugin),
+    RefererRestrict(referer_restrict::RefererRestrictPlugin),
+    UaRestrict(ua_restrict::UaRestrictPlugin),
+    StaticFiles(static_files::StaticFilesPlugin),
+    TrafficSplit(traffic_split::TrafficSplitPlugin),
 }
 
 impl BuiltinPlugin {
@@ -80,6 +94,13 @@ impl BuiltinPlugin {
             Self::ConcurrencyLimit(p) => p.on_request(req, ctx),
             Self::BandwidthLimit(p) => p.on_request(req, ctx),
             Self::RequestBuffer(p) => p.on_request(req, ctx),
+            Self::JwtAuth(p) => p.on_request(req, ctx),
+            Self::KeyAuth(p) => p.on_request(req, ctx),
+            Self::Csrf(p) => p.on_request(req, ctx),
+            Self::RefererRestrict(p) => p.on_request(req, ctx),
+            Self::UaRestrict(p) => p.on_request(req, ctx),
+            Self::StaticFiles(p) => p.on_request(req, ctx),
+            Self::TrafficSplit(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
@@ -96,6 +117,7 @@ impl BuiltinPlugin {
             Self::StripPrefix(p) => p.on_upstream_request(upstream_req, ctx),
             Self::AddPrefix(p) => p.on_upstream_request(upstream_req, ctx),
             Self::PathRewrite(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::KeyAuth(p) => p.on_upstream_request(upstream_req, ctx),
             _ => {}
         }
     }
@@ -111,6 +133,8 @@ impl BuiltinPlugin {
             Self::Cors(p) => p.on_response(resp, ctx),
             Self::SecurityHeaders(p) => p.on_response(resp, ctx),
             Self::Compression(p) => p.on_response(resp, ctx),
+            Self::Csrf(p) => p.on_response(resp, ctx),
+            Self::TrafficSplit(p) => p.on_response(resp, ctx),
             _ => {}
         }
     }

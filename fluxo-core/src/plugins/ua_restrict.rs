@@ -118,7 +118,10 @@ mod tests {
         let mut req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         req.insert_header("user-agent", "Googlebot/2.1").unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(403));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(403)
+        );
     }
 
     #[test]

@@ -86,13 +86,21 @@ impl JwtAuthPlugin {
             "HS256" => Algorithm::Hs256,
             "HS384" => Algorithm::Hs384,
             "HS512" => Algorithm::Hs512,
-            other => return Err(format!("unsupported JWT algorithm: {other} (valid: HS256, HS384, HS512)")),
+            other => {
+                return Err(format!(
+                    "unsupported JWT algorithm: {other} (valid: HS256, HS384, HS512)"
+                ));
+            }
         };
         let token_source = match cfg.token_source.as_str() {
             "header" => TokenSource::Header,
             "query" => TokenSource::Query,
             "cookie" => TokenSource::Cookie,
-            other => return Err(format!("unsupported token_source: {other} (valid: header, query, cookie)")),
+            other => {
+                return Err(format!(
+                    "unsupported token_source: {other} (valid: header, query, cookie)"
+                ));
+            }
         };
         if cfg.secret.is_empty() {
             return Err("jwt_auth.secret must not be empty".to_string());
@@ -192,7 +200,8 @@ impl JwtAuthPlugin {
 
         // Decode payload and check claims
         let payload_bytes = base64_url_decode(parts[1]).ok_or("invalid payload encoding")?;
-        let payload_str = std::str::from_utf8(&payload_bytes).map_err(|_| "invalid payload UTF-8")?;
+        let payload_str =
+            std::str::from_utf8(&payload_bytes).map_err(|_| "invalid payload UTF-8")?;
         let claims: serde_json::Value =
             serde_json::from_str(payload_str).map_err(|_| "invalid payload JSON")?;
 
@@ -231,7 +240,11 @@ impl JwtAuthPlugin {
 /// HMAC implementation using SHA-2 (RFC 2104) — avoids pulling in the `hmac` crate.
 fn hmac_sha2<D: sha2::Digest + Clone>(key: &[u8], data: &[u8]) -> Vec<u8> {
     let block_size = 64usize; // SHA-256/384/512 block size for HMAC
-    let actual_block = if D::output_size() > 32 { 128 } else { block_size };
+    let actual_block = if D::output_size() > 32 {
+        128
+    } else {
+        block_size
+    };
 
     let key = if key.len() > actual_block {
         let mut hasher = D::new();
@@ -340,7 +353,10 @@ mod tests {
         let plugin = make_plugin();
         let req = pingora_http::RequestHeader::build("GET", b"/", None).unwrap();
         let mut ctx = RequestContext::new();
-        assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Handled(401));
+        assert_eq!(
+            plugin.on_request(&req, &mut ctx),
+            PluginAction::Handled(401)
+        );
     }
 
     #[test]
