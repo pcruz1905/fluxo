@@ -300,12 +300,12 @@ pub struct GlobalConfig {
     #[serde(default = "defaults::cache_lock_timeout")]
     pub cache_lock_timeout: String,
 
-    /// Cache eviction strategy: `"lru"` (default, disk-backed) or `"tinyufo"` (in-memory, TinyLFU).
-    /// TinyUFO uses frequency-aware eviction for better hit rates on skewed workloads.
+    /// Cache eviction strategy: `"lru"` (default, disk-backed) or `"tinyufo"` (in-memory, `TinyLFU`).
+    /// `TinyUFO` uses frequency-aware eviction for better hit rates on skewed workloads.
     #[serde(default = "defaults::cache_eviction")]
     pub cache_eviction: String,
 
-    /// Maximum number of cache entries for TinyUFO in-memory cache. Default: 10000.
+    /// Maximum number of cache entries for `TinyUFO` in-memory cache. Default: 10000.
     #[serde(default = "defaults::cache_tinyufo_capacity")]
     pub cache_tinyufo_capacity: usize,
 

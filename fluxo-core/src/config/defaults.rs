@@ -233,7 +233,7 @@ pub fn cache_eviction() -> String {
     "lru".to_string()
 }
 
-/// Default maximum number of entries for TinyUFO in-memory cache.
+/// Default maximum number of entries for `TinyUFO` in-memory cache.
 pub fn cache_tinyufo_capacity() -> usize {
     10000
 }

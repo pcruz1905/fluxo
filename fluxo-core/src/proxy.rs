@@ -44,7 +44,7 @@ pub(crate) fn global_mem_cache() -> &'static MemCache {
 /// Initialized once at startup via `init_disk_cache`.
 static DISK_CACHE: OnceLock<crate::cache::DiskCache> = OnceLock::new();
 
-/// Global TinyUFO in-memory cache (used when `cache_eviction = "tinyufo"`).
+/// Global `TinyUFO` in-memory cache (used when `cache_eviction = "tinyufo"`).
 /// Initialized once at startup via `init_tinyufo_cache`.
 static TINYUFO_CACHE: OnceLock<crate::cache::TinyUfoCache> = OnceLock::new();
 
@@ -66,7 +66,7 @@ pub fn init_disk_cache(root: std::path::PathBuf, max_size: u64) {
     let _ = DISK_CACHE.get_or_init(|| crate::cache::DiskCache::new(root, max_size));
 }
 
-/// Initialize the global TinyUFO in-memory cache.
+/// Initialize the global `TinyUFO` in-memory cache.
 /// Called once at startup when `cache_eviction = "tinyufo"`.
 pub fn init_tinyufo_cache(capacity: usize) {
     let _ = TINYUFO_CACHE.get_or_init(|| crate::cache::TinyUfoCache::new(capacity));
@@ -74,6 +74,7 @@ pub fn init_tinyufo_cache(capacity: usize) {
 
 /// Initialize named cache zones from config.
 /// Each zone gets its own `DiskCache` instance with a separate storage path and size budget.
+#[allow(clippy::implicit_hasher)]
 pub fn init_cache_zones(zones: HashMap<String, (std::path::PathBuf, u64)>) {
     let _ = CACHE_ZONES.get_or_init(|| {
         zones

@@ -1,6 +1,6 @@
 //! TinyUFO-based in-memory cache storage implementing Pingora's `Storage` trait.
 //!
-//! Uses TinyLFU admission + S3-FIFO eviction for better hit rates on
+//! Uses `TinyLFU` admission + S3-FIFO eviction for better hit rates on
 //! frequency-skewed workloads compared to pure LRU.
 
 use std::any::Any;
@@ -17,7 +17,7 @@ use pingora_cache::trace::SpanHandle;
 use pingora_core::{Error, ErrorType, Result};
 use sha2::{Digest, Sha256};
 
-/// In-memory cache backed by `TinyUfo` (TinyLFU + S3-FIFO eviction).
+/// In-memory cache backed by `TinyUfo` (`TinyLFU` + S3-FIFO eviction).
 ///
 /// Unlike `DiskCache`, entries do not survive restarts but have lower latency
 /// and better hit rates for skewed access patterns.
@@ -45,7 +45,7 @@ impl TinyUfoCache {
         }
     }
 
-    /// Hash a combined cache key string into a `u64` for TinyUFO lookup.
+    /// Hash a combined cache key string into a `u64` for `TinyUFO` lookup.
     fn hash_key(combined: &str) -> u64 {
         let mut hasher = Sha256::new();
         hasher.update(combined.as_bytes());
