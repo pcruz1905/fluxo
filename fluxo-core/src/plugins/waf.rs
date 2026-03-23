@@ -579,9 +579,12 @@ mod tests {
         cfg.exclude_paths = vec!["/health".to_string(), "/metrics".to_string()];
         let plugin = WafPlugin::try_new(cfg).unwrap();
 
-        let req =
-            pingora_http::RequestHeader::build("GET", b"/health?q=<script>alert(1)</script>", None)
-                .unwrap();
+        let req = pingora_http::RequestHeader::build(
+            "GET",
+            b"/health?q=%3Cscript%3Ealert(1)%3C/script%3E",
+            None,
+        )
+        .unwrap();
         let mut ctx = RequestContext::new();
         assert_eq!(plugin.on_request(&req, &mut ctx), PluginAction::Continue);
     }
