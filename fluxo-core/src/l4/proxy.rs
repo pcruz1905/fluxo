@@ -402,7 +402,7 @@ mod tests {
 
     // ── Helper ────────────────────────────────────────────────────────
 
-    /// Build a minimal TLS 1.2 ClientHello with an SNI extension.
+    /// Build a minimal TLS 1.2 `ClientHello` with an SNI extension.
     fn build_client_hello_with_sni(hostname: &str) -> Vec<u8> {
         let name_bytes = hostname.as_bytes();
         let name_len = name_bytes.len();
@@ -455,7 +455,7 @@ mod tests {
         buf
     }
 
-    /// Build a minimal TLS 1.2 ClientHello with NO extensions at all.
+    /// Build a minimal TLS 1.2 `ClientHello` with NO extensions at all.
     fn build_client_hello_no_extensions() -> Vec<u8> {
         // Handshake body: version(2) + random(32) + session_id_len(1)
         //   + cipher_suites_len(2) + cipher(2) + comp_len(1) + comp(1) = 41
@@ -598,7 +598,7 @@ mod tests {
             }));
         }
         for h in handles {
-            h.join().expect("thread panicked");
+            assert!(h.join().is_ok(), "thread panicked");
         }
 
         // All connections released — counter should be back to 0
