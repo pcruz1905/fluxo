@@ -2531,7 +2531,7 @@ mod tests {
         let config = minimal_test_config();
         // "backend" has no upstream_type — should not appear in composites
         let composites = build_composite_upstreams(&config);
-        assert!(composites.get(&UpstreamName::from("backend")).is_none());
+        assert!(!composites.contains_key(&UpstreamName::from("backend")));
     }
 
     // ── resolve_composite_upstream tests ─────────────────────────────
