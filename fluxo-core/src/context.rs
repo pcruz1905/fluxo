@@ -146,6 +146,52 @@ pub enum PluginResponse {
     Cors { headers: Vec<(String, String)> },
 }
 
+/// Compiled retry conditions parsed from upstream config.
+///
+/// Determines which error types trigger a retry through Pingora's retry loop.
+/// The conditions map to the `retry.on` config values: "error", "timeout", "5xx".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RetryConditions {
+    /// Retry on connection errors (connect refused, no route, etc.).
+    pub on_error: bool,
+    /// Retry on upstream timeouts (read, write, connect timeout).
+    pub on_timeout: bool,
+    /// Retry on 5xx upstream responses.
+    pub on_5xx: bool,
+    /// Maximum retry attempts allowed (from upstream config).
+    pub max_attempts: u32,
+}
+
+impl RetryConditions {
+    /// Build from the parsed retry config `on` list.
+    pub fn from_config(on: &[String], attempts: u32) -> Self {
+        Self {
+            on_error: on.iter().any(|s| s == "error"),
+            on_timeout: on.iter().any(|s| s == "timeout"),
+            on_5xx: on.iter().any(|s| s == "5xx"),
+            max_attempts: attempts,
+        }
+    }
+
+    /// Check if a Pingora error type matches the configured retry conditions.
+    pub fn matches_error(&self, etype: &pingora_core::ErrorType) -> bool {
+        use pingora_core::ErrorType;
+        match etype {
+            ErrorType::ConnectRefused
+            | ErrorType::ConnectNoRoute
+            | ErrorType::ConnectError
+            | ErrorType::SocketError
+            | ErrorType::TLSHandshakeFailure
+            | ErrorType::TLSHandshakeTimedout => self.on_error,
+            ErrorType::ConnectTimedout
+            | ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout => self.on_timeout,
+            ErrorType::HTTPStatus(code) => *code >= 500 && self.on_5xx,
+            _ => false,
+        }
+    }
+}
+
 /// Per-request state created by `new_ctx()` and threaded through all callbacks.
 pub struct RequestContext {
     /// When the request started processing.
@@ -177,6 +223,8 @@ pub struct RequestContext {
     pub upstream_response_ms: Option<u64>,
     pub error_message: Option<String>,
     pub retry_count: u32,
+    /// Compiled retry conditions for this request's upstream.
+    pub retry_conditions: RetryConditions,
 
     // --- Sticky session state ---
     /// The sticky session cookie value read from the incoming request (if any).
@@ -299,6 +347,7 @@ impl RequestContext {
             upstream_response_ms: None,
             error_message: None,
             retry_count: 0,
+            retry_conditions: RetryConditions::default(),
             sticky_cookie_value: None,
             sticky_cookie_new: false,
             proxy_protocol_info: None,
@@ -354,6 +403,7 @@ impl RequestContext {
         self.upstream_response_ms = None;
         self.error_message = None;
         self.retry_count = 0;
+        self.retry_conditions = RetryConditions::default();
         self.sticky_cookie_value = None;
         self.sticky_cookie_new = false;
         self.proxy_protocol_info = None;
@@ -786,6 +836,93 @@ mod tests {
         assert!(ctx.method.is_none());
         assert_eq!(ctx.bytes_sent, 0);
         assert!(ctx.extensions.is_empty());
+    }
+
+    // --- RetryConditions ---
+
+    #[test]
+    fn retry_conditions_default_all_false() {
+        let rc = RetryConditions::default();
+        assert!(!rc.on_error);
+        assert!(!rc.on_timeout);
+        assert!(!rc.on_5xx);
+        assert_eq!(rc.max_attempts, 0);
+    }
+
+    #[test]
+    fn retry_conditions_from_config_parses_all() {
+        let on = vec![
+            "error".to_string(),
+            "timeout".to_string(),
+            "5xx".to_string(),
+        ];
+        let rc = RetryConditions::from_config(&on, 3);
+        assert!(rc.on_error);
+        assert!(rc.on_timeout);
+        assert!(rc.on_5xx);
+        assert_eq!(rc.max_attempts, 3);
+    }
+
+    #[test]
+    fn retry_conditions_from_config_partial() {
+        let on = vec!["error".to_string()];
+        let rc = RetryConditions::from_config(&on, 1);
+        assert!(rc.on_error);
+        assert!(!rc.on_timeout);
+        assert!(!rc.on_5xx);
+    }
+
+    #[test]
+    fn retry_conditions_matches_connect_errors() {
+        let rc = RetryConditions::from_config(&["error".to_string()], 1);
+        assert!(rc.matches_error(&pingora_core::ErrorType::ConnectRefused));
+        assert!(rc.matches_error(&pingora_core::ErrorType::ConnectNoRoute));
+        assert!(rc.matches_error(&pingora_core::ErrorType::ConnectError));
+        assert!(!rc.matches_error(&pingora_core::ErrorType::ReadTimedout));
+    }
+
+    #[test]
+    fn retry_conditions_matches_timeouts() {
+        let rc = RetryConditions::from_config(&["timeout".to_string()], 1);
+        assert!(rc.matches_error(&pingora_core::ErrorType::ConnectTimedout));
+        assert!(rc.matches_error(&pingora_core::ErrorType::ReadTimedout));
+        assert!(rc.matches_error(&pingora_core::ErrorType::WriteTimedout));
+        assert!(!rc.matches_error(&pingora_core::ErrorType::ConnectRefused));
+    }
+
+    #[test]
+    fn retry_conditions_matches_5xx() {
+        let rc = RetryConditions::from_config(&["5xx".to_string()], 1);
+        assert!(rc.matches_error(&pingora_core::ErrorType::HTTPStatus(500)));
+        assert!(rc.matches_error(&pingora_core::ErrorType::HTTPStatus(502)));
+        assert!(rc.matches_error(&pingora_core::ErrorType::HTTPStatus(503)));
+        assert!(!rc.matches_error(&pingora_core::ErrorType::HTTPStatus(404)));
+        assert!(!rc.matches_error(&pingora_core::ErrorType::HTTPStatus(200)));
+    }
+
+    #[test]
+    fn retry_conditions_no_match_when_empty() {
+        let rc = RetryConditions::default();
+        assert!(!rc.matches_error(&pingora_core::ErrorType::ConnectRefused));
+        assert!(!rc.matches_error(&pingora_core::ErrorType::ReadTimedout));
+        assert!(!rc.matches_error(&pingora_core::ErrorType::HTTPStatus(500)));
+    }
+
+    #[test]
+    fn reset_clears_retry_conditions() {
+        let mut ctx = RequestContext::new();
+        ctx.retry_conditions = RetryConditions::from_config(
+            &["error".to_string(), "5xx".to_string()],
+            3,
+        );
+        ctx.retry_count = 2;
+
+        ctx.reset();
+
+        assert!(!ctx.retry_conditions.on_error);
+        assert!(!ctx.retry_conditions.on_5xx);
+        assert_eq!(ctx.retry_conditions.max_attempts, 0);
+        assert_eq!(ctx.retry_count, 0);
     }
 
     // --- Pool edge cases ---

@@ -1599,6 +1599,12 @@ impl ProxyHttp for FluxoProxy {
             .and_then(|r| crate::config::parse_duration(&r.max_interval).ok())
             .unwrap_or(std::time::Duration::from_secs(1));
 
+        // Store compiled retry conditions in context for fail_to_connect / error_while_proxy
+        ctx.retry_conditions = retry_config.map_or_else(
+            crate::context::RetryConditions::default,
+            |r| crate::context::RetryConditions::from_config(&r.on, r.attempts),
+        );
+
         // --- Hash key extraction for consistent/FNV hashing ---
         let hash_key_bytes: Vec<u8> = {
             let upstream_cfg = state.config.upstreams.get(&upstream_name_str);
@@ -2177,6 +2183,86 @@ impl ProxyHttp for FluxoProxy {
             error_code: code,
             can_reuse_downstream: can_reuse,
         }
+    }
+
+    /// Mark connection errors as retryable based on configured retry conditions.
+    ///
+    /// Pingora calls this when the TCP/TLS connection to the upstream fails.
+    /// If the error matches the configured `retry.on` conditions, we mark it
+    /// retryable so Pingora's retry loop calls `upstream_peer()` again.
+    fn fail_to_connect(
+        &self,
+        _session: &mut Session,
+        _peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        mut e: Box<Error>,
+    ) -> Box<Error> {
+        if ctx.retry_conditions.max_attempts > 0
+            && ctx.retry_count < ctx.retry_conditions.max_attempts
+            && ctx.retry_conditions.matches_error(e.etype())
+        {
+            e.retry = true.into();
+            ctx.retry_count += 1;
+        }
+        e
+    }
+
+    /// Mark proxy errors as retryable based on configured retry conditions.
+    ///
+    /// Pingora calls this when an error occurs after a connection is established
+    /// (e.g., during request send or response read). Checks the error type against
+    /// the configured `retry.on` conditions.
+    fn error_while_proxy(
+        &self,
+        _peer: &HttpPeer,
+        session: &mut Session,
+        mut e: Box<Error>,
+        ctx: &mut Self::CTX,
+        client_reused: bool,
+    ) -> Box<Error> {
+        if ctx.retry_conditions.max_attempts > 0
+            && ctx.retry_count < ctx.retry_conditions.max_attempts
+            && ctx.retry_conditions.matches_error(e.etype())
+        {
+            e.retry = true.into();
+            ctx.retry_count += 1;
+        } else {
+            // Fall back to Pingora's default: retry on reused connections only
+            e.retry
+                .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
+        }
+        e
+    }
+
+    /// Intercept 5xx upstream responses before they reach the client.
+    ///
+    /// When `retry.on` includes "5xx" and retries remain, returns an error with
+    /// `retry = true` so Pingora's retry loop re-selects an upstream peer.
+    /// This allows transparent failover to healthy backends on 5xx responses.
+    async fn upstream_response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut pingora_http::ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<(), Box<Error>>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let status = upstream_response.status.as_u16();
+        if status >= 500
+            && ctx.retry_conditions.on_5xx
+            && ctx.retry_conditions.max_attempts > 0
+            && ctx.retry_count < ctx.retry_conditions.max_attempts
+        {
+            ctx.retry_count += 1;
+            let mut err = Error::explain(
+                pingora_core::ErrorType::HTTPStatus(status),
+                format!("upstream returned {status}, retrying on next backend"),
+            );
+            err.retry = true.into();
+            return Err(err);
+        }
+        Ok(())
     }
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
