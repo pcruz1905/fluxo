@@ -1507,7 +1507,10 @@ mod tests {
         "#;
         let cfg: FluxoConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.global.cache_zones.len(), 2);
-        assert_eq!(cfg.global.cache_zones["static_assets"].path, "/var/cache/fluxo/static");
+        assert_eq!(
+            cfg.global.cache_zones["static_assets"].path,
+            "/var/cache/fluxo/static"
+        );
         assert_eq!(cfg.global.cache_zones["static_assets"].max_size, "5gb");
         assert_eq!(cfg.global.cache_zones["api"].path, "/var/cache/fluxo/api");
         assert_eq!(cfg.global.cache_zones["api"].max_size, "500mb");

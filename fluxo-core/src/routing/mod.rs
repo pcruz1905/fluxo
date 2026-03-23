@@ -428,7 +428,8 @@ impl RouteTable {
 
                 // micro_cache shorthand: 1s TTL, force cache, 1s stale-while-revalidate
                 if c.micro_cache {
-                    if c.default_ttl == crate::config::defaults::cache_default_ttl() {
+                    // Only override TTL if it's still at the default value ("300s")
+                    if c.default_ttl == "300s" {
                         default_ttl = std::time::Duration::from_secs(1);
                     }
                     if !c.force_cache {
@@ -1480,5 +1481,172 @@ targets = ["127.0.0.1:50051"]
             !plain_route.grpc_web,
             "grpc_web should default to false for plain-route"
         );
+    }
+
+    // ── micro_cache shorthand ────────────────────────────────────────
+
+    #[test]
+    fn micro_cache_applies_defaults() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "micro"
+  upstream = "backend"
+
+  [services.web.routes.cache]
+  micro_cache = true
+
+[upstreams.backend]
+targets = ["10.0.1.1:8080"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("micro"))
+            .unwrap();
+        let cache = route.cache.as_ref().unwrap();
+
+        // micro_cache should set TTL to 1s
+        assert_eq!(cache.default_ttl, std::time::Duration::from_secs(1));
+        // force_cache should be true
+        assert!(cache.force_cache);
+        // stale_while_revalidate should be 1s
+        assert_eq!(cache.stale_while_revalidate, 1);
+    }
+
+    #[test]
+    fn micro_cache_does_not_override_explicit_ttl() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "custom-ttl"
+  upstream = "backend"
+
+  [services.web.routes.cache]
+  micro_cache = true
+  default_ttl = "5s"
+
+[upstreams.backend]
+targets = ["10.0.1.1:8080"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("custom-ttl"))
+            .unwrap();
+        let cache = route.cache.as_ref().unwrap();
+
+        // Explicit TTL should be preserved
+        assert_eq!(cache.default_ttl, std::time::Duration::from_secs(5));
+        // force_cache and SWR still applied
+        assert!(cache.force_cache);
+        assert_eq!(cache.stale_while_revalidate, 1);
+    }
+
+    #[test]
+    fn micro_cache_does_not_override_explicit_force_cache() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "explicit-force"
+  upstream = "backend"
+
+  [services.web.routes.cache]
+  micro_cache = true
+  force_cache = true
+
+[upstreams.backend]
+targets = ["10.0.1.1:8080"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("explicit-force"))
+            .unwrap();
+        let cache = route.cache.as_ref().unwrap();
+        assert!(cache.force_cache);
+    }
+
+    // ── cache zone compilation ───────────────────────────────────────
+
+    #[test]
+    fn cache_zone_compiled_from_config() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "zoned"
+  upstream = "backend"
+
+  [services.web.routes.cache]
+  zone = "static_assets"
+
+[upstreams.backend]
+targets = ["10.0.1.1:8080"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("zoned"))
+            .unwrap();
+        let cache = route.cache.as_ref().unwrap();
+        assert_eq!(cache.zone.as_deref(), Some("static_assets"));
+    }
+
+    #[test]
+    fn cache_zone_none_when_not_set() {
+        let cfg = make_config(
+            r#"
+[services.web]
+  [[services.web.listeners]]
+  address = "0.0.0.0:80"
+
+  [[services.web.routes]]
+  name = "no-zone"
+  upstream = "backend"
+
+  [services.web.routes.cache]
+  default_ttl = "60s"
+
+[upstreams.backend]
+targets = ["10.0.1.1:8080"]
+"#,
+        );
+
+        let table = RouteTable::build(&cfg).unwrap();
+        let route = table
+            .routes()
+            .iter()
+            .find(|r| r.name.as_deref() == Some("no-zone"))
+            .unwrap();
+        let cache = route.cache.as_ref().unwrap();
+        assert!(cache.zone.is_none());
     }
 }

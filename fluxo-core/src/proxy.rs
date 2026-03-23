@@ -104,7 +104,10 @@ pub(crate) fn zone_cache_storage(
                 return disk;
             }
         }
-        tracing::warn!(zone = zone_name, "unknown cache zone, falling back to global");
+        tracing::warn!(
+            zone = zone_name,
+            "unknown cache zone, falling back to global"
+        );
     }
     global_cache_storage()
 }
@@ -1089,8 +1092,7 @@ impl ProxyHttp for FluxoProxy {
             .get()
             .map(|l| l as &'static pingora_cache::lock::CacheKeyLockImpl);
         session.cache.enable(
-            storage,
-            None,       // no eviction manager for v0.1
+            storage, None,       // no eviction manager for v0.1
             None,       // no predictor
             cache_lock, // stampede protection
             None,       // no option overrides
@@ -2936,10 +2938,7 @@ mod tests {
 
     #[test]
     fn vary_key_includes_single_header() {
-        let variance = build_variance(
-            &["accept-encoding"],
-            &[("accept-encoding", "gzip")],
-        );
+        let variance = build_variance(&["accept-encoding"], &[("accept-encoding", "gzip")]);
         assert_eq!(variance, "accept-encoding=gzip");
     }
 
@@ -2947,10 +2946,7 @@ mod tests {
     fn vary_key_includes_multiple_headers() {
         let variance = build_variance(
             &["accept-encoding", "accept-language"],
-            &[
-                ("accept-encoding", "br"),
-                ("accept-language", "en-US"),
-            ],
+            &[("accept-encoding", "br"), ("accept-language", "en-US")],
         );
         assert_eq!(variance, "accept-encoding=br&accept-language=en-US");
     }
@@ -2975,10 +2971,7 @@ mod tests {
     fn vary_key_order_matches_config_order() {
         let v1 = build_variance(
             &["accept-encoding", "accept-language"],
-            &[
-                ("accept-language", "fr"),
-                ("accept-encoding", "zstd"),
-            ],
+            &[("accept-language", "fr"), ("accept-encoding", "zstd")],
         );
         // Order follows vary_headers config, not request header order
         assert_eq!(v1, "accept-encoding=zstd&accept-language=fr");

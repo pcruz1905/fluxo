@@ -4,12 +4,11 @@
 //! frequency-skewed workloads compared to pure LRU.
 
 use std::any::Any;
-use std::hash::{Hash, Hasher};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_cache::CacheKey;
-use pingora_cache::key::CompactCacheKey;
+use pingora_cache::key::{CacheHashKey, CompactCacheKey};
 use pingora_cache::meta::CacheMeta;
 use pingora_cache::storage::{
     HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage,

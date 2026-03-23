@@ -150,6 +150,26 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
         ));
     }
 
+    // Validate cache eviction strategy
+    let valid_evictions = ["lru", "tinyufo"];
+    if !valid_evictions.contains(&config.global.cache_eviction.as_str()) {
+        errors.push(format!(
+            "invalid cache_eviction '{}': must be one of {}",
+            config.global.cache_eviction,
+            valid_evictions.join(", ")
+        ));
+    }
+
+    // Validate cache zone max_size values
+    for (zone_name, zone_cfg) in &config.global.cache_zones {
+        if parse_size(&zone_cfg.max_size).is_err() {
+            errors.push(format!(
+                "cache zone '{zone_name}': invalid max_size '{}'",
+                zone_cfg.max_size
+            ));
+        }
+    }
+
     // Validate downstream timeouts
     if let Some(ref t) = config.global.client_body_timeout {
         if parse_duration(t).is_err() {
@@ -260,6 +280,14 @@ fn collect_validation_errors(config: &FluxoConfig) -> Vec<String> {
                         "service '{service_name}' route '{route_desc}': invalid cache stale_if_error '{}'",
                         cache.stale_if_error
                     ));
+                }
+                // Validate cache zone reference
+                if let Some(ref zone) = cache.zone {
+                    if !config.global.cache_zones.contains_key(zone) {
+                        errors.push(format!(
+                            "service '{service_name}' route '{route_desc}': cache zone '{zone}' not found in [global.cache_zones]"
+                        ));
+                    }
                 }
             }
 
