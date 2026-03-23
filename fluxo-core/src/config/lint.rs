@@ -428,4 +428,227 @@ mod tests {
                 .any(|w| w.message.contains("empty") && w.message.contains("no routes"))
         );
     }
+
+    #[test]
+    fn warns_large_timeout_above_5m() {
+        let mut config = minimal_config();
+        config.upstreams.insert(
+            "slow".to_string(),
+            UpstreamConfig {
+                targets: vec![TargetConfig::Simple("127.0.0.1:3000".to_string())],
+                read_timeout: "10m".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("slow")
+                    && w.message.contains("read_timeout")
+                    && w.message.contains("> 5m"))
+        );
+    }
+
+    #[test]
+    fn no_warning_for_timeout_at_5m() {
+        let mut config = minimal_config();
+        config.upstreams.insert(
+            "normal".to_string(),
+            UpstreamConfig {
+                targets: vec![TargetConfig::Simple("127.0.0.1:3000".to_string())],
+                read_timeout: "5m".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("normal") && w.message.contains("read_timeout"))
+        );
+    }
+
+    #[test]
+    fn warns_catchall_route_not_last() {
+        let mut config = minimal_config();
+        config
+            .upstreams
+            .insert("backend".to_string(), UpstreamConfig::default());
+        config.services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                routes: vec![
+                    // Catch-all route with no matchers — NOT last
+                    RouteConfig {
+                        name: Some("catchall".to_string()),
+                        upstream: "backend".to_string(),
+                        ..Default::default()
+                    },
+                    // A route after it that will never match
+                    RouteConfig {
+                        match_host: vec!["api.example.com".to_string()],
+                        upstream: "backend".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("catchall")
+                    && w.message.contains("not last")
+                    && w.level == LintLevel::Warn)
+        );
+    }
+
+    #[test]
+    fn info_catchall_route_when_last() {
+        let mut config = minimal_config();
+        config
+            .upstreams
+            .insert("backend".to_string(), UpstreamConfig::default());
+        config.services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                routes: vec![
+                    RouteConfig {
+                        match_host: vec!["api.example.com".to_string()],
+                        upstream: "backend".to_string(),
+                        ..Default::default()
+                    },
+                    // Catch-all at the end — intentional
+                    RouteConfig {
+                        name: Some("fallback".to_string()),
+                        upstream: "backend".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("fallback")
+                    && w.message.contains("catch-all route")
+                    && w.level == LintLevel::Info)
+        );
+    }
+
+    #[test]
+    fn no_catchall_warning_for_route_with_matchers() {
+        let mut config = minimal_config();
+        config
+            .upstreams
+            .insert("backend".to_string(), UpstreamConfig::default());
+        config.services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                routes: vec![RouteConfig {
+                    match_host: vec!["example.com".to_string()],
+                    upstream: "backend".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("catch-all"))
+        );
+    }
+
+    #[test]
+    fn composite_upstream_ref_not_unused() {
+        let mut config = minimal_config();
+        // "child" is referenced only by composite parent, not by any route
+        config.upstreams.insert(
+            "child".to_string(),
+            UpstreamConfig {
+                targets: vec![TargetConfig::Simple("127.0.0.1:3000".to_string())],
+                ..Default::default()
+            },
+        );
+        config.upstreams.insert(
+            "parent".to_string(),
+            UpstreamConfig {
+                upstream_type: Some("weighted".to_string()),
+                services: vec![ServiceRef {
+                    upstream: "child".to_string(),
+                    weight: 1,
+                }],
+                ..Default::default()
+            },
+        );
+        // Route references parent, parent references child
+        config.services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                routes: vec![RouteConfig {
+                    upstream: "parent".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("child") && w.message.contains("never referenced"))
+        );
+    }
+
+    #[test]
+    fn mirror_upstream_ref_not_unused() {
+        let mut config = minimal_config();
+        config.upstreams.insert(
+            "primary".to_string(),
+            UpstreamConfig {
+                targets: vec![TargetConfig::Simple("127.0.0.1:3000".to_string())],
+                ..Default::default()
+            },
+        );
+        config.upstreams.insert(
+            "shadow".to_string(),
+            UpstreamConfig {
+                targets: vec![TargetConfig::Simple("127.0.0.1:4000".to_string())],
+                ..Default::default()
+            },
+        );
+        config.services.insert(
+            "web".to_string(),
+            ServiceConfig {
+                routes: vec![RouteConfig {
+                    upstream: "primary".to_string(),
+                    mirror: Some(MirrorConfig {
+                        upstream: "shadow".to_string(),
+                        percent: 100,
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let warnings = lint(&config);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("shadow") && w.message.contains("never referenced"))
+        );
+    }
 }

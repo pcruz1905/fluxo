@@ -197,4 +197,136 @@ mod tests {
         let discovery = DnsDiscovery::new(cfg);
         assert!(discovery.targets().is_empty());
     }
+
+    #[test]
+    fn parse_duration_with_whitespace() {
+        assert_eq!(parse_duration("  30s  ").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_duration(" 5m ").unwrap(), Duration::from_secs(300));
+        assert_eq!(parse_duration("  1h  ").unwrap(), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn parse_duration_zero() {
+        assert_eq!(parse_duration("0s").unwrap(), Duration::from_secs(0));
+        assert_eq!(parse_duration("0m").unwrap(), Duration::from_secs(0));
+        assert_eq!(parse_duration("0h").unwrap(), Duration::from_secs(0));
+        assert_eq!(parse_duration("0").unwrap(), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn parse_duration_large_values() {
+        assert_eq!(
+            parse_duration("86400s").unwrap(),
+            Duration::from_secs(86400)
+        );
+        assert_eq!(
+            parse_duration("1440m").unwrap(),
+            Duration::from_secs(86400)
+        );
+        assert_eq!(parse_duration("24h").unwrap(), Duration::from_secs(86400));
+    }
+
+    #[test]
+    fn parse_duration_invalid_suffix_ignored() {
+        // A string like "30x" doesn't match any suffix, so it's treated as bare
+        // number which fails parsing
+        assert!(parse_duration("30x").is_err());
+    }
+
+    #[test]
+    fn parse_duration_empty_number_before_suffix() {
+        // "s" alone means empty numeric part
+        assert!(parse_duration("s").is_err());
+        assert!(parse_duration("m").is_err());
+        assert!(parse_duration("h").is_err());
+    }
+
+    #[test]
+    fn parse_duration_negative_fails() {
+        assert!(parse_duration("-5s").is_err());
+    }
+
+    #[test]
+    fn parse_dns_config_invalid_duration() {
+        let result = parse_dns_config("backend.local", 8080, Some("invalid"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid duration"));
+    }
+
+    #[test]
+    fn parse_dns_config_with_minutes_interval() {
+        let cfg = parse_dns_config("backend.local", 443, Some("5m")).unwrap();
+        assert_eq!(cfg.refresh_interval, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn parse_dns_config_with_hours_interval() {
+        let cfg = parse_dns_config("backend.local", 443, Some("1h")).unwrap();
+        assert_eq!(cfg.refresh_interval, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn parse_dns_config_preserves_hostname() {
+        let cfg = parse_dns_config("my-service.consul.local", 9090, None).unwrap();
+        assert_eq!(cfg.hostname, "my-service.consul.local");
+        assert_eq!(cfg.port, 9090);
+    }
+
+    #[test]
+    fn dns_discovery_targets_handle_shares_state() {
+        let cfg = DnsDiscoveryConfig {
+            hostname: "test.local".to_string(),
+            port: 80,
+            refresh_interval: Duration::from_secs(30),
+        };
+        let discovery = DnsDiscovery::new(cfg);
+        let handle = discovery.targets_handle();
+
+        // Write through the handle
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        handle.write().push(addr);
+
+        // Read through the discovery method — should see the same data
+        let targets = discovery.targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], addr);
+    }
+
+    #[test]
+    fn dns_discovery_config_clone() {
+        let cfg = DnsDiscoveryConfig {
+            hostname: "host.example.com".to_string(),
+            port: 3000,
+            refresh_interval: Duration::from_secs(45),
+        };
+        let cloned = cfg;
+        assert_eq!(cloned.hostname, "host.example.com");
+        assert_eq!(cloned.port, 3000);
+        assert_eq!(cloned.refresh_interval, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn dns_discovery_config_debug_format() {
+        let cfg = DnsDiscoveryConfig {
+            hostname: "test.local".to_string(),
+            port: 80,
+            refresh_interval: Duration::from_secs(30),
+        };
+        let debug_str = format!("{cfg:?}");
+        assert!(debug_str.contains("test.local"));
+        assert!(debug_str.contains("80"));
+    }
+
+    #[test]
+    fn dns_discovery_debug_format() {
+        let cfg = DnsDiscoveryConfig {
+            hostname: "test.local".to_string(),
+            port: 80,
+            refresh_interval: Duration::from_secs(30),
+        };
+        let discovery = DnsDiscovery::new(cfg);
+        let debug_str = format!("{discovery:?}");
+        assert!(debug_str.contains("DnsDiscovery"));
+        assert!(debug_str.contains("test.local"));
+    }
 }

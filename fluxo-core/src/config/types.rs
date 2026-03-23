@@ -861,3 +861,416 @@ pub struct HealthCheckConfig {
     #[serde(default = "defaults::health_check_follow_redirects")]
     pub follow_redirects: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // ── TargetConfig ──────────────────────────────────────────────
+
+    #[test]
+    fn target_simple_address() {
+        let t = TargetConfig::Simple("127.0.0.1:3000".to_string());
+        assert_eq!(t.address(), "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn target_simple_weight_is_1() {
+        let t = TargetConfig::Simple("127.0.0.1:3000".to_string());
+        assert_eq!(t.weight(), 1);
+    }
+
+    #[test]
+    fn target_weighted_address() {
+        let t = TargetConfig::Weighted {
+            address: "10.0.0.1:8080".to_string(),
+            weight: 5,
+        };
+        assert_eq!(t.address(), "10.0.0.1:8080");
+    }
+
+    #[test]
+    fn target_weighted_weight() {
+        let t = TargetConfig::Weighted {
+            address: "10.0.0.1:8080".to_string(),
+            weight: 7,
+        };
+        assert_eq!(t.weight(), 7);
+    }
+
+    #[test]
+    fn target_simple_deserializes_from_toml_array() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            targets: Vec<TargetConfig>,
+        }
+        let toml_str = r#"targets = ["127.0.0.1:3000"]"#;
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(w.targets.len(), 1);
+        assert_eq!(w.targets[0].address(), "127.0.0.1:3000");
+        assert_eq!(w.targets[0].weight(), 1);
+    }
+
+    #[test]
+    fn target_weighted_deserializes_from_toml_array() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            targets: Vec<TargetConfig>,
+        }
+        let toml_str = r#"
+            [[targets]]
+            address = "10.0.0.1:8080"
+            weight = 3
+        "#;
+        let w: Wrapper = toml::from_str(toml_str).unwrap();
+        assert_eq!(w.targets.len(), 1);
+        assert_eq!(w.targets[0].address(), "10.0.0.1:8080");
+        assert_eq!(w.targets[0].weight(), 3);
+    }
+
+    // ── GlobalConfig defaults ─────────────────────────────────────
+
+    #[test]
+    fn global_config_default_admin() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.admin, "127.0.0.1:2019");
+    }
+
+    #[test]
+    fn global_config_default_threads() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.threads, 0);
+    }
+
+    #[test]
+    fn global_config_default_log_level() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.log_level, "info");
+    }
+
+    #[test]
+    fn global_config_default_metrics_enabled() {
+        let g = GlobalConfig::default();
+        assert!(g.metrics_enabled);
+    }
+
+    #[test]
+    fn global_config_default_access_log_format_json() {
+        let g = GlobalConfig::default();
+        assert!(matches!(g.access_log_format, AccessLogFormat::Json));
+    }
+
+    #[test]
+    fn global_config_default_intercept_errors_false() {
+        let g = GlobalConfig::default();
+        assert!(!g.intercept_errors);
+    }
+
+    #[test]
+    fn global_config_default_none_fields() {
+        let g = GlobalConfig::default();
+        assert!(g.pid_file.is_none());
+        assert!(g.upgrade_socket.is_none());
+        assert!(g.cert_dir.is_none());
+        assert!(g.client_body_timeout.is_none());
+        assert!(g.client_write_timeout.is_none());
+        assert!(g.shutdown_timeout.is_none());
+        assert!(g.shutdown_drain_delay.is_none());
+        assert!(g.access_log_file.is_none());
+        assert!(g.geoip_db_path.is_none());
+        assert!(g.syslog.is_none());
+        assert!(g.admin_auth_token.is_none());
+        assert!(g.cache_dir.is_none());
+    }
+
+    #[test]
+    fn global_config_default_empty_collections() {
+        let g = GlobalConfig::default();
+        assert!(g.trusted_proxies.is_empty());
+        assert!(g.plugins.is_empty());
+        assert!(g.error_pages.is_empty());
+        assert!(g.access_log_exclude.is_empty());
+    }
+
+    #[test]
+    fn global_config_default_access_log_max_size() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.access_log_max_size, "100mb");
+    }
+
+    #[test]
+    fn global_config_default_access_log_max_backups() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.access_log_max_backups, 5);
+    }
+
+    #[test]
+    fn global_config_default_cache_max_disk_size() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.cache_max_disk_size, "1gb");
+    }
+
+    #[test]
+    fn global_config_default_access_log_min_duration_ms() {
+        let g = GlobalConfig::default();
+        assert_eq!(g.access_log_min_duration_ms, 0);
+    }
+
+    // ── SyslogConfig deserialization with defaults ─────────────────
+
+    #[test]
+    fn syslog_config_deserialize_defaults() {
+        let toml_str = r#"address = "127.0.0.1:514""#;
+        let cfg: SyslogConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.address, "127.0.0.1:514");
+        assert_eq!(cfg.facility, "local0");
+        assert_eq!(cfg.app_name, "fluxo");
+    }
+
+    #[test]
+    fn syslog_config_deserialize_custom_values() {
+        let toml_str = r#"
+            address = "syslog.internal:1514"
+            facility = "local7"
+            app_name = "my-proxy"
+        "#;
+        let cfg: SyslogConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.address, "syslog.internal:1514");
+        assert_eq!(cfg.facility, "local7");
+        assert_eq!(cfg.app_name, "my-proxy");
+    }
+
+    // ── FluxoConfig::qualify_namespace ─────────────────────────────
+
+    #[test]
+    fn qualify_namespace_renames_upstreams() {
+        let mut cfg = FluxoConfig::default();
+        cfg.upstreams
+            .insert("backend".to_string(), UpstreamConfig::default());
+        cfg.upstreams
+            .insert("api".to_string(), UpstreamConfig::default());
+
+        cfg.qualify_namespace("file");
+
+        assert!(cfg.upstreams.contains_key("backend@file"));
+        assert!(cfg.upstreams.contains_key("api@file"));
+        assert!(!cfg.upstreams.contains_key("backend"));
+        assert!(!cfg.upstreams.contains_key("api"));
+    }
+
+    #[test]
+    fn qualify_namespace_updates_route_fields() {
+        let mut cfg = FluxoConfig::default();
+        let route = RouteConfig {
+            name: Some("my-route".to_string()),
+            parent: Some("parent-route".to_string()),
+            upstream: "backend".to_string(),
+            ..Default::default()
+        };
+        let service = ServiceConfig {
+            routes: vec![route],
+            ..Default::default()
+        };
+        cfg.services.insert("web".to_string(), service);
+
+        cfg.qualify_namespace("docker");
+
+        let svc = cfg.services.get("web").unwrap();
+        let r = &svc.routes[0];
+        assert_eq!(r.name.as_deref(), Some("my-route@docker"));
+        assert_eq!(r.parent.as_deref(), Some("parent-route@docker"));
+        assert_eq!(r.upstream, "backend@docker");
+    }
+
+    #[test]
+    fn qualify_namespace_route_without_name_or_parent() {
+        let mut cfg = FluxoConfig::default();
+        let route = RouteConfig {
+            name: None,
+            parent: None,
+            upstream: "backend".to_string(),
+            ..Default::default()
+        };
+        let service = ServiceConfig {
+            routes: vec![route],
+            ..Default::default()
+        };
+        cfg.services.insert("web".to_string(), service);
+
+        cfg.qualify_namespace("k8s");
+
+        let svc = cfg.services.get("web").unwrap();
+        let r = &svc.routes[0];
+        assert!(r.name.is_none());
+        assert!(r.parent.is_none());
+        assert_eq!(r.upstream, "backend@k8s");
+    }
+
+    #[test]
+    fn qualify_namespace_renames_l4_tcp_services() {
+        let mut cfg = FluxoConfig::default();
+        cfg.l4.tcp_services.insert(
+            "mysql".to_string(),
+            crate::l4::config::TcpServiceConfig {
+                listen: "0.0.0.0:3306".to_string(),
+                targets: vec!["db:3306".to_string()],
+                sni_routes: HashMap::new(),
+                connect_timeout: "5s".to_string(),
+                proxy_protocol: false,
+                max_connections: 0,
+            },
+        );
+
+        cfg.qualify_namespace("file");
+
+        assert!(cfg.l4.tcp_services.contains_key("mysql@file"));
+        assert!(!cfg.l4.tcp_services.contains_key("mysql"));
+    }
+
+    #[test]
+    fn qualify_namespace_empty_config_is_noop() {
+        let mut cfg = FluxoConfig::default();
+        cfg.qualify_namespace("test");
+        assert!(cfg.upstreams.is_empty());
+        assert!(cfg.services.is_empty());
+        assert!(cfg.l4.tcp_services.is_empty());
+    }
+
+    // ── FluxoConfig::merge ────────────────────────────────────────
+
+    #[test]
+    fn merge_combines_upstreams() {
+        let mut base = FluxoConfig::default();
+        base.upstreams
+            .insert("a".to_string(), UpstreamConfig::default());
+
+        let mut other = FluxoConfig::default();
+        other
+            .upstreams
+            .insert("b".to_string(), UpstreamConfig::default());
+
+        base.merge(other);
+
+        assert!(base.upstreams.contains_key("a"));
+        assert!(base.upstreams.contains_key("b"));
+        assert_eq!(base.upstreams.len(), 2);
+    }
+
+    #[test]
+    fn merge_combines_services() {
+        let mut base = FluxoConfig::default();
+        base.services
+            .insert("web".to_string(), ServiceConfig::default());
+
+        let mut other = FluxoConfig::default();
+        other
+            .services
+            .insert("api".to_string(), ServiceConfig::default());
+
+        base.merge(other);
+
+        assert!(base.services.contains_key("web"));
+        assert!(base.services.contains_key("api"));
+        assert_eq!(base.services.len(), 2);
+    }
+
+    #[test]
+    fn merge_combines_l4_tcp_services() {
+        let mut base = FluxoConfig::default();
+        base.l4.tcp_services.insert(
+            "mysql".to_string(),
+            crate::l4::config::TcpServiceConfig {
+                listen: "0.0.0.0:3306".to_string(),
+                targets: vec!["db1:3306".to_string()],
+                sni_routes: HashMap::new(),
+                connect_timeout: "5s".to_string(),
+                proxy_protocol: false,
+                max_connections: 0,
+            },
+        );
+
+        let mut other = FluxoConfig::default();
+        other.l4.tcp_services.insert(
+            "postgres".to_string(),
+            crate::l4::config::TcpServiceConfig {
+                listen: "0.0.0.0:5432".to_string(),
+                targets: vec!["pg1:5432".to_string()],
+                sni_routes: HashMap::new(),
+                connect_timeout: "5s".to_string(),
+                proxy_protocol: false,
+                max_connections: 0,
+            },
+        );
+
+        base.merge(other);
+
+        assert!(base.l4.tcp_services.contains_key("mysql"));
+        assert!(base.l4.tcp_services.contains_key("postgres"));
+        assert_eq!(base.l4.tcp_services.len(), 2);
+    }
+
+    #[test]
+    fn merge_overwrites_duplicate_keys() {
+        let mut base = FluxoConfig::default();
+        let u1 = UpstreamConfig {
+            connect_timeout: "1s".to_string(),
+            ..Default::default()
+        };
+        base.upstreams.insert("shared".to_string(), u1);
+
+        let mut other = FluxoConfig::default();
+        let u2 = UpstreamConfig {
+            connect_timeout: "99s".to_string(),
+            ..Default::default()
+        };
+        other.upstreams.insert("shared".to_string(), u2);
+
+        base.merge(other);
+
+        assert_eq!(base.upstreams.len(), 1);
+        assert_eq!(base.upstreams["shared"].connect_timeout, "99s");
+    }
+
+    #[test]
+    fn merge_does_not_clobber_global() {
+        let mut base = FluxoConfig::default();
+        base.global.log_level = "debug".to_string();
+
+        let mut other = FluxoConfig::default();
+        other.global.log_level = "error".to_string();
+
+        base.merge(other);
+
+        // merge() does not touch global — it stays as base
+        assert_eq!(base.global.log_level, "debug");
+    }
+
+    // ── FluxoConfig default ───────────────────────────────────────
+
+    #[test]
+    fn fluxo_config_default_is_empty() {
+        let cfg = FluxoConfig::default();
+        assert!(cfg.services.is_empty());
+        assert!(cfg.upstreams.is_empty());
+        assert!(cfg.l4.tcp_services.is_empty());
+    }
+
+    // ── AccessLogFormat serde roundtrip ───────────────────────────
+
+    #[test]
+    fn access_log_format_json_roundtrip() {
+        let json = serde_json::to_string(&AccessLogFormat::Json).unwrap();
+        assert_eq!(json, r#""json""#);
+        let parsed: AccessLogFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, AccessLogFormat::Json);
+    }
+
+    #[test]
+    fn access_log_format_compact_roundtrip() {
+        let json = serde_json::to_string(&AccessLogFormat::Compact).unwrap();
+        assert_eq!(json, r#""compact""#);
+        let parsed: AccessLogFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, AccessLogFormat::Compact);
+    }
+}

@@ -113,6 +113,7 @@ pub fn emit_syslog(json_line: &str, status: u16) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -130,11 +131,58 @@ mod tests {
     }
 
     #[test]
+    fn parse_facility_all_remaining_values() {
+        assert_eq!(parse_facility("user"), 1);
+        assert_eq!(parse_facility("mail"), 2);
+        assert_eq!(parse_facility("auth"), 4);
+        assert_eq!(parse_facility("syslog"), 5);
+        assert_eq!(parse_facility("lpr"), 6);
+        assert_eq!(parse_facility("news"), 7);
+        assert_eq!(parse_facility("uucp"), 8);
+        assert_eq!(parse_facility("cron"), 9);
+        assert_eq!(parse_facility("local1"), 17);
+        assert_eq!(parse_facility("local2"), 18);
+        assert_eq!(parse_facility("local3"), 19);
+        assert_eq!(parse_facility("local4"), 20);
+        assert_eq!(parse_facility("local5"), 21);
+        assert_eq!(parse_facility("local6"), 22);
+    }
+
+    #[test]
+    fn parse_facility_case_insensitive_variants() {
+        assert_eq!(parse_facility("DAEMON"), 3);
+        assert_eq!(parse_facility("Auth"), 4);
+        assert_eq!(parse_facility("Syslog"), 5);
+        assert_eq!(parse_facility("LOCAL7"), 23);
+    }
+
+    #[test]
     fn severity_from_status_values() {
         assert_eq!(severity_from_status(200), 6); // info
         assert_eq!(severity_from_status(301), 6); // info
         assert_eq!(severity_from_status(404), 4); // warning
         assert_eq!(severity_from_status(500), 3); // error
         assert_eq!(severity_from_status(502), 3); // error
+    }
+
+    #[test]
+    fn severity_from_status_edge_cases() {
+        // Zero and boundary values
+        assert_eq!(severity_from_status(0), 6);   // 0 is in 0..=399 range
+        assert_eq!(severity_from_status(100), 6);  // informational HTTP range
+        assert_eq!(severity_from_status(199), 6);  // end of 1xx
+        assert_eq!(severity_from_status(399), 6);  // last info value
+        assert_eq!(severity_from_status(400), 4);  // first warning value
+        assert_eq!(severity_from_status(499), 4);  // last warning value
+        assert_eq!(severity_from_status(500), 3);  // first error value
+        assert_eq!(severity_from_status(599), 3);  // end of 5xx
+    }
+
+    #[test]
+    fn severity_from_status_beyond_http_range() {
+        // Values beyond normal HTTP status codes fall into the catch-all (error)
+        assert_eq!(severity_from_status(600), 3);
+        assert_eq!(severity_from_status(999), 3);
+        assert_eq!(severity_from_status(u16::MAX), 3);
     }
 }

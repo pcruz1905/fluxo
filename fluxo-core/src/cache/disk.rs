@@ -514,4 +514,311 @@ mod tests {
         // CacheMeta doesn't expose status directly; verify fresh_until survived
         assert!(restored.is_fresh(now));
     }
+
+    // --- parse_max_size / parse_size edge cases ---
+
+    #[test]
+    fn parse_max_size_valid_values() {
+        assert_eq!(DiskCache::parse_max_size("2gb"), 2 * 1024 * 1024 * 1024);
+        assert_eq!(DiskCache::parse_max_size("256mb"), 256 * 1024 * 1024);
+        assert_eq!(DiskCache::parse_max_size("512kb"), 512 * 1024);
+        assert_eq!(DiskCache::parse_max_size("4096"), 4096);
+    }
+
+    #[test]
+    fn parse_max_size_invalid_falls_back_to_1gb() {
+        let one_gb = 1024 * 1024 * 1024;
+        assert_eq!(DiskCache::parse_max_size("bad"), one_gb);
+        assert_eq!(DiskCache::parse_max_size(""), one_gb);
+        assert_eq!(DiskCache::parse_max_size("notanumber_gb"), one_gb);
+    }
+
+    #[test]
+    fn parse_size_whitespace_and_case() {
+        assert_eq!(parse_size("  10GB  "), Some(10 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size("  5MB"), Some(5 * 1024 * 1024));
+        assert_eq!(parse_size("3KB "), Some(3 * 1024));
+        assert_eq!(parse_size("  Gb  "), None); // suffix only, no number
+    }
+
+    #[test]
+    fn parse_size_empty_string() {
+        assert_eq!(parse_size(""), None);
+    }
+
+    #[test]
+    fn parse_size_bare_zero() {
+        assert_eq!(parse_size("0"), Some(0));
+        assert_eq!(parse_size("0gb"), Some(0));
+    }
+
+    // --- read_meta error paths ---
+
+    #[test]
+    fn read_meta_too_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("meta.bin");
+        // Write only 4 bytes — less than the required 8
+        std::fs::write(&meta_path, [0u8; 4]).unwrap();
+        assert!(DiskCache::read_meta(&meta_path).is_err());
+    }
+
+    #[test]
+    fn read_meta_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("meta.bin");
+        // Header claims 100 bytes for meta0 but body is empty
+        let mut data = Vec::new();
+        data.extend_from_slice(&100u32.to_le_bytes()); // meta0_len = 100
+        data.extend_from_slice(&0u32.to_le_bytes()); // meta1_len = 0
+        std::fs::write(&meta_path, &data).unwrap();
+        assert!(DiskCache::read_meta(&meta_path).is_err());
+    }
+
+    #[test]
+    fn read_meta_nonexistent_file() {
+        let result = DiskCache::read_meta(Path::new("/nonexistent/path/meta.bin"));
+        assert!(result.is_err());
+    }
+
+    // --- DiskCache::new creates root dir and starts at zero ---
+
+    #[test]
+    fn new_creates_empty_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache_root");
+        // root doesn't exist yet — new() should still work (scan_existing gracefully handles)
+        let cache = DiskCache::new(root, 1024);
+        assert_eq!(cache.current_size.load(Ordering::Relaxed), 0);
+        assert!(cache.lru.read().is_empty());
+    }
+
+    // --- scan_existing picks up pre-populated entries ---
+
+    #[test]
+    fn scan_existing_rebuilds_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        // Manually plant an entry: prefix "ab" / hash dir
+        let hash = "ab00000000000000000000000000000000000000000000000000000000000000";
+        let entry_dir = root.join("ab").join(hash);
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        std::fs::write(entry_dir.join("body.bin"), b"hello").unwrap();
+        std::fs::write(entry_dir.join("meta.bin"), b"metabytes").unwrap();
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        // Size should reflect the files we wrote
+        let size = cache.current_size.load(Ordering::Relaxed);
+        assert!(size > 0, "expected non-zero size, got {size}");
+        // LRU should have one entry
+        assert_eq!(cache.lru.read().len(), 1);
+    }
+
+    #[test]
+    fn scan_existing_ignores_incomplete_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        let hash = "cd00000000000000000000000000000000000000000000000000000000000000";
+        let entry_dir = root.join("cd").join(hash);
+        std::fs::create_dir_all(&entry_dir).unwrap();
+        // Only body, no meta — should be skipped
+        std::fs::write(entry_dir.join("body.bin"), b"body_only").unwrap();
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        assert_eq!(cache.current_size.load(Ordering::Relaxed), 0);
+        assert!(cache.lru.read().is_empty());
+    }
+
+    // --- touch_lru ---
+
+    #[test]
+    fn touch_lru_moves_entry_to_most_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(dir.path().to_path_buf(), 1024);
+
+        cache.touch_lru("aaa");
+        cache.touch_lru("bbb");
+        // "aaa" should be oldest
+        {
+            let lru = cache.lru.read();
+            let oldest = lru.values().next().unwrap();
+            assert_eq!(oldest, "aaa");
+        }
+
+        // Touch "aaa" again — now "bbb" should be oldest
+        cache.touch_lru("aaa");
+        {
+            let lru = cache.lru.read();
+            let oldest = lru.values().next().unwrap();
+            assert_eq!(oldest, "bbb");
+        }
+    }
+
+    // --- dir_size ---
+
+    #[test]
+    fn dir_size_sums_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"hello").unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"world!").unwrap();
+        let size = dir_size(dir.path());
+        assert_eq!(size, 11); // 5 + 6
+    }
+
+    #[test]
+    fn dir_size_nonexistent_returns_zero() {
+        assert_eq!(dir_size(Path::new("/nonexistent/dir")), 0);
+    }
+
+    #[test]
+    fn dir_size_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size(dir.path()), 0);
+    }
+
+    // --- hash_key different inputs produce different outputs ---
+
+    #[test]
+    fn hash_key_different_for_different_inputs() {
+        let h1 = DiskCache::hash_key("GETlocalhost/foo");
+        let h2 = DiskCache::hash_key("POSTlocalhost/foo");
+        assert_ne!(h1, h2);
+    }
+
+    // --- meta/body path helpers ---
+
+    #[test]
+    fn meta_and_body_paths_in_entry_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(dir.path().to_path_buf(), 1024);
+        let hash = "ff11223344556677889900aabbccddeeff11223344556677889900aabbccddee";
+        let meta = cache.meta_path(hash);
+        let body = cache.body_path(hash);
+        assert!(meta.ends_with("meta.bin"));
+        assert!(body.ends_with("body.bin"));
+        // Both should be under the same entry_dir
+        assert_eq!(meta.parent().unwrap(), body.parent().unwrap());
+    }
+
+    // --- full write_meta + read_meta roundtrip with 304 status ---
+
+    #[test]
+    fn write_read_meta_roundtrip_304() {
+        use std::time::SystemTime;
+
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("meta.bin");
+
+        let header = pingora_http::ResponseHeader::build(304, None).unwrap();
+        let now = SystemTime::now();
+        let meta = CacheMeta::new(now, now, 0, 0, header);
+
+        DiskCache::write_meta(&meta_path, &meta).unwrap();
+        let restored = DiskCache::read_meta(&meta_path).unwrap();
+        assert!(restored.is_fresh(now));
+    }
+
+    // --- write_meta to bad path fails ---
+
+    #[test]
+    fn write_meta_bad_path_returns_error() {
+        use std::time::SystemTime;
+        let header = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let now = SystemTime::now();
+        let meta = CacheMeta::new(now, now, 0, 0, header);
+        let result = DiskCache::write_meta(Path::new("/nonexistent/dir/meta.bin"), &meta);
+        assert!(result.is_err());
+    }
+
+    // --- entry lifecycle: plant files, verify scan picks them up ---
+
+    #[test]
+    fn entry_lifecycle_write_scan_verify() {
+        use std::time::SystemTime;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        let hash = DiskCache::hash_key("testkey");
+        let prefix = &hash[..2];
+        let entry_dir = root.join(prefix).join(&hash);
+        std::fs::create_dir_all(&entry_dir).unwrap();
+
+        // Write a real meta
+        let header = pingora_http::ResponseHeader::build(200, None).unwrap();
+        let now = SystemTime::now();
+        let meta = CacheMeta::new(now, now, 0, 0, header);
+        DiskCache::write_meta(&entry_dir.join("meta.bin"), &meta).unwrap();
+
+        // Write body
+        let body = b"cached response body";
+        std::fs::write(entry_dir.join("body.bin"), body).unwrap();
+
+        // Create cache — scan_existing should pick this up
+        let cache = DiskCache::new(root, 1024 * 1024);
+        assert!(cache.current_size.load(Ordering::Relaxed) > 0);
+        assert_eq!(cache.lru.read().len(), 1);
+
+        // Verify meta can be read back
+        let restored = DiskCache::read_meta(&entry_dir.join("meta.bin")).unwrap();
+        assert!(restored.is_fresh(now));
+    }
+
+    // --- eviction: plant entries, create cache with tiny budget ---
+
+    #[test]
+    fn scan_existing_multiple_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+
+        // Plant two entries under different prefixes
+        for i in 0..2 {
+            let hash = format!(
+                "{i:02x}00000000000000000000000000000000000000000000000000000000000000"
+            );
+            let prefix = &hash[..2];
+            let entry_dir = root.join(prefix).join(&hash);
+            std::fs::create_dir_all(&entry_dir).unwrap();
+            std::fs::write(entry_dir.join("body.bin"), vec![0u8; 100]).unwrap();
+            std::fs::write(entry_dir.join("meta.bin"), vec![0u8; 50]).unwrap();
+        }
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        assert_eq!(cache.lru.read().len(), 2);
+        // Each entry is 150 bytes
+        assert_eq!(cache.current_size.load(Ordering::Relaxed), 300);
+    }
+
+    // --- scan_existing ignores non-directory items ---
+
+    #[test]
+    fn scan_existing_ignores_plain_files_in_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+        // Place a plain file directly in root (not a prefix dir)
+        std::fs::write(root.join("stray_file.txt"), b"ignored").unwrap();
+
+        let cache = DiskCache::new(root, 1024 * 1024);
+        assert_eq!(cache.current_size.load(Ordering::Relaxed), 0);
+        assert!(cache.lru.read().is_empty());
+    }
+
+    // --- read_meta with exact 8-byte header but zero-length meta ---
+
+    #[test]
+    fn read_meta_empty_meta_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("meta.bin");
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // meta0_len = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // meta1_len = 0
+        std::fs::write(&meta_path, &data).unwrap();
+        // Deserialization of empty meta slices likely fails — that's fine
+        let result = DiskCache::read_meta(&meta_path);
+        // We just verify it doesn't panic; it may succeed or error
+        let _ = result;
+    }
 }

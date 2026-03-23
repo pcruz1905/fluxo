@@ -127,4 +127,38 @@ mod tests {
         c2.global.log_level = "debug".to_string();
         assert_ne!(hash_config(&c1), hash_config(&c2));
     }
+
+    #[test]
+    fn hash_config_changes_with_upstream() {
+        let c1 = FluxoConfig::default();
+        let mut c2 = FluxoConfig::default();
+        c2.upstreams.insert(
+            "backend".to_string(),
+            crate::config::UpstreamConfig::default(),
+        );
+        assert_ne!(hash_config(&c1), hash_config(&c2));
+    }
+
+    #[test]
+    fn hash_config_changes_with_service() {
+        let c1 = FluxoConfig::default();
+        let mut c2 = FluxoConfig::default();
+        c2.services.insert(
+            "web".to_string(),
+            crate::config::ServiceConfig::default(),
+        );
+        assert_ne!(hash_config(&c1), hash_config(&c2));
+    }
+
+    #[test]
+    fn hash_config_same_after_clone() {
+        let mut c1 = FluxoConfig::default();
+        c1.global.log_level = "warn".to_string();
+        c1.upstreams.insert(
+            "api".to_string(),
+            crate::config::UpstreamConfig::default(),
+        );
+        let c2 = c1.clone();
+        assert_eq!(hash_config(&c1), hash_config(&c2));
+    }
 }

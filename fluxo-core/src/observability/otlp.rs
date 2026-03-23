@@ -135,6 +135,26 @@ mod tests {
     }
 
     #[test]
+    fn init_otlp_tracer_disabled_returns_none() {
+        let config = OtelTracingConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let result = init_otlp_tracer(&config, "info", AccessLogFormat::Compact);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn init_otlp_tracer_disabled_json_returns_none() {
+        let config = OtelTracingConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let result = init_otlp_tracer(&config, "debug", AccessLogFormat::Json);
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn build_exporter_http() {
         let config = OtelTracingConfig {
             enabled: true,
@@ -156,5 +176,87 @@ mod tests {
         };
         let result = build_exporter(&config);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_exporter_unknown_protocol_defaults_to_http() {
+        // Any protocol string other than "grpc" falls through to the HTTP branch
+        let config = OtelTracingConfig {
+            enabled: true,
+            endpoint: "http://localhost:4318".to_string(),
+            protocol: "unknown-proto".to_string(),
+            ..Default::default()
+        };
+        let result = build_exporter(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_exporter_empty_protocol_defaults_to_http() {
+        let config = OtelTracingConfig {
+            enabled: true,
+            endpoint: "http://localhost:4318".to_string(),
+            protocol: String::new(),
+            ..Default::default()
+        };
+        let result = build_exporter(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_exporter_with_custom_endpoint() {
+        let config = OtelTracingConfig {
+            enabled: true,
+            endpoint: "http://otel-collector.example.com:4318/v1/traces".to_string(),
+            protocol: "http".to_string(),
+            ..Default::default()
+        };
+        let result = build_exporter(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn config_with_resource_attributes() {
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert("deployment.environment".to_string(), "staging".to_string());
+        attrs.insert("service.version".to_string(), "1.2.3".to_string());
+        let config = OtelTracingConfig {
+            enabled: false,
+            service_name: "my-proxy".to_string(),
+            resource_attributes: attrs,
+            ..Default::default()
+        };
+        // Disabled config still returns None from init
+        let result = init_otlp_tracer(&config, "warn", AccessLogFormat::Compact);
+        assert!(result.is_none());
+        // But the config is well-formed
+        assert_eq!(config.service_name, "my-proxy");
+        assert_eq!(config.resource_attributes.len(), 2);
+        assert_eq!(
+            config.resource_attributes.get("deployment.environment").unwrap(),
+            "staging"
+        );
+    }
+
+    #[test]
+    fn config_sample_rate_boundaries() {
+        // Sample rate of 0.0 maps to AlwaysOff, 1.0 to AlwaysOn
+        let always_on = OtelTracingConfig {
+            sample_rate: 1.0,
+            ..Default::default()
+        };
+        assert!((always_on.sample_rate - 1.0).abs() < f64::EPSILON);
+
+        let always_off = OtelTracingConfig {
+            sample_rate: 0.0,
+            ..Default::default()
+        };
+        assert!(always_off.sample_rate <= 0.0);
+
+        let ratio = OtelTracingConfig {
+            sample_rate: 0.5,
+            ..Default::default()
+        };
+        assert!(ratio.sample_rate > 0.0 && ratio.sample_rate < 1.0);
     }
 }

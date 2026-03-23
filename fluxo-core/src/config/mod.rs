@@ -1903,4 +1903,1105 @@ method = "{method}"
                 .unwrap_or_else(|e| panic!("method '{method}' should be valid: {e}"));
         }
     }
+
+    // --- parse_duration edge cases ---
+
+    #[test]
+    fn parse_duration_with_whitespace() {
+        assert_eq!(parse_duration("  10s  ").unwrap(), Duration::from_secs(10));
+        assert_eq!(
+            parse_duration("  500ms  ").unwrap(),
+            Duration::from_millis(500)
+        );
+        assert_eq!(parse_duration("  2m  ").unwrap(), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn parse_duration_zero_values() {
+        assert_eq!(parse_duration("0s").unwrap(), Duration::from_secs(0));
+        assert_eq!(parse_duration("0ms").unwrap(), Duration::from_millis(0));
+        assert_eq!(parse_duration("0m").unwrap(), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn parse_duration_empty_string() {
+        assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn parse_duration_no_suffix() {
+        assert!(parse_duration("123").is_err());
+    }
+
+    #[test]
+    fn parse_duration_invalid_number_with_suffix() {
+        assert!(parse_duration("abcs").is_err());
+        assert!(parse_duration("xms").is_err());
+        assert!(parse_duration("ym").is_err());
+    }
+
+    #[test]
+    fn parse_duration_large_values() {
+        assert_eq!(
+            parse_duration("86400s").unwrap(),
+            Duration::from_secs(86400)
+        );
+        assert_eq!(
+            parse_duration("1440m").unwrap(),
+            Duration::from_secs(1440 * 60)
+        );
+    }
+
+    #[test]
+    fn parse_duration_negative_rejected() {
+        assert!(parse_duration("-5s").is_err());
+        assert!(parse_duration("-100ms").is_err());
+    }
+
+    // --- parse_size edge cases ---
+
+    #[test]
+    fn parse_size_with_b_suffix() {
+        assert_eq!(parse_size("1024b").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_size_uppercase() {
+        assert_eq!(parse_size("10MB").unwrap(), 10 * 1024 * 1024);
+        assert_eq!(parse_size("1GB").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size("512KB").unwrap(), 512 * 1024);
+    }
+
+    #[test]
+    fn parse_size_with_whitespace() {
+        assert_eq!(parse_size("  10mb  ").unwrap(), 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_size_zero() {
+        assert_eq!(parse_size("0").unwrap(), 0);
+        assert_eq!(parse_size("0mb").unwrap(), 0);
+        assert_eq!(parse_size("0kb").unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_size_empty_string() {
+        assert!(parse_size("").is_err());
+    }
+
+    #[test]
+    fn parse_size_invalid_number() {
+        assert!(parse_size("abcmb").is_err());
+        assert!(parse_size("xgb").is_err());
+        assert!(parse_size("ykb").is_err());
+        assert!(parse_size("zb").is_err());
+    }
+
+    #[test]
+    fn parse_size_plain_bytes_large() {
+        assert_eq!(parse_size("999999").unwrap(), 999_999);
+    }
+
+    // --- default_config_toml ---
+
+    #[test]
+    fn default_config_toml_is_parseable() {
+        let toml_str = default_config_toml();
+        let config: FluxoConfig = toml::from_str(&toml_str).unwrap();
+        assert!(config.services.contains_key("web"));
+        assert!(config.upstreams.contains_key("backend"));
+    }
+
+    // --- config_from_upstream structure ---
+
+    #[test]
+    fn config_from_upstream_has_expected_structure() {
+        let config = config_from_upstream("127.0.0.1:8080").unwrap();
+        assert_eq!(config.services.len(), 1);
+        assert_eq!(config.upstreams.len(), 1);
+        let svc = &config.services["default"];
+        assert_eq!(svc.listeners.len(), 1);
+        assert_eq!(svc.listeners[0].address, "0.0.0.0:80");
+        assert!(!svc.listeners[0].offer_h2);
+        assert!(!svc.listeners[0].proxy_protocol);
+        assert!(svc.tls.is_none());
+        assert_eq!(svc.routes.len(), 1);
+        assert_eq!(svc.routes[0].name.as_deref(), Some("default"));
+        let up = &config.upstreams["default"];
+        assert_eq!(up.discovery, "static");
+        assert_eq!(up.targets.len(), 1);
+    }
+
+    // --- validate() single error path ---
+
+    #[test]
+    fn validate_single_error_returns_validation_variant() {
+        let toml = r#"
+[global]
+admin = "not-an-address"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+        assert!(err.to_string().contains("invalid admin address"));
+    }
+
+    // --- Global timeout validation ---
+
+    #[test]
+    fn reject_invalid_client_body_timeout() {
+        let toml = r#"
+[global]
+client_body_timeout = "nope"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("client_body_timeout"));
+    }
+
+    #[test]
+    fn reject_invalid_client_write_timeout() {
+        let toml = r#"
+[global]
+client_write_timeout = "nope"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("client_write_timeout"));
+    }
+
+    #[test]
+    fn reject_invalid_shutdown_timeout() {
+        let toml = r#"
+[global]
+shutdown_timeout = "bad"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("shutdown_timeout"));
+    }
+
+    #[test]
+    fn reject_invalid_shutdown_drain_delay() {
+        let toml = r#"
+[global]
+shutdown_drain_delay = "bad"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("shutdown_drain_delay"));
+    }
+
+    // --- access_log_exclude validation ---
+
+    #[test]
+    fn accept_valid_access_log_exclude_class_patterns() {
+        for pattern in ["1xx", "2xx", "3xx", "4xx", "5xx"] {
+            let toml = format!(
+                r#"
+[global]
+access_log_exclude = ["{pattern}"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#
+            );
+            load_from_str(&toml)
+                .unwrap_or_else(|e| panic!("pattern '{pattern}' should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn accept_valid_access_log_exclude_range() {
+        let toml = r#"
+[global]
+access_log_exclude = ["200-299"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        load_from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn accept_valid_access_log_exclude_exact_code() {
+        let toml = r#"
+[global]
+access_log_exclude = ["404"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        load_from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn reject_invalid_access_log_exclude_pattern() {
+        let toml = r#"
+[global]
+access_log_exclude = ["garbage"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid access_log_exclude"));
+    }
+
+    #[test]
+    fn reject_access_log_exclude_reversed_range() {
+        let toml = r#"
+[global]
+access_log_exclude = ["500-200"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid access_log_exclude"));
+    }
+
+    #[test]
+    fn reject_access_log_exclude_out_of_range_code() {
+        let toml = r#"
+[global]
+access_log_exclude = ["999"]
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid access_log_exclude"));
+    }
+
+    // --- Empty listener address ---
+
+    #[test]
+    fn reject_empty_listener_address() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = ""
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("empty listener address"));
+    }
+
+    // --- TLS key_path set but cert_path missing ---
+
+    #[test]
+    fn reject_tls_missing_cert() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:443"
+[services.web.tls]
+key_path = "/etc/key.pem"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("cert_path is missing"));
+    }
+
+    // --- DNS discovery validation ---
+
+    #[test]
+    fn reject_dns_discovery_without_hostname() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+discovery = "dns"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("dns_hostname"));
+    }
+
+    #[test]
+    fn reject_dns_discovery_with_empty_hostname() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+discovery = "dns"
+dns_hostname = ""
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("dns_hostname"));
+    }
+
+    #[test]
+    fn reject_dns_discovery_invalid_refresh_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+discovery = "dns"
+dns_hostname = "backend.local"
+dns_refresh_interval = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("dns_refresh_interval"));
+    }
+
+    #[test]
+    fn reject_invalid_discovery_method() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+discovery = "consul"
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("unknown discovery"));
+    }
+
+    // --- Retry edge cases ---
+
+    #[test]
+    fn reject_retry_zero_attempts() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.retry]
+attempts = 0
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("retry.attempts must be >= 1"));
+    }
+
+    #[test]
+    fn reject_retry_invalid_initial_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.retry]
+attempts = 2
+initial_interval = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("retry.initial_interval"));
+    }
+
+    #[test]
+    fn reject_retry_invalid_max_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.retry]
+attempts = 2
+max_interval = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("retry.max_interval"));
+    }
+
+    // --- Passive health check ---
+
+    #[test]
+    fn reject_passive_health_invalid_fail_timeout() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.passive_health]
+fail_timeout = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("passive_health.fail_timeout"));
+    }
+
+    #[test]
+    fn reject_passive_health_zero_max_fails() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.passive_health]
+max_fails = 0
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("passive_health.max_fails must be >= 1"));
+    }
+
+    // --- Keepalive timeout ---
+
+    #[test]
+    fn reject_invalid_keepalive_timeout() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+keepalive_timeout = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid keepalive_timeout"));
+    }
+
+    // --- total_connection_timeout ---
+
+    #[test]
+    fn reject_invalid_total_connection_timeout() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+total_connection_timeout = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("total_connection_timeout"));
+    }
+
+    // --- tcp_keepalive ---
+
+    #[test]
+    fn reject_invalid_tcp_keepalive_idle() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.tcp_keepalive]
+idle = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("tcp_keepalive.idle"));
+    }
+
+    #[test]
+    fn reject_invalid_tcp_keepalive_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.tcp_keepalive]
+interval = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("tcp_keepalive.interval"));
+    }
+
+    // --- h2_ping_interval ---
+
+    #[test]
+    fn reject_invalid_h2_ping_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+h2_ping_interval = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("h2_ping_interval"));
+    }
+
+    // --- response_buffer_size ---
+
+    #[test]
+    fn reject_invalid_response_buffer_size() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+response_buffer_size = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("response_buffer_size"));
+    }
+
+    // --- Circuit breaker ---
+
+    #[test]
+    fn reject_circuit_breaker_zero_failure_threshold() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+failure_threshold = 0
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("circuit_breaker.failure_threshold must be >= 1"));
+    }
+
+    #[test]
+    fn reject_circuit_breaker_zero_success_threshold() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+success_threshold = 0
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("circuit_breaker.success_threshold must be >= 1"));
+    }
+
+    #[test]
+    fn reject_circuit_breaker_invalid_open_duration() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+open_duration = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("circuit_breaker.open_duration"));
+    }
+
+    #[test]
+    fn reject_circuit_breaker_error_ratio_out_of_range() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+error_ratio_threshold = 1.5
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("error_ratio_threshold must be between"));
+    }
+
+    #[test]
+    fn reject_circuit_breaker_negative_error_ratio() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+error_ratio_threshold = -0.1
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("error_ratio_threshold must be between"));
+    }
+
+    #[test]
+    fn reject_circuit_breaker_zero_min_requests() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+min_requests = 0
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("circuit_breaker.min_requests must be >= 1"));
+    }
+
+    #[test]
+    fn reject_circuit_breaker_invalid_window() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.circuit_breaker]
+window = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("circuit_breaker.window"));
+    }
+
+    // --- Sticky session ---
+
+    #[test]
+    fn reject_sticky_empty_cookie_name() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.sticky]
+cookie_name = ""
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("sticky.cookie_name must not be empty"));
+    }
+
+    // --- Mirror config ---
+
+    #[test]
+    fn reject_mirror_unknown_upstream() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[services.web.routes.mirror]
+upstream = "nonexistent"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("mirror upstream"));
+    }
+
+    #[test]
+    fn reject_mirror_percent_over_100() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[services.web.routes.mirror]
+upstream = "mirror-backend"
+percent = 150
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.mirror-backend]
+targets = ["127.0.0.1:3001"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("mirror.percent must be 0-100"));
+    }
+
+    // --- Cache invalid sub-fields ---
+
+    #[test]
+    fn reject_cache_invalid_max_file_size() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[services.web.routes.cache]
+max_file_size = "bad"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("cache max_file_size"));
+    }
+
+    #[test]
+    fn reject_cache_invalid_stale_while_revalidate() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[services.web.routes.cache]
+stale_while_revalidate = "bad"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("cache stale_while_revalidate"));
+    }
+
+    #[test]
+    fn reject_cache_invalid_stale_if_error() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[services.web.routes.cache]
+stale_if_error = "bad"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("cache stale_if_error"));
+    }
+
+    // --- Health check unhealthy_interval ---
+
+    #[test]
+    fn reject_invalid_health_check_unhealthy_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.health_check]
+path = "/healthz"
+unhealthy_interval = "bad"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("unhealthy_interval"));
+    }
+
+    // --- Invalid upstream_type ---
+
+    #[test]
+    fn reject_invalid_upstream_type() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+upstream_type = "magic"
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("invalid upstream_type"));
+    }
+
+    // --- Composite upstream requires services ---
+
+    #[test]
+    fn reject_composite_upstream_without_services() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+upstream_type = "weighted"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("requires at least one service"));
+    }
+
+    // --- Composite upstream service with zero weight ---
+
+    #[test]
+    fn reject_composite_upstream_zero_weight_service() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "canary"
+[upstreams.v1]
+targets = ["127.0.0.1:3001"]
+[upstreams.canary]
+upstream_type = "weighted"
+services = [{ upstream = "v1", weight = 0 }]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("weight 0"));
+    }
+
+    // --- ConfigError display ---
+
+    #[test]
+    fn config_error_io_display() {
+        let err = ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
+        assert!(err.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn config_error_unknown_upstream_display() {
+        let err = ConfigError::UnknownUpstream("foo".to_string());
+        assert!(err.to_string().contains("unknown upstream 'foo'"));
+    }
+
+    #[test]
+    fn config_error_validation_multiple_display() {
+        let err =
+            ConfigError::ValidationMultiple(vec!["error one".to_string(), "error two".to_string()]);
+        let msg = err.to_string();
+        assert!(msg.contains("error one"));
+        assert!(msg.contains("error two"));
+        assert!(msg.contains("validation errors:"));
+    }
+
+    // --- load_from_str TOML parse error ---
+
+    #[test]
+    fn load_from_str_invalid_toml() {
+        let err = load_from_str("{{{{not valid toml").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+        assert!(err.to_string().contains("failed to parse TOML"));
+    }
+
+    // --- Route name fallback in error messages ---
+
+    #[test]
+    fn unknown_upstream_error_uses_route_name() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+name = "my-route"
+upstream = "nonexistent"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("my-route"));
+    }
+
+    #[test]
+    fn unknown_upstream_error_uses_index_fallback() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "nonexistent"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("route[0]"));
+    }
+
+    // --- validate() Ok path ---
+
+    #[test]
+    fn validate_ok_for_valid_config() {
+        let config = config_from_upstream("127.0.0.1:3000").unwrap();
+        assert!(validate(&config).is_ok());
+    }
+
+    // --- Empty config (no services/upstreams) is valid ---
+
+    #[test]
+    fn empty_config_is_valid() {
+        let toml = r"
+[global]
+";
+        let config = load_from_str(toml).unwrap();
+        assert!(config.services.is_empty());
+        assert!(config.upstreams.is_empty());
+    }
+
+    // --- Failover upstream type ---
+
+    #[test]
+    fn failover_upstream_valid() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "ha"
+[upstreams.primary]
+targets = ["127.0.0.1:3001"]
+[upstreams.secondary]
+targets = ["127.0.0.1:3002"]
+[upstreams.ha]
+upstream_type = "failover"
+services = [
+  { upstream = "primary", weight = 1 },
+  { upstream = "secondary", weight = 1 },
+]
+"#;
+        load_from_str(toml).unwrap();
+    }
+
+    // --- Health check timeout equals interval ---
+
+    #[test]
+    fn reject_health_check_timeout_equals_interval() {
+        let toml = r#"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+[upstreams.backend.health_check]
+path = "/health"
+interval = "5s"
+timeout = "5s"
+"#;
+        let err = load_from_str(toml).unwrap_err();
+        assert!(err.to_string().contains("must be less than interval"));
+    }
+
+    // --- Valid global timeouts ---
+
+    #[test]
+    fn accept_valid_global_timeouts() {
+        let toml = r#"
+[global]
+client_body_timeout = "30s"
+client_write_timeout = "60s"
+shutdown_timeout = "10s"
+shutdown_drain_delay = "5s"
+[services.web]
+[[services.web.listeners]]
+address = "0.0.0.0:80"
+[[services.web.routes]]
+upstream = "backend"
+[upstreams.backend]
+targets = ["127.0.0.1:3000"]
+"#;
+        load_from_str(toml).unwrap();
+    }
 }
