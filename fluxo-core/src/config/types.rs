@@ -1528,7 +1528,7 @@ mod tests {
 
     #[test]
     fn cache_config_micro_cache_enabled() {
-        let toml_str = r#"micro_cache = true"#;
+        let toml_str = "micro_cache = true";
         let cfg: CacheConfig = toml::from_str(toml_str).unwrap();
         assert!(cfg.micro_cache);
     }
