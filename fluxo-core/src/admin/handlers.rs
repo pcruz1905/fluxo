@@ -353,10 +353,10 @@ pub fn handle_upgrade(config_path: Option<&str>) -> (u16, String, &'static str) 
     #[cfg(not(unix))]
     {
         let _ = config_path;
-        return json_response(
+        json_response(
             501,
             &serde_json::json!({"error": "binary upgrade is only supported on Unix"}),
-        );
+        )
     }
 
     #[cfg(unix)]
@@ -870,7 +870,7 @@ match_host = ["test.com"]
 
     #[test]
     fn upgrade_returns_response() {
-        let (status, body, ct) = handle_upgrade(Some("/tmp/fluxo.toml"));
+        let (status, _body, ct) = handle_upgrade(Some("/tmp/fluxo.toml"));
         assert_eq!(ct, "application/json");
         // On Unix: spawns a new process (may fail if binary doesn't exist, that's OK)
         // On non-Unix: returns 501

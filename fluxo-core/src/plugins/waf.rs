@@ -4,8 +4,8 @@
 //! (SQL injection, XSS, path traversal, command injection, etc.) using compiled
 //! regex rule sets. Matching requests are blocked with 403 Forbidden.
 //!
-//! This is a lightweight, built-in WAF — not a full ModSecurity engine.
-//! For advanced use cases (OWASP CRS, custom rule language), deploy ModSecurity
+//! This is a lightweight, built-in WAF — not a full `ModSecurity` engine.
+//! For advanced use cases (OWASP CRS, custom rule language), deploy `ModSecurity`
 //! as a forward auth service and use the `forward_auth` plugin.
 //!
 //! Example config:
@@ -40,6 +40,7 @@ use crate::context::{PluginResponse, RequestContext};
 use crate::plugins::PluginAction;
 
 /// Configuration for the WAF plugin.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Deserialize)]
 pub struct WafConfig {
     /// Enable SQL injection detection. Default: true.

@@ -14,6 +14,7 @@ use fluxo_core::FluxoApp;
 use fluxo_core::config;
 
 /// The fast, simple, memory-safe reverse proxy.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Debug)]
 #[command(name = "fluxo", version, about)]
 struct Cli {

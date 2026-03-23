@@ -380,6 +380,7 @@ pub struct ListenerConfig {
 }
 
 /// TLS settings for a service.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
     /// Path to the TLS certificate file.
