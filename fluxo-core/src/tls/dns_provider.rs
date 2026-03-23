@@ -80,7 +80,6 @@ pub fn create_provider(config: &AcmeDnsConfig) -> Result<Box<dyn DnsProvider>, D
 /// Cloudflare DNS provider.
 pub struct CloudflareProvider {
     client: reqwest::Client,
-    api_token: String,
     zone_id: Option<String>,
 }
 
@@ -97,11 +96,7 @@ impl CloudflareProvider {
             .build()
             .unwrap_or_default();
 
-        Self {
-            client,
-            api_token: api_token.to_string(),
-            zone_id,
-        }
+        Self { client, zone_id }
     }
 
     /// Auto-detect the Cloudflare zone ID for a domain.
@@ -122,7 +117,7 @@ impl CloudflareProvider {
                 self.client.get(&url).send().await?.json().await?;
 
             if resp.success {
-                if let Some(zone) = resp.result.first() {
+                if let Some(zone) = resp.result.as_deref().and_then(<[CloudflareZone]>::first) {
                     debug!(
                         zone_id = zone.id,
                         zone_name = zone.name,
@@ -262,8 +257,7 @@ mod tests {
             propagation_wait: "30s".to_string(),
         };
         let result = create_provider(&config);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.err().unwrap();
         assert!(err.to_string().contains("unknown"));
     }
 

@@ -151,7 +151,9 @@ impl FluxoApp {
             let mut acme = AcmeManager::new(email, directory_url, cert_store.clone()).await?;
             if tls.acme_challenge == "dns-01" {
                 let dns_config = tls.acme_dns.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("acme_challenge = \"dns-01\" requires [acme_dns] configuration")
+                    crate::tls::acme::AcmeError::Other(
+                        "acme_challenge = \"dns-01\" requires [acme_dns] configuration".into(),
+                    )
                 })?;
                 acme.obtain_cert_dns01(&domains, dns_config).await?;
             } else {
