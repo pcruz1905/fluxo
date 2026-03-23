@@ -201,10 +201,10 @@ fn main() -> anyhow::Result<()> {
     }
     // Wire pid_file and upgrade_socket to Pingora
     if let Some(ref pid_file) = fluxo_config.global.pid_file {
-        conf.pid_file = pid_file.clone();
+        conf.pid_file.clone_from(pid_file);
     }
     if let Some(ref upgrade_socket) = fluxo_config.global.upgrade_socket {
-        conf.upgrade_sock = upgrade_socket.clone();
+        conf.upgrade_sock.clone_from(upgrade_socket);
     }
     // Preserve thread count from our config
     if fluxo_config.global.threads > 0 {
