@@ -35,7 +35,7 @@ pub fn compile_plugins(
 
     // Build plugins in phase order
     let ordered_names = [
-        "jwt_auth",     // Auth first — reject unauthorized before doing any work
+        "jwt_auth", // Auth first — reject unauthorized before doing any work
         "key_auth",
         "basic_auth",
         "csrf",
@@ -277,6 +277,97 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                 })?;
             Ok(BuiltinPlugin::RequestBuffer(
                 super::request_buffer::RequestBufferPlugin::new(&cfg),
+            ))
+        }
+        "jwt_auth" => {
+            let cfg: super::jwt_auth::JwtAuthConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::jwt_auth::JwtAuthPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::JwtAuth(plugin))
+        }
+        "key_auth" => {
+            let cfg: super::key_auth::KeyAuthConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::key_auth::KeyAuthPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::KeyAuth(plugin))
+        }
+        "csrf" => {
+            let cfg: super::csrf::CsrfConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::csrf::CsrfPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::Csrf(plugin))
+        }
+        "referer_restrict" => {
+            let cfg: super::referer_restrict::RefererRestrictConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(BuiltinPlugin::RefererRestrict(
+                super::referer_restrict::RefererRestrictPlugin::new(cfg),
+            ))
+        }
+        "ua_restrict" => {
+            let cfg: super::ua_restrict::UaRestrictConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::ua_restrict::UaRestrictPlugin::try_new(&cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::UaRestrict(plugin))
+        }
+        "static_files" => {
+            let cfg: super::static_files::StaticFilesConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin =
+                super::static_files::StaticFilesPlugin::try_new(cfg).map_err(|reason| {
+                    PluginConfigError::InvalidConfig {
+                        name: name.to_string(),
+                        reason,
+                    }
+                })?;
+            Ok(BuiltinPlugin::StaticFiles(plugin))
+        }
+        "traffic_split" => {
+            let cfg: super::traffic_split::TrafficSplitConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(BuiltinPlugin::TrafficSplit(
+                super::traffic_split::TrafficSplitPlugin::new(cfg),
             ))
         }
         _ => Err(PluginConfigError::UnknownPlugin(name.to_string())),
