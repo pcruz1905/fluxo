@@ -210,44 +210,50 @@ pub async fn handle_cache_purge(body: &[u8]) -> (u16, String, &'static str) {
         .and_then(serde_json::Value::as_bool)
         == Some(true)
     {
-        return match crate::proxy::global_disk_cache() {
-            Some(disk) => {
+        return crate::proxy::global_disk_cache().map_or_else(
+            || {
+                json_response(
+                    400,
+                    &serde_json::json!({"error": "disk cache not configured; purge_all requires disk cache"}),
+                )
+            },
+            |disk| {
                 let count = disk.purge_all();
                 json_response(200, &serde_json::json!({"purged_count": count}))
-            }
-            None => json_response(
-                400,
-                &serde_json::json!({"error": "disk cache not configured; purge_all requires disk cache"}),
-            ),
-        };
+            },
+        );
     }
 
     // --- Pattern-based purge ---
     if let Some(pattern) = request.get("pattern").and_then(|v| v.as_str()) {
-        return match crate::proxy::global_disk_cache() {
-            Some(disk) => {
+        return crate::proxy::global_disk_cache().map_or_else(
+            || {
+                json_response(
+                    400,
+                    &serde_json::json!({"error": "disk cache not configured; pattern purge requires disk cache"}),
+                )
+            },
+            |disk| {
                 let count = disk.purge_by_pattern(pattern);
                 json_response(200, &serde_json::json!({"purged_count": count}))
-            }
-            None => json_response(
-                400,
-                &serde_json::json!({"error": "disk cache not configured; pattern purge requires disk cache"}),
-            ),
-        };
+            },
+        );
     }
 
     // --- Tag-based purge ---
     if let Some(tag) = request.get("tag").and_then(|v| v.as_str()) {
-        return match crate::proxy::global_disk_cache() {
-            Some(disk) => {
+        return crate::proxy::global_disk_cache().map_or_else(
+            || {
+                json_response(
+                    400,
+                    &serde_json::json!({"error": "disk cache not configured; tag purge requires disk cache"}),
+                )
+            },
+            |disk| {
                 let count = disk.purge_by_tag(tag);
                 json_response(200, &serde_json::json!({"purged_count": count}))
-            }
-            None => json_response(
-                400,
-                &serde_json::json!({"error": "disk cache not configured; tag purge requires disk cache"}),
-            ),
-        };
+            },
+        );
     }
 
     // --- Exact key purge (existing behavior) ---
@@ -922,8 +928,9 @@ match_host = ["test.com"]
     }
 
     #[test]
+    #[allow(unused_variables)]
     fn upgrade_returns_response() {
-        let (status, _body, ct) = handle_upgrade(Some("/tmp/fluxo.toml"));
+        let (status, body, ct) = handle_upgrade(Some("/tmp/fluxo.toml"));
         assert_eq!(ct, "application/json");
         // On Unix: spawns a new process (may fail if binary doesn't exist, that's OK)
         // On non-Unix: returns 501

@@ -1106,7 +1106,7 @@ mod tests {
         plant_entry(&root, "GETexample.com/b", &[]);
         plant_entry(&root, "GETexample.com/c", &["tag-c"]);
 
-        let cache = DiskCache::new(root.clone(), 1024 * 1024);
+        let cache = DiskCache::new(root, 1024 * 1024);
         assert_eq!(cache.lru.read().len(), 3);
         assert!(cache.current_size.load(Ordering::Relaxed) > 0);
 
@@ -1152,8 +1152,7 @@ mod tests {
         let stored_tags = std::fs::read_to_string(&tags_path).unwrap();
         assert!(stored_tags.contains("product-1"));
         assert!(stored_tags.contains("api-v2"));
-        let tag_lines: Vec<&str> = stored_tags.lines().collect();
-        assert_eq!(tag_lines.len(), 2);
+        assert_eq!(stored_tags.lines().count(), 2);
     }
 
     #[test]
