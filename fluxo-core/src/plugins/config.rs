@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, oauth2, csrf, referer_restrict, ua_restrict, static_files, traffic_split)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, digest_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, oauth2, forward_auth, ldap_auth, csrf, referer_restrict, ua_restrict, static_files, traffic_split)"
     )]
     UnknownPlugin(String),
 
@@ -38,7 +38,10 @@ pub fn compile_plugins(
         "jwt_auth", // Auth first — reject unauthorized before doing any work
         "key_auth",
         "basic_auth",
+        "digest_auth",
         "oauth2",
+        "forward_auth",
+        "ldap_auth",
         "csrf",
         "ip_restrict",
         "referer_restrict",
@@ -321,6 +324,49 @@ fn build_plugin(name: &str, config: serde_json::Value) -> Result<BuiltinPlugin, 
                 }
             })?;
             Ok(BuiltinPlugin::OAuth2(plugin))
+        }
+        "forward_auth" => {
+            let cfg: super::forward_auth::ForwardAuthConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin =
+                super::forward_auth::ForwardAuthPlugin::try_new(cfg).map_err(|reason| {
+                    PluginConfigError::InvalidConfig {
+                        name: name.to_string(),
+                        reason,
+                    }
+                })?;
+            Ok(BuiltinPlugin::ForwardAuth(plugin))
+        }
+        "digest_auth" => {
+            let cfg: super::digest_auth::DigestAuthConfig = serde_json::from_value(config)
+                .map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::digest_auth::DigestAuthPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::DigestAuth(plugin))
+        }
+        "ldap_auth" => {
+            let cfg: super::ldap_auth::LdapAuthConfig =
+                serde_json::from_value(config).map_err(|e| PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason: e.to_string(),
+                })?;
+            let plugin = super::ldap_auth::LdapAuthPlugin::try_new(cfg).map_err(|reason| {
+                PluginConfigError::InvalidConfig {
+                    name: name.to_string(),
+                    reason,
+                }
+            })?;
+            Ok(BuiltinPlugin::LdapAuth(plugin))
         }
         "csrf" => {
             let cfg: super::csrf::CsrfConfig =

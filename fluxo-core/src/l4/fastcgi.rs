@@ -433,16 +433,18 @@ mod tests {
     fn find_header_end_crlf() {
         let data = b"Header: value\r\n\r\nBody";
         let (end, body_start) = find_header_end(data).unwrap();
-        assert_eq!(end, 14);
-        assert_eq!(body_start, 18);
+        // "Header: value" is 13 bytes; \r\n\r\n starts at index 13
+        assert_eq!(end, 13);
+        assert_eq!(body_start, 17);
     }
 
     #[test]
     fn find_header_end_lf() {
         let data = b"Header: value\n\nBody";
         let (end, body_start) = find_header_end(data).unwrap();
-        assert_eq!(end, 14);
-        assert_eq!(body_start, 16);
+        // "Header: value" is 13 bytes; \n\n starts at index 13
+        assert_eq!(end, 13);
+        assert_eq!(body_start, 15);
     }
 
     #[test]

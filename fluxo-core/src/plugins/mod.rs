@@ -17,10 +17,13 @@ pub mod concurrency_limit;
 pub mod config;
 pub mod cors;
 pub mod csrf;
+pub mod digest_auth;
+pub mod forward_auth;
 pub mod headers;
 pub mod ip_restrict;
 pub mod jwt_auth;
 pub mod key_auth;
+pub mod ldap_auth;
 pub mod oauth2;
 pub mod path_rewrite;
 pub mod pipeline;
@@ -76,6 +79,9 @@ pub enum BuiltinPlugin {
     StaticFiles(static_files::StaticFilesPlugin),
     TrafficSplit(traffic_split::TrafficSplitPlugin),
     OAuth2(oauth2::OAuth2Plugin),
+    ForwardAuth(forward_auth::ForwardAuthPlugin),
+    DigestAuth(digest_auth::DigestAuthPlugin),
+    LdapAuth(ldap_auth::LdapAuthPlugin),
 }
 
 impl BuiltinPlugin {
@@ -104,6 +110,9 @@ impl BuiltinPlugin {
             Self::StaticFiles(p) => p.on_request(req, ctx),
             Self::TrafficSplit(p) => p.on_request(req, ctx),
             Self::OAuth2(p) => p.on_request(req, ctx),
+            Self::ForwardAuth(p) => p.on_request(req, ctx),
+            Self::DigestAuth(p) => p.on_request(req, ctx),
+            Self::LdapAuth(p) => p.on_request(req, ctx),
             _ => PluginAction::Continue,
         }
     }
@@ -122,6 +131,8 @@ impl BuiltinPlugin {
             Self::PathRewrite(p) => p.on_upstream_request(upstream_req, ctx),
             Self::KeyAuth(p) => p.on_upstream_request(upstream_req, ctx),
             Self::OAuth2(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::ForwardAuth(p) => p.on_upstream_request(upstream_req, ctx),
+            Self::LdapAuth(p) => p.on_upstream_request(upstream_req, ctx),
             _ => {}
         }
     }
