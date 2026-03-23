@@ -1,23 +1,31 @@
-//! Docker container discovery config provider — Traefik-inspired label-based routing.
+//! Docker container discovery config provider — simplified label-based routing.
 //!
 //! Connects to the Docker Engine API over HTTP (TCP endpoint), discovers containers
-//! with `fluxo.*` labels, and builds a [`FluxoConfig`] from those labels. Watches
-//! Docker events for container start/stop/die to automatically rebuild config.
+//! with `{prefix}.*` labels, and builds a [`FluxoConfig`] from those labels. Optionally
+//! watches Docker events for container start/stop/die to automatically rebuild config,
+//! falling back to polling when events are unavailable.
 //!
-//! # Label format
+//! # Label format (simplified)
 //!
-//! Containers opt in with `fluxo.enable=true`, then declare routers and upstreams:
+//! Containers opt in with `{prefix}.enable=true`, then declare routing via flat labels:
 //!
 //! ```text
 //! fluxo.enable=true
-//! fluxo.http.routers.myapp.match_host=myapp.example.com
-//! fluxo.http.routers.myapp.match_path=/api/*
-//! fluxo.http.routers.myapp.upstream=myapp
-//! fluxo.http.upstreams.myapp.load_balancing=round_robin
-//! fluxo.http.upstreams.myapp.health_check.path=/healthz
+//! fluxo.host=myapp.example.com
+//! fluxo.path=/api/*
+//! fluxo.port=8080
+//! fluxo.upstream=my-backend
+//! fluxo.service=my-service
 //! ```
 //!
-//! Container IP + published port are automatically added as upstream targets.
+//! - `{prefix}.enable` — required, must be `"true"` (case-insensitive)
+//! - `{prefix}.host` — host match (comma-separated for multiple)
+//! - `{prefix}.path` — path match (default: `"/*"`)
+//! - `{prefix}.port` — container port (auto-detect from exposed ports if missing)
+//! - `{prefix}.upstream` — upstream name (default: container name)
+//! - `{prefix}.service` — service name (default: container name)
+//!
+//! Container IP + port are automatically added as upstream targets.
 //!
 //! # Connection modes
 //!
@@ -41,42 +49,9 @@ use tracing::{debug, error, info, warn};
 
 use super::provider::ConfigProvider;
 use super::{
-    FluxoConfig, GlobalConfig, HealthCheckConfig, ListenerConfig, RouteConfig, ServiceConfig,
+    DockerProviderConfig, FluxoConfig, GlobalConfig, ListenerConfig, RouteConfig, ServiceConfig,
     TargetConfig, UpstreamConfig,
 };
-
-// ── Configuration ───────────────────────────────────────────────────────────
-
-/// Configuration for the Docker container discovery provider.
-#[derive(Debug, Clone)]
-pub struct DockerProviderConfig {
-    /// Docker Engine API endpoint (e.g., `"tcp://localhost:2375"`).
-    pub endpoint: String,
-
-    /// How often to poll Docker for container changes (fallback when events fail).
-    pub poll_interval: Duration,
-
-    /// Label prefix to scan for (default: `"fluxo"`).
-    pub label_prefix: String,
-
-    /// Whether to use Docker event stream for real-time updates.
-    pub watch_events: bool,
-
-    /// Default listener address for auto-generated services.
-    pub default_listener: String,
-}
-
-impl Default for DockerProviderConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: "tcp://localhost:2375".to_string(),
-            poll_interval: Duration::from_secs(15),
-            label_prefix: "fluxo".to_string(),
-            watch_events: true,
-            default_listener: "0.0.0.0:80".to_string(),
-        }
-    }
-}
 
 // ── Docker API response types ───────────────────────────────────────────────
 
@@ -99,6 +74,10 @@ struct DockerContainer {
     /// Network settings with published ports.
     #[serde(default)]
     network_settings: ContainerNetworkSettings,
+
+    /// Exposed/published ports.
+    #[serde(default)]
+    ports: Vec<DockerPort>,
 }
 
 impl DockerContainer {
@@ -129,6 +108,19 @@ struct ContainerNetwork {
     ip_address: String,
 }
 
+/// A port mapping from the Docker API.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerPort {
+    /// Private (container) port.
+    #[serde(default)]
+    private_port: u16,
+
+    /// Protocol (tcp/udp).
+    #[serde(default, rename = "Type")]
+    protocol: String,
+}
+
 /// Docker event from the `/events` endpoint.
 #[derive(Debug, Clone, Deserialize)]
 struct DockerEvent {
@@ -143,119 +135,100 @@ struct DockerEvent {
 
 // ── Label parsing ───────────────────────────────────────────────────────────
 
-/// Parsed router configuration from container labels.
-#[derive(Debug, Clone, Default)]
-struct ParsedRouter {
-    match_host: Vec<String>,
-    match_path: Vec<String>,
-    match_method: Vec<String>,
-    upstream: Option<String>,
-}
-
-/// Parsed upstream configuration from container labels.
-#[derive(Debug, Clone, Default)]
-struct ParsedUpstream {
-    load_balancing: Option<String>,
-    health_check_path: Option<String>,
-    health_check_interval: Option<String>,
-}
-
-/// Parsed configuration for a single container.
+/// Parsed configuration for a single container from simplified labels.
 #[derive(Debug, Clone)]
 struct ParsedContainer {
     /// Container display name (for logging).
     name: String,
 
-    /// Named routers declared via labels.
-    routers: HashMap<String, ParsedRouter>,
+    /// Host patterns to match (from `{prefix}.host`).
+    hosts: Vec<String>,
 
-    /// Named upstreams declared via labels.
-    upstreams: HashMap<String, ParsedUpstream>,
+    /// Path patterns to match (from `{prefix}.path`, default `"/*"`).
+    paths: Vec<String>,
+
+    /// Explicit port from `{prefix}.port` label.
+    port: Option<u16>,
+
+    /// Upstream name (from `{prefix}.upstream`, default: container name).
+    upstream_name: String,
+
+    /// Service name (from `{prefix}.service`, default: container name).
+    service_name: String,
 
     /// Auto-discovered target address (container IP:port).
     target_address: Option<String>,
 }
 
-/// Parse labels from a single container into structured config.
+/// Parse simplified labels from a single container.
 ///
-/// Label format: `{prefix}.http.routers.{name}.{field}=value`
-///               `{prefix}.http.upstreams.{name}.{field}=value`
+/// Label format:
+/// - `{prefix}.enable` = "true" (required, case-insensitive)
+/// - `{prefix}.host` = "example.com" or "a.com, b.com"
+/// - `{prefix}.path` = "/api/*" (default: "/*")
+/// - `{prefix}.port` = "8080"
+/// - `{prefix}.upstream` = "my-backend" (default: container name)
+/// - `{prefix}.service` = "my-service" (default: container name)
 fn parse_container_labels(
     labels: &HashMap<String, String>,
     prefix: &str,
+    container_name: &str,
 ) -> Option<ParsedContainer> {
-    // Must have `{prefix}.enable=true`
+    // Must have `{prefix}.enable=true`.
     let enable_key = format!("{prefix}.enable");
     match labels.get(&enable_key) {
         Some(v) if v.eq_ignore_ascii_case("true") => {}
         _ => return None,
     }
 
-    let mut routers: HashMap<String, ParsedRouter> = HashMap::new();
-    let mut upstreams: HashMap<String, ParsedUpstream> = HashMap::new();
+    // Parse host(s).
+    let host_key = format!("{prefix}.host");
+    let hosts: Vec<String> = labels
+        .get(&host_key)
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
 
-    let router_prefix = format!("{prefix}.http.routers.");
-    let upstream_prefix = format!("{prefix}.http.upstreams.");
+    // Parse path(s) — default to "/*".
+    let path_key = format!("{prefix}.path");
+    let paths: Vec<String> = labels
+        .get(&path_key)
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_else(|| vec!["/*".to_string()]);
 
-    for (key, value) in labels {
-        if let Some(rest) = key.strip_prefix(&router_prefix) {
-            // rest = "myapp.match_host" or "myapp.upstream"
-            if let Some((router_name, field)) = rest.split_once('.') {
-                let router = routers.entry(router_name.to_string()).or_default();
-                match field {
-                    "match_host" => {
-                        router
-                            .match_host
-                            .extend(value.split(',').map(|s| s.trim().to_string()));
-                    }
-                    "match_path" => {
-                        router
-                            .match_path
-                            .extend(value.split(',').map(|s| s.trim().to_string()));
-                    }
-                    "match_method" => {
-                        router
-                            .match_method
-                            .extend(value.split(',').map(|s| s.trim().to_string()));
-                    }
-                    "upstream" => {
-                        router.upstream = Some(value.clone());
-                    }
-                    other => {
-                        debug!(field = other, router = router_name, "unknown router label field — skipping");
-                    }
-                }
-            }
-        } else if let Some(rest) = key.strip_prefix(&upstream_prefix) {
-            // rest = "myapp.load_balancing" or "myapp.health_check.path"
-            if let Some((upstream_name, field)) = rest.split_once('.') {
-                let upstream = upstreams.entry(upstream_name.to_string()).or_default();
-                match field {
-                    "load_balancing" => {
-                        upstream.load_balancing = Some(value.clone());
-                    }
-                    "health_check.path" => {
-                        upstream.health_check_path = Some(value.clone());
-                    }
-                    "health_check.interval" => {
-                        upstream.health_check_interval = Some(value.clone());
-                    }
-                    other => {
-                        debug!(
-                            field = other,
-                            upstream = upstream_name,
-                            "unknown upstream label field — skipping"
-                        );
-                    }
-                }
-            }
-        }
-    }
+    // Parse explicit port.
+    let port_key = format!("{prefix}.port");
+    let port: Option<u16> = labels.get(&port_key).and_then(|v| {
+        v.trim().parse::<u16>().ok().or_else(|| {
+            warn!(
+                container = container_name,
+                value = v,
+                "invalid port label — ignoring"
+            );
+            None
+        })
+    });
+
+    // Upstream name — default to container name.
+    let upstream_key = format!("{prefix}.upstream");
+    let upstream_name = labels
+        .get(&upstream_key)
+        .cloned()
+        .unwrap_or_else(|| container_name.to_string());
+
+    // Service name — default to container name.
+    let service_key = format!("{prefix}.service");
+    let service_name = labels
+        .get(&service_key)
+        .cloned()
+        .unwrap_or_else(|| container_name.to_string());
 
     Some(ParsedContainer {
-        name: String::new(), // filled in by caller
-        routers,
-        upstreams,
+        name: container_name.to_string(),
+        hosts,
+        paths,
+        port,
+        upstream_name,
+        service_name,
         target_address: None, // filled in by caller
     })
 }
@@ -263,9 +236,11 @@ fn parse_container_labels(
 /// Extract the best target address from a Docker container.
 ///
 /// Priority:
-/// 1. First network IP + first exposed TCP port
-/// 2. Falls back to `None` if no usable address is found
-fn extract_target_address(container: &DockerContainer) -> Option<String> {
+/// 1. Container IP + explicit port from labels
+/// 2. Container IP + first exposed TCP port from Docker API
+/// 3. Container IP + port 80 as fallback
+/// 4. `None` if no usable IP is found
+fn extract_target_address(container: &DockerContainer, explicit_port: Option<u16>) -> Option<String> {
     // Find the container IP from the first available network.
     let ip = container
         .network_settings
@@ -274,23 +249,15 @@ fn extract_target_address(container: &DockerContainer) -> Option<String> {
         .find(|n| !n.ip_address.is_empty())
         .map(|n| &n.ip_address)?;
 
-    // We need a port. Look for the first exposed TCP port from labels or names.
-    // Docker `/containers/json` includes Ports in the response, but our minimal
-    // struct may not have it. Fall back to port 80 if no port is discoverable.
-    // In practice, the container labels should specify the upstream or the port
-    // will come from the Ports field if we extend the struct.
-    Some(format!("{ip}:80"))
-}
-
-/// Extract target address with explicit port from Docker container.
-#[cfg(test)]
-fn extract_target_with_port(container: &DockerContainer, port: u16) -> Option<String> {
-    let ip = container
-        .network_settings
-        .networks
-        .values()
-        .find(|n| !n.ip_address.is_empty())
-        .map(|n| &n.ip_address)?;
+    // Determine port: explicit label > first exposed TCP port > 80.
+    let port = explicit_port.unwrap_or_else(|| {
+        container
+            .ports
+            .iter()
+            .find(|p| p.protocol == "tcp" && p.private_port > 0)
+            .map(|p| p.private_port)
+            .unwrap_or(80)
+    });
 
     Some(format!("{ip}:{port}"))
 }
@@ -298,98 +265,45 @@ fn extract_target_with_port(container: &DockerContainer, port: u16) -> Option<St
 // ── Config building ─────────────────────────────────────────────────────────
 
 /// Build a `FluxoConfig` from a set of parsed containers.
-fn build_config(
-    containers: &[ParsedContainer],
-    default_listener: &str,
-) -> FluxoConfig {
+fn build_config(containers: &[ParsedContainer], default_listener: &str) -> FluxoConfig {
     let mut services: HashMap<String, ServiceConfig> = HashMap::new();
     let mut upstreams: HashMap<String, UpstreamConfig> = HashMap::new();
 
     for container in containers {
-        // Process upstream declarations from labels.
-        for (upstream_name, parsed) in &container.upstreams {
-            let upstream = upstreams
-                .entry(upstream_name.clone())
-                .or_insert_with(|| UpstreamConfig {
-                    load_balancing: parsed
-                        .load_balancing
-                        .clone()
-                        .unwrap_or_else(|| "round_robin".to_string()),
-                    health_check: parsed.health_check_path.as_ref().map(|path| {
-                        HealthCheckConfig {
-                            path: path.clone(),
-                            interval: parsed
-                                .health_check_interval
-                                .clone()
-                                .unwrap_or_else(|| "10s".to_string()),
-                            timeout: "3s".to_string(),
-                            unhealthy_threshold: 3,
-                            healthy_threshold: 2,
-                            unhealthy_interval: None,
-                            expected_status: 0,
-                            expected_body: None,
-                            method: "GET".to_string(),
-                            headers: HashMap::new(),
-                            follow_redirects: true,
-                        }
-                    }),
-                    ..Default::default()
-                });
+        // Ensure the upstream exists and add this container as a target.
+        let upstream = upstreams
+            .entry(container.upstream_name.clone())
+            .or_insert_with(UpstreamConfig::default);
 
-            // Add this container's address as a target for the upstream.
-            if let Some(ref addr) = container.target_address {
+        if let Some(ref addr) = container.target_address {
+            let already_has = upstream.targets.iter().any(|t| t.address() == addr);
+            if !already_has {
                 upstream.targets.push(TargetConfig::Simple(addr.clone()));
             }
         }
 
-        // Also add targets to upstreams referenced by routers (even if not
-        // explicitly declared via upstream labels — auto-create the upstream).
-        for (router_name, router) in &container.routers {
-            let upstream_name = router
-                .upstream
-                .clone()
-                .unwrap_or_else(|| router_name.clone());
+        // Build the route.
+        let route = RouteConfig {
+            name: Some(format!("docker-{}", container.name)),
+            match_host: container.hosts.clone(),
+            match_path: container.paths.clone(),
+            upstream: container.upstream_name.clone(),
+            ..Default::default()
+        };
 
-            // Ensure the upstream exists (auto-create if only referenced, not declared).
-            let upstream = upstreams
-                .entry(upstream_name.clone())
-                .or_insert_with(UpstreamConfig::default);
-
-            if let Some(ref addr) = container.target_address {
-                // Only add if not already present (avoid duplicates when upstream
-                // was explicitly declared and also referenced by a router).
-                let already_has = upstream.targets.iter().any(|t| t.address() == addr);
-                if !already_has {
-                    upstream.targets.push(TargetConfig::Simple(addr.clone()));
-                }
-            }
-
-            // Build the route.
-            let route = RouteConfig {
-                name: Some(format!("docker-{router_name}")),
-                match_host: router.match_host.clone(),
-                match_path: router.match_path.clone(),
-                match_method: router.match_method.clone(),
-                upstream: upstream_name,
-                ..Default::default()
-            };
-
-            // Group routes into a per-router service (or merge into a shared
-            // "docker" service — we use one service per router for clarity).
-            let service_name = format!("docker-{router_name}");
-            let service = services
-                .entry(service_name)
-                .or_insert_with(|| ServiceConfig {
-                    listeners: vec![ListenerConfig {
-                        address: default_listener.to_string(),
-                        offer_h2: false,
-                        proxy_protocol: false,
-                    }],
-                    tls: None,
-                    routes: Vec::new(),
-                });
-            service.routes.push(route);
-        }
+        // Group routes into a per-service service.
+        let service = services
+            .entry(container.service_name.clone())
+            .or_insert_with(|| ServiceConfig {
+                listeners: vec![ListenerConfig {
+                    address: default_listener.to_string(),
+                    offer_h2: false,
+                    proxy_protocol: false,
+                }],
+                tls: None,
+                routes: Vec::new(),
+            });
+        service.routes.push(route);
     }
 
     FluxoConfig {
@@ -404,7 +318,7 @@ fn build_config(
 
 /// Normalize the Docker endpoint to an HTTP base URL.
 ///
-/// Converts `tcp://host:port` → `http://host:port`.
+/// Converts `tcp://host:port` -> `http://host:port`.
 fn normalize_endpoint(endpoint: &str) -> String {
     if let Some(rest) = endpoint.strip_prefix("tcp://") {
         format!("http://{rest}")
@@ -459,18 +373,21 @@ fn containers_to_config(
             continue;
         }
 
-        let mut pc = match parse_container_labels(labels, prefix) {
+        let display = container.display_name().to_string();
+
+        let mut pc = match parse_container_labels(labels, prefix, &display) {
             Some(pc) => pc,
             None => continue,
         };
 
-        pc.name = container.display_name().to_string();
-        pc.target_address = extract_target_address(container);
+        pc.target_address = extract_target_address(container, pc.port);
 
         debug!(
             container = %pc.name,
-            routers = pc.routers.len(),
-            upstreams = pc.upstreams.len(),
+            hosts = ?pc.hosts,
+            paths = ?pc.paths,
+            upstream = %pc.upstream_name,
+            service = %pc.service_name,
             target = ?pc.target_address,
             "discovered container"
         );
@@ -486,32 +403,36 @@ fn containers_to_config(
 
 /// Docker container discovery config provider.
 ///
-/// Connects to the Docker Engine API, discovers containers with `fluxo.*`
+/// Connects to the Docker Engine API, discovers containers with `{prefix}.*`
 /// labels, and pushes config updates when containers start or stop.
 pub struct DockerProvider {
-    config: DockerProviderConfig,
+    config: super::DockerProviderConfig,
+    client: reqwest::Client,
 }
 
 impl DockerProvider {
-    /// Create a new Docker provider with the given configuration.
-    pub fn new(config: DockerProviderConfig) -> Self {
-        Self { config }
+    /// Create a new Docker provider from the TOML-level `DockerProviderConfig`.
+    pub fn new(config: super::DockerProviderConfig) -> Self {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(config.tls_skip_verify)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        Self { config, client }
     }
 
-    /// Create a new Docker provider with default configuration.
-    pub fn with_defaults() -> Self {
-        Self {
-            config: DockerProviderConfig::default(),
-        }
+    /// Resolve the poll interval from the string config field.
+    fn poll_interval(&self) -> Duration {
+        super::parse_duration(&self.config.poll_interval)
+            .unwrap_or_else(|_| Duration::from_secs(5))
     }
 
     /// Discover containers and build a `FluxoConfig`.
     async fn discover(
         &self,
-        client: &reqwest::Client,
         base_url: &str,
     ) -> Result<FluxoConfig, Box<dyn std::error::Error + Send + Sync>> {
-        let containers = fetch_containers(client, base_url).await?;
+        let containers = fetch_containers(&self.client, base_url).await?;
         Ok(containers_to_config(
             containers,
             &self.config.label_prefix,
@@ -522,14 +443,14 @@ impl DockerProvider {
     /// Poll for container changes at a fixed interval.
     async fn poll_loop(
         &self,
-        client: &reqwest::Client,
         base_url: &str,
         tx: &mpsc::Sender<(String, FluxoConfig)>,
     ) {
+        let interval = self.poll_interval();
         loop {
-            tokio::time::sleep(self.config.poll_interval).await;
+            tokio::time::sleep(interval).await;
 
-            match self.discover(client, base_url).await {
+            match self.discover(base_url).await {
                 Ok(config) => {
                     if tx.send((self.name().to_string(), config)).await.is_err() {
                         // Receiver dropped — shutdown.
@@ -548,7 +469,6 @@ impl DockerProvider {
     /// Falls back to polling if the event stream fails.
     async fn watch_events_loop(
         &self,
-        client: &reqwest::Client,
         base_url: &str,
         tx: &mpsc::Sender<(String, FluxoConfig)>,
     ) {
@@ -562,20 +482,26 @@ impl DockerProvider {
 
         info!(url = %events_url, "connecting to Docker event stream");
 
+        // The event stream is long-lived — build a client without request timeout.
+        let stream_client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(self.config.tls_skip_verify)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         // Try to connect to the event stream. If it fails, fall back to polling.
-        let resp = match client.get(&events_url).send().await {
+        let mut resp = match stream_client.get(&events_url).send().await {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => {
                 warn!(
                     status = %r.status(),
                     "Docker event stream returned non-success — falling back to polling"
                 );
-                self.poll_loop(client, base_url, tx).await;
+                self.poll_loop(base_url, tx).await;
                 return;
             }
             Err(e) => {
                 warn!(error = %e, "failed to connect to Docker event stream — falling back to polling");
-                self.poll_loop(client, base_url, tx).await;
+                self.poll_loop(base_url, tx).await;
                 return;
             }
         };
@@ -583,7 +509,6 @@ impl DockerProvider {
         info!("connected to Docker event stream");
 
         // Read the event stream as newline-delimited JSON using reqwest's chunk API.
-        let mut resp = resp;
         let mut buffer = Vec::new();
 
         loop {
@@ -609,7 +534,7 @@ impl DockerProvider {
                                 );
 
                                 // Re-discover on any relevant container event.
-                                match self.discover(client, base_url).await {
+                                match self.discover(base_url).await {
                                     Ok(config) => {
                                         if tx
                                             .send((self.name().to_string(), config))
@@ -635,12 +560,12 @@ impl DockerProvider {
                 }
                 Ok(None) => {
                     warn!("Docker event stream ended — falling back to polling");
-                    self.poll_loop(client, base_url, tx).await;
+                    self.poll_loop(base_url, tx).await;
                     return;
                 }
                 Err(e) => {
                     warn!(error = %e, "Docker event stream error — falling back to polling");
-                    self.poll_loop(client, base_url, tx).await;
+                    self.poll_loop(base_url, tx).await;
                     return;
                 }
             }
@@ -659,20 +584,18 @@ impl ConfigProvider for DockerProvider {
         tx: mpsc::Sender<(String, FluxoConfig)>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let base_url = normalize_endpoint(&self.config.endpoint);
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()?;
+        let poll_interval = self.poll_interval();
 
         info!(
             endpoint = %base_url,
-            poll_interval = ?self.config.poll_interval,
+            poll_interval = ?poll_interval,
             label_prefix = %self.config.label_prefix,
             watch_events = self.config.watch_events,
             "starting Docker provider"
         );
 
         // Initial discovery.
-        match self.discover(&client, &base_url).await {
+        match self.discover(&base_url).await {
             Ok(config) => {
                 if tx.send((self.name().to_string(), config)).await.is_err() {
                     return Ok(());
@@ -683,16 +606,10 @@ impl ConfigProvider for DockerProvider {
             }
         }
 
-        // For event watching, we need a client without the short timeout (events stream
-        // is long-lived). Build a separate client for the stream.
         if self.config.watch_events {
-            let stream_client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(0)) // no timeout for streaming
-                .build()?;
-            self.watch_events_loop(&stream_client, &base_url, &tx)
-                .await;
+            self.watch_events_loop(&base_url, &tx).await;
         } else {
-            self.poll_loop(&client, &base_url, &tx).await;
+            self.poll_loop(&base_url, &tx).await;
         }
 
         Ok(())
@@ -706,24 +623,43 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // ── DockerProviderConfig defaults ───────────────────────────────
+    // ── Helper: build a DockerProviderConfig for tests ────────────────
 
-    #[test]
-    fn default_config_values() {
-        let cfg = DockerProviderConfig::default();
-        assert_eq!(cfg.endpoint, "tcp://localhost:2375");
-        assert_eq!(cfg.poll_interval, Duration::from_secs(15));
-        assert_eq!(cfg.label_prefix, "fluxo");
-        assert!(cfg.watch_events);
-        assert_eq!(cfg.default_listener, "0.0.0.0:80");
+    fn test_docker_config() -> super::super::DockerProviderConfig {
+        super::super::DockerProviderConfig {
+            endpoint: "tcp://localhost:2375".to_string(),
+            label_prefix: "fluxo".to_string(),
+            poll_interval: "5s".to_string(),
+            watch_events: true,
+            default_listener: "0.0.0.0:80".to_string(),
+            tls_skip_verify: false,
+        }
     }
 
     // ── Provider name ───────────────────────────────────────────────
 
     #[test]
     fn provider_name_is_docker() {
-        let provider = DockerProvider::with_defaults();
+        let provider = DockerProvider::new(test_docker_config());
         assert_eq!(provider.name(), "docker");
+    }
+
+    // ── Poll interval parsing ───────────────────────────────────────
+
+    #[test]
+    fn poll_interval_parses_correctly() {
+        let mut cfg = test_docker_config();
+        cfg.poll_interval = "10s".to_string();
+        let provider = DockerProvider::new(cfg);
+        assert_eq!(provider.poll_interval(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn poll_interval_invalid_falls_back_to_5s() {
+        let mut cfg = test_docker_config();
+        cfg.poll_interval = "garbage".to_string();
+        let provider = DockerProvider::new(cfg);
+        assert_eq!(provider.poll_interval(), Duration::from_secs(5));
     }
 
     // ── Endpoint normalization ──────────────────────────────────────
@@ -764,47 +700,44 @@ mod tests {
 
     #[test]
     fn parse_labels_requires_enable() {
-        let labels = HashMap::from([
-            ("fluxo.http.routers.web.match_host".to_string(), "example.com".to_string()),
-        ]);
-        assert!(parse_container_labels(&labels, "fluxo").is_none());
+        let labels = HashMap::from([("fluxo.host".to_string(), "example.com".to_string())]);
+        assert!(parse_container_labels(&labels, "fluxo", "myapp").is_none());
     }
 
     #[test]
     fn parse_labels_enable_false_returns_none() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "false".to_string()),
-            ("fluxo.http.routers.web.match_host".to_string(), "example.com".to_string()),
+            ("fluxo.host".to_string(), "example.com".to_string()),
         ]);
-        assert!(parse_container_labels(&labels, "fluxo").is_none());
+        assert!(parse_container_labels(&labels, "fluxo", "myapp").is_none());
     }
 
     #[test]
     fn parse_labels_enable_case_insensitive() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "TRUE".to_string()),
-            ("fluxo.http.routers.web.match_host".to_string(), "example.com".to_string()),
+            ("fluxo.host".to_string(), "example.com".to_string()),
         ]);
-        let parsed = parse_container_labels(&labels, "fluxo");
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp");
         assert!(parsed.is_some());
     }
 
     #[test]
-    fn parse_labels_basic_router() {
+    fn parse_labels_enable_mixed_case() {
+        let labels = HashMap::from([("fluxo.enable".to_string(), "True".to_string())]);
+        assert!(parse_container_labels(&labels, "fluxo", "myapp").is_some());
+    }
+
+    #[test]
+    fn parse_labels_basic_host() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
-            ("fluxo.http.routers.web.match_host".to_string(), "example.com".to_string()),
-            ("fluxo.http.routers.web.match_path".to_string(), "/api/*".to_string()),
-            ("fluxo.http.routers.web.upstream".to_string(), "backend".to_string()),
+            ("fluxo.host".to_string(), "example.com".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        assert_eq!(parsed.routers.len(), 1);
-
-        let router = &parsed.routers["web"];
-        assert_eq!(router.match_host, vec!["example.com"]);
-        assert_eq!(router.match_path, vec!["/api/*"]);
-        assert_eq!(router.upstream, Some("backend".to_string()));
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.hosts, vec!["example.com"]);
     }
 
     #[test]
@@ -812,172 +745,174 @@ mod tests {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
             (
-                "fluxo.http.routers.web.match_host".to_string(),
+                "fluxo.host".to_string(),
                 "example.com, www.example.com".to_string(),
             ),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        let router = &parsed.routers["web"];
-        assert_eq!(
-            router.match_host,
-            vec!["example.com", "www.example.com"]
-        );
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.hosts, vec!["example.com", "www.example.com"]);
+    }
+
+    #[test]
+    fn parse_labels_path_default() {
+        let labels = HashMap::from([("fluxo.enable".to_string(), "true".to_string())]);
+
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.paths, vec!["/*"]);
+    }
+
+    #[test]
+    fn parse_labels_explicit_path() {
+        let labels = HashMap::from([
+            ("fluxo.enable".to_string(), "true".to_string()),
+            ("fluxo.path".to_string(), "/api/*".to_string()),
+        ]);
+
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.paths, vec!["/api/*"]);
     }
 
     #[test]
     fn parse_labels_multiple_paths_comma_separated() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
-            (
-                "fluxo.http.routers.web.match_path".to_string(),
-                "/api/*, /health".to_string(),
-            ),
+            ("fluxo.path".to_string(), "/api/*, /health".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        let router = &parsed.routers["web"];
-        assert_eq!(router.match_path, vec!["/api/*", "/health"]);
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.paths, vec!["/api/*", "/health"]);
     }
 
     #[test]
-    fn parse_labels_multiple_methods_comma_separated() {
+    fn parse_labels_explicit_port() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
-            (
-                "fluxo.http.routers.web.match_method".to_string(),
-                "GET, POST".to_string(),
-            ),
+            ("fluxo.port".to_string(), "8080".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        let router = &parsed.routers["web"];
-        assert_eq!(router.match_method, vec!["GET", "POST"]);
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.port, Some(8080));
     }
 
     #[test]
-    fn parse_labels_upstream_config() {
+    fn parse_labels_invalid_port_returns_none() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
-            (
-                "fluxo.http.upstreams.backend.load_balancing".to_string(),
-                "least_connections".to_string(),
-            ),
-            (
-                "fluxo.http.upstreams.backend.health_check.path".to_string(),
-                "/healthz".to_string(),
-            ),
-            (
-                "fluxo.http.upstreams.backend.health_check.interval".to_string(),
-                "5s".to_string(),
-            ),
+            ("fluxo.port".to_string(), "not-a-number".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        assert_eq!(parsed.upstreams.len(), 1);
-
-        let upstream = &parsed.upstreams["backend"];
-        assert_eq!(
-            upstream.load_balancing,
-            Some("least_connections".to_string())
-        );
-        assert_eq!(upstream.health_check_path, Some("/healthz".to_string()));
-        assert_eq!(upstream.health_check_interval, Some("5s".to_string()));
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert!(parsed.port.is_none());
     }
 
     #[test]
-    fn parse_labels_multiple_routers() {
+    fn parse_labels_no_port_returns_none() {
+        let labels = HashMap::from([("fluxo.enable".to_string(), "true".to_string())]);
+
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert!(parsed.port.is_none());
+    }
+
+    #[test]
+    fn parse_labels_explicit_upstream() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
-            (
-                "fluxo.http.routers.web.match_host".to_string(),
-                "web.example.com".to_string(),
-            ),
-            (
-                "fluxo.http.routers.web.upstream".to_string(),
-                "web-backend".to_string(),
-            ),
-            (
-                "fluxo.http.routers.api.match_host".to_string(),
-                "api.example.com".to_string(),
-            ),
-            (
-                "fluxo.http.routers.api.match_path".to_string(),
-                "/v1/*".to_string(),
-            ),
-            (
-                "fluxo.http.routers.api.upstream".to_string(),
-                "api-backend".to_string(),
-            ),
+            ("fluxo.upstream".to_string(), "my-backend".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        assert_eq!(parsed.routers.len(), 2);
-        assert!(parsed.routers.contains_key("web"));
-        assert!(parsed.routers.contains_key("api"));
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.upstream_name, "my-backend");
+    }
+
+    #[test]
+    fn parse_labels_upstream_defaults_to_container_name() {
+        let labels = HashMap::from([("fluxo.enable".to_string(), "true".to_string())]);
+
+        let parsed = parse_container_labels(&labels, "fluxo", "web-server").unwrap();
+        assert_eq!(parsed.upstream_name, "web-server");
+    }
+
+    #[test]
+    fn parse_labels_explicit_service() {
+        let labels = HashMap::from([
+            ("fluxo.enable".to_string(), "true".to_string()),
+            ("fluxo.service".to_string(), "my-service".to_string()),
+        ]);
+
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.service_name, "my-service");
+    }
+
+    #[test]
+    fn parse_labels_service_defaults_to_container_name() {
+        let labels = HashMap::from([("fluxo.enable".to_string(), "true".to_string())]);
+
+        let parsed = parse_container_labels(&labels, "fluxo", "web-server").unwrap();
+        assert_eq!(parsed.service_name, "web-server");
     }
 
     #[test]
     fn parse_labels_custom_prefix() {
         let labels = HashMap::from([
             ("myproxy.enable".to_string(), "true".to_string()),
-            (
-                "myproxy.http.routers.app.match_host".to_string(),
-                "app.test".to_string(),
-            ),
+            ("myproxy.host".to_string(), "app.test".to_string()),
+            ("myproxy.port".to_string(), "3000".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "myproxy").unwrap();
-        assert_eq!(parsed.routers.len(), 1);
-        assert!(parsed.routers.contains_key("app"));
+        let parsed = parse_container_labels(&labels, "myproxy", "app").unwrap();
+        assert_eq!(parsed.hosts, vec!["app.test"]);
+        assert_eq!(parsed.port, Some(3000));
     }
 
     #[test]
     fn parse_labels_wrong_prefix_returns_none() {
         let labels = HashMap::from([
             ("traefik.enable".to_string(), "true".to_string()),
-            (
-                "traefik.http.routers.app.match_host".to_string(),
-                "app.test".to_string(),
-            ),
+            ("traefik.host".to_string(), "app.test".to_string()),
         ]);
 
-        assert!(parse_container_labels(&labels, "fluxo").is_none());
+        assert!(parse_container_labels(&labels, "fluxo", "app").is_none());
     }
 
     #[test]
-    fn parse_labels_enable_only() {
+    fn parse_labels_enable_only_minimal() {
         let labels = HashMap::from([("fluxo.enable".to_string(), "true".to_string())]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        assert!(parsed.routers.is_empty());
-        assert!(parsed.upstreams.is_empty());
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert!(parsed.hosts.is_empty());
+        assert_eq!(parsed.paths, vec!["/*"]);
+        assert!(parsed.port.is_none());
+        assert_eq!(parsed.upstream_name, "myapp");
+        assert_eq!(parsed.service_name, "myapp");
     }
 
     #[test]
-    fn parse_labels_unknown_fields_ignored() {
+    fn parse_labels_full_config() {
         let labels = HashMap::from([
             ("fluxo.enable".to_string(), "true".to_string()),
             (
-                "fluxo.http.routers.web.match_host".to_string(),
-                "example.com".to_string(),
+                "fluxo.host".to_string(),
+                "example.com, www.example.com".to_string(),
             ),
-            (
-                "fluxo.http.routers.web.unknown_field".to_string(),
-                "value".to_string(),
-            ),
+            ("fluxo.path".to_string(), "/api/*".to_string()),
+            ("fluxo.port".to_string(), "8080".to_string()),
+            ("fluxo.upstream".to_string(), "api-backend".to_string()),
+            ("fluxo.service".to_string(), "api-service".to_string()),
         ]);
 
-        let parsed = parse_container_labels(&labels, "fluxo").unwrap();
-        let router = &parsed.routers["web"];
-        assert_eq!(router.match_host, vec!["example.com"]);
+        let parsed = parse_container_labels(&labels, "fluxo", "myapp").unwrap();
+        assert_eq!(parsed.hosts, vec!["example.com", "www.example.com"]);
+        assert_eq!(parsed.paths, vec!["/api/*"]);
+        assert_eq!(parsed.port, Some(8080));
+        assert_eq!(parsed.upstream_name, "api-backend");
+        assert_eq!(parsed.service_name, "api-service");
     }
 
     // ── Target address extraction ───────────────────────────────────
 
-    #[test]
-    fn extract_target_from_container_network() {
-        let container = DockerContainer {
+    fn make_container_with_network(ip: &str) -> DockerContainer {
+        DockerContainer {
             id: "abc123".to_string(),
             names: vec!["/myapp".to_string()],
             labels: Some(HashMap::new()),
@@ -986,13 +921,53 @@ mod tests {
                 networks: HashMap::from([(
                     "bridge".to_string(),
                     ContainerNetwork {
-                        ip_address: "172.17.0.2".to_string(),
+                        ip_address: ip.to_string(),
                     },
                 )]),
             },
-        };
+            ports: vec![],
+        }
+    }
 
-        let addr = extract_target_address(&container);
+    #[test]
+    fn extract_target_explicit_port() {
+        let container = make_container_with_network("172.17.0.2");
+        let addr = extract_target_address(&container, Some(8080));
+        assert_eq!(addr, Some("172.17.0.2:8080".to_string()));
+    }
+
+    #[test]
+    fn extract_target_from_exposed_port() {
+        let mut container = make_container_with_network("172.17.0.2");
+        container.ports = vec![DockerPort {
+            private_port: 3000,
+            protocol: "tcp".to_string(),
+        }];
+        let addr = extract_target_address(&container, None);
+        assert_eq!(addr, Some("172.17.0.2:3000".to_string()));
+    }
+
+    #[test]
+    fn extract_target_skips_udp_ports() {
+        let mut container = make_container_with_network("172.17.0.2");
+        container.ports = vec![
+            DockerPort {
+                private_port: 53,
+                protocol: "udp".to_string(),
+            },
+            DockerPort {
+                private_port: 8080,
+                protocol: "tcp".to_string(),
+            },
+        ];
+        let addr = extract_target_address(&container, None);
+        assert_eq!(addr, Some("172.17.0.2:8080".to_string()));
+    }
+
+    #[test]
+    fn extract_target_falls_back_to_port_80() {
+        let container = make_container_with_network("172.17.0.2");
+        let addr = extract_target_address(&container, None);
         assert_eq!(addr, Some("172.17.0.2:80".to_string()));
     }
 
@@ -1006,50 +981,28 @@ mod tests {
             network_settings: ContainerNetworkSettings {
                 networks: HashMap::new(),
             },
+            ports: vec![],
         };
 
-        assert!(extract_target_address(&container).is_none());
+        assert!(extract_target_address(&container, None).is_none());
     }
 
     #[test]
     fn extract_target_empty_ip_returns_none() {
-        let container = DockerContainer {
-            id: "abc123".to_string(),
-            names: vec!["/myapp".to_string()],
-            labels: Some(HashMap::new()),
-            state: "running".to_string(),
-            network_settings: ContainerNetworkSettings {
-                networks: HashMap::from([(
-                    "bridge".to_string(),
-                    ContainerNetwork {
-                        ip_address: String::new(),
-                    },
-                )]),
-            },
-        };
-
-        assert!(extract_target_address(&container).is_none());
+        let container = make_container_with_network("");
+        assert!(extract_target_address(&container, None).is_none());
     }
 
     #[test]
-    fn extract_target_with_explicit_port() {
-        let container = DockerContainer {
-            id: "abc123".to_string(),
-            names: vec!["/myapp".to_string()],
-            labels: Some(HashMap::new()),
-            state: "running".to_string(),
-            network_settings: ContainerNetworkSettings {
-                networks: HashMap::from([(
-                    "bridge".to_string(),
-                    ContainerNetwork {
-                        ip_address: "172.17.0.5".to_string(),
-                    },
-                )]),
-            },
-        };
-
-        let addr = extract_target_with_port(&container, 8080);
-        assert_eq!(addr, Some("172.17.0.5:8080".to_string()));
+    fn extract_target_explicit_port_overrides_exposed() {
+        let mut container = make_container_with_network("172.17.0.5");
+        container.ports = vec![DockerPort {
+            private_port: 3000,
+            protocol: "tcp".to_string(),
+        }];
+        // Explicit port should win over exposed port.
+        let addr = extract_target_address(&container, Some(9090));
+        assert_eq!(addr, Some("172.17.0.5:9090".to_string()));
     }
 
     // ── Container display name ──────────────────────────────────────
@@ -1062,6 +1015,7 @@ mod tests {
             labels: None,
             state: "running".to_string(),
             network_settings: ContainerNetworkSettings::default(),
+            ports: vec![],
         };
         assert_eq!(container.display_name(), "my-service");
     }
@@ -1074,6 +1028,7 @@ mod tests {
             labels: None,
             state: "running".to_string(),
             network_settings: ContainerNetworkSettings::default(),
+            ports: vec![],
         };
         assert_eq!(container.display_name(), "abc123def456");
     }
@@ -1088,26 +1043,14 @@ mod tests {
     }
 
     #[test]
-    fn build_config_single_container_with_router_and_upstream() {
+    fn build_config_single_container() {
         let container = ParsedContainer {
             name: "web".to_string(),
-            routers: HashMap::from([(
-                "web".to_string(),
-                ParsedRouter {
-                    match_host: vec!["web.example.com".to_string()],
-                    match_path: vec!["/*".to_string()],
-                    match_method: vec![],
-                    upstream: Some("web-backend".to_string()),
-                },
-            )]),
-            upstreams: HashMap::from([(
-                "web-backend".to_string(),
-                ParsedUpstream {
-                    load_balancing: Some("round_robin".to_string()),
-                    health_check_path: Some("/health".to_string()),
-                    health_check_interval: None,
-                },
-            )]),
+            hosts: vec!["web.example.com".to_string()],
+            paths: vec!["/*".to_string()],
+            port: Some(3000),
+            upstream_name: "web-backend".to_string(),
+            service_name: "web-service".to_string(),
             target_address: Some("172.17.0.2:3000".to_string()),
         };
 
@@ -1115,119 +1058,43 @@ mod tests {
 
         // Should have one service.
         assert_eq!(config.services.len(), 1);
-        assert!(config.services.contains_key("docker-web"));
+        assert!(config.services.contains_key("web-service"));
 
-        let service = &config.services["docker-web"];
+        let service = &config.services["web-service"];
         assert_eq!(service.listeners.len(), 1);
         assert_eq!(service.listeners[0].address, "0.0.0.0:80");
         assert_eq!(service.routes.len(), 1);
         assert_eq!(service.routes[0].upstream, "web-backend");
         assert_eq!(service.routes[0].match_host, vec!["web.example.com"]);
         assert_eq!(service.routes[0].match_path, vec!["/*"]);
+        assert_eq!(service.routes[0].name, Some("docker-web".to_string()));
 
         // Should have one upstream with one target.
         assert_eq!(config.upstreams.len(), 1);
         let upstream = &config.upstreams["web-backend"];
         assert_eq!(upstream.targets.len(), 1);
         assert_eq!(upstream.targets[0].address(), "172.17.0.2:3000");
-        assert_eq!(upstream.load_balancing, "round_robin");
-        assert!(upstream.health_check.is_some());
-        assert_eq!(upstream.health_check.as_ref().unwrap().path, "/health");
-    }
-
-    #[test]
-    fn build_config_auto_creates_upstream_from_router_ref() {
-        let container = ParsedContainer {
-            name: "app".to_string(),
-            routers: HashMap::from([(
-                "app".to_string(),
-                ParsedRouter {
-                    match_host: vec!["app.local".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: Some("my-backend".to_string()),
-                },
-            )]),
-            upstreams: HashMap::new(), // no explicit upstream labels
-            target_address: Some("10.0.0.5:8080".to_string()),
-        };
-
-        let config = build_config(&[container], "0.0.0.0:80");
-
-        // Upstream should be auto-created.
-        assert!(config.upstreams.contains_key("my-backend"));
-        let upstream = &config.upstreams["my-backend"];
-        assert_eq!(upstream.targets.len(), 1);
-        assert_eq!(upstream.targets[0].address(), "10.0.0.5:8080");
-    }
-
-    #[test]
-    fn build_config_router_without_explicit_upstream_uses_router_name() {
-        let container = ParsedContainer {
-            name: "svc".to_string(),
-            routers: HashMap::from([(
-                "svc".to_string(),
-                ParsedRouter {
-                    match_host: vec!["svc.local".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: None, // no upstream label — defaults to router name
-                },
-            )]),
-            upstreams: HashMap::new(),
-            target_address: Some("10.0.0.1:80".to_string()),
-        };
-
-        let config = build_config(&[container], "0.0.0.0:80");
-
-        // Upstream named after router.
-        assert!(config.upstreams.contains_key("svc"));
-        assert_eq!(config.upstreams["svc"].targets.len(), 1);
     }
 
     #[test]
     fn build_config_multiple_containers_same_upstream() {
         let c1 = ParsedContainer {
             name: "web-1".to_string(),
-            routers: HashMap::from([(
-                "web".to_string(),
-                ParsedRouter {
-                    match_host: vec!["web.example.com".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: Some("web-pool".to_string()),
-                },
-            )]),
-            upstreams: HashMap::from([(
-                "web-pool".to_string(),
-                ParsedUpstream {
-                    load_balancing: Some("round_robin".to_string()),
-                    health_check_path: None,
-                    health_check_interval: None,
-                },
-            )]),
+            hosts: vec!["web.example.com".to_string()],
+            paths: vec!["/*".to_string()],
+            port: Some(3000),
+            upstream_name: "web-pool".to_string(),
+            service_name: "web".to_string(),
             target_address: Some("172.17.0.2:3000".to_string()),
         };
 
         let c2 = ParsedContainer {
             name: "web-2".to_string(),
-            routers: HashMap::from([(
-                "web".to_string(),
-                ParsedRouter {
-                    match_host: vec!["web.example.com".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: Some("web-pool".to_string()),
-                },
-            )]),
-            upstreams: HashMap::from([(
-                "web-pool".to_string(),
-                ParsedUpstream {
-                    load_balancing: Some("round_robin".to_string()),
-                    health_check_path: None,
-                    health_check_interval: None,
-                },
-            )]),
+            hosts: vec!["web.example.com".to_string()],
+            paths: vec!["/*".to_string()],
+            port: Some(3000),
+            upstream_name: "web-pool".to_string(),
+            service_name: "web".to_string(),
             target_address: Some("172.17.0.3:3000".to_string()),
         };
 
@@ -1244,97 +1111,117 @@ mod tests {
 
     #[test]
     fn build_config_no_duplicate_targets() {
-        // When a container declares both the upstream AND a router referencing it,
-        // the target should only appear once.
-        let container = ParsedContainer {
-            name: "app".to_string(),
-            routers: HashMap::from([(
-                "app".to_string(),
-                ParsedRouter {
-                    match_host: vec!["app.local".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: Some("backend".to_string()),
-                },
-            )]),
-            upstreams: HashMap::from([(
-                "backend".to_string(),
-                ParsedUpstream::default(),
-            )]),
+        let c1 = ParsedContainer {
+            name: "web-1".to_string(),
+            hosts: vec!["web.local".to_string()],
+            paths: vec!["/*".to_string()],
+            port: None,
+            upstream_name: "pool".to_string(),
+            service_name: "web".to_string(),
             target_address: Some("10.0.0.1:80".to_string()),
         };
 
-        let config = build_config(&[container], "0.0.0.0:80");
-        assert_eq!(config.upstreams["backend"].targets.len(), 1);
+        let c2 = ParsedContainer {
+            name: "web-2".to_string(),
+            hosts: vec!["web.local".to_string()],
+            paths: vec!["/*".to_string()],
+            port: None,
+            upstream_name: "pool".to_string(),
+            service_name: "web".to_string(),
+            // Same address as c1 — should not duplicate.
+            target_address: Some("10.0.0.1:80".to_string()),
+        };
+
+        let config = build_config(&[c1, c2], "0.0.0.0:80");
+        assert_eq!(config.upstreams["pool"].targets.len(), 1);
     }
 
     #[test]
     fn build_config_container_without_target_address() {
         let container = ParsedContainer {
             name: "no-ip".to_string(),
-            routers: HashMap::from([(
-                "web".to_string(),
-                ParsedRouter {
-                    match_host: vec!["web.local".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: Some("pool".to_string()),
-                },
-            )]),
-            upstreams: HashMap::new(),
+            hosts: vec!["web.local".to_string()],
+            paths: vec!["/*".to_string()],
+            port: None,
+            upstream_name: "pool".to_string(),
+            service_name: "web".to_string(),
             target_address: None,
         };
 
         let config = build_config(&[container], "0.0.0.0:80");
 
         // Service and upstream created, but no targets.
-        assert!(config.services.contains_key("docker-web"));
+        assert!(config.services.contains_key("web"));
         assert!(config.upstreams.contains_key("pool"));
         assert!(config.upstreams["pool"].targets.is_empty());
-    }
-
-    #[test]
-    fn build_config_health_check_defaults() {
-        let container = ParsedContainer {
-            name: "hc".to_string(),
-            routers: HashMap::new(),
-            upstreams: HashMap::from([(
-                "backend".to_string(),
-                ParsedUpstream {
-                    load_balancing: None,
-                    health_check_path: Some("/ready".to_string()),
-                    health_check_interval: None, // should default to "10s"
-                },
-            )]),
-            target_address: Some("10.0.0.1:80".to_string()),
-        };
-
-        let config = build_config(&[container], "0.0.0.0:80");
-        let hc = config.upstreams["backend"].health_check.as_ref().unwrap();
-        assert_eq!(hc.path, "/ready");
-        assert_eq!(hc.interval, "10s");
     }
 
     #[test]
     fn build_config_custom_listener() {
         let container = ParsedContainer {
             name: "app".to_string(),
-            routers: HashMap::from([(
-                "app".to_string(),
-                ParsedRouter {
-                    match_host: vec!["app.local".to_string()],
-                    match_path: vec![],
-                    match_method: vec![],
-                    upstream: None,
-                },
-            )]),
-            upstreams: HashMap::new(),
+            hosts: vec!["app.local".to_string()],
+            paths: vec!["/*".to_string()],
+            port: None,
+            upstream_name: "app".to_string(),
+            service_name: "app".to_string(),
             target_address: Some("10.0.0.1:80".to_string()),
         };
 
         let config = build_config(&[container], "0.0.0.0:8443");
-        let service = &config.services["docker-app"];
+        let service = &config.services["app"];
         assert_eq!(service.listeners[0].address, "0.0.0.0:8443");
+    }
+
+    #[test]
+    fn build_config_different_services_same_upstream() {
+        let c1 = ParsedContainer {
+            name: "api".to_string(),
+            hosts: vec!["api.example.com".to_string()],
+            paths: vec!["/v1/*".to_string()],
+            port: Some(3000),
+            upstream_name: "shared-pool".to_string(),
+            service_name: "api-service".to_string(),
+            target_address: Some("172.17.0.2:3000".to_string()),
+        };
+
+        let c2 = ParsedContainer {
+            name: "web".to_string(),
+            hosts: vec!["www.example.com".to_string()],
+            paths: vec!["/*".to_string()],
+            port: Some(3000),
+            upstream_name: "shared-pool".to_string(),
+            service_name: "web-service".to_string(),
+            target_address: Some("172.17.0.3:3000".to_string()),
+        };
+
+        let config = build_config(&[c1, c2], "0.0.0.0:80");
+
+        // Two separate services.
+        assert_eq!(config.services.len(), 2);
+        assert!(config.services.contains_key("api-service"));
+        assert!(config.services.contains_key("web-service"));
+
+        // But one shared upstream with both targets.
+        assert_eq!(config.upstreams.len(), 1);
+        assert_eq!(config.upstreams["shared-pool"].targets.len(), 2);
+    }
+
+    #[test]
+    fn build_config_route_name_includes_container() {
+        let container = ParsedContainer {
+            name: "my-app".to_string(),
+            hosts: vec!["app.local".to_string()],
+            paths: vec!["/*".to_string()],
+            port: None,
+            upstream_name: "my-app".to_string(),
+            service_name: "my-app".to_string(),
+            target_address: Some("10.0.0.1:80".to_string()),
+        };
+
+        let config = build_config(&[container], "0.0.0.0:80");
+        let route = &config.services["my-app"].routes[0];
+        assert_eq!(route.name, Some("docker-my-app".to_string()));
     }
 
     // ── containers_to_config integration ────────────────────────────
@@ -1347,10 +1234,7 @@ mod tests {
                 names: vec!["/enabled-app".to_string()],
                 labels: Some(HashMap::from([
                     ("fluxo.enable".to_string(), "true".to_string()),
-                    (
-                        "fluxo.http.routers.app.match_host".to_string(),
-                        "app.test".to_string(),
-                    ),
+                    ("fluxo.host".to_string(), "app.test".to_string()),
                 ])),
                 state: "running".to_string(),
                 network_settings: ContainerNetworkSettings {
@@ -1361,6 +1245,7 @@ mod tests {
                         },
                     )]),
                 },
+                ports: vec![],
             },
             DockerContainer {
                 id: "c2".to_string(),
@@ -1368,6 +1253,7 @@ mod tests {
                 labels: Some(HashMap::new()),
                 state: "running".to_string(),
                 network_settings: ContainerNetworkSettings::default(),
+                ports: vec![],
             },
             DockerContainer {
                 id: "c3".to_string(),
@@ -1378,6 +1264,7 @@ mod tests {
                 )])),
                 state: "running".to_string(),
                 network_settings: ContainerNetworkSettings::default(),
+                ports: vec![],
             },
         ];
 
@@ -1385,7 +1272,7 @@ mod tests {
 
         // Only the enabled container should contribute.
         assert_eq!(config.services.len(), 1);
-        assert!(config.services.contains_key("docker-app"));
+        assert!(config.services.contains_key("enabled-app"));
     }
 
     #[test]
@@ -1395,13 +1282,11 @@ mod tests {
             names: vec!["/stopped-app".to_string()],
             labels: Some(HashMap::from([
                 ("fluxo.enable".to_string(), "true".to_string()),
-                (
-                    "fluxo.http.routers.app.match_host".to_string(),
-                    "app.test".to_string(),
-                ),
+                ("fluxo.host".to_string(), "app.test".to_string()),
             ])),
             state: "exited".to_string(),
             network_settings: ContainerNetworkSettings::default(),
+            ports: vec![],
         }];
 
         let config = containers_to_config(containers, "fluxo", "0.0.0.0:80");
@@ -1416,10 +1301,71 @@ mod tests {
             labels: None,
             state: "running".to_string(),
             network_settings: ContainerNetworkSettings::default(),
+            ports: vec![],
         }];
 
         let config = containers_to_config(containers, "fluxo", "0.0.0.0:80");
         assert!(config.services.is_empty());
+    }
+
+    #[test]
+    fn containers_to_config_uses_explicit_port() {
+        let containers = vec![DockerContainer {
+            id: "c1".to_string(),
+            names: vec!["/web".to_string()],
+            labels: Some(HashMap::from([
+                ("fluxo.enable".to_string(), "true".to_string()),
+                ("fluxo.host".to_string(), "web.test".to_string()),
+                ("fluxo.port".to_string(), "8080".to_string()),
+            ])),
+            state: "running".to_string(),
+            network_settings: ContainerNetworkSettings {
+                networks: HashMap::from([(
+                    "bridge".to_string(),
+                    ContainerNetwork {
+                        ip_address: "172.17.0.2".to_string(),
+                    },
+                )]),
+            },
+            ports: vec![DockerPort {
+                private_port: 3000,
+                protocol: "tcp".to_string(),
+            }],
+        }];
+
+        let config = containers_to_config(containers, "fluxo", "0.0.0.0:80");
+        let upstream = &config.upstreams["web"];
+        // Should use explicit port 8080, not exposed port 3000.
+        assert_eq!(upstream.targets[0].address(), "172.17.0.2:8080");
+    }
+
+    #[test]
+    fn containers_to_config_uses_exposed_port_when_no_label() {
+        let containers = vec![DockerContainer {
+            id: "c1".to_string(),
+            names: vec!["/web".to_string()],
+            labels: Some(HashMap::from([
+                ("fluxo.enable".to_string(), "true".to_string()),
+                ("fluxo.host".to_string(), "web.test".to_string()),
+            ])),
+            state: "running".to_string(),
+            network_settings: ContainerNetworkSettings {
+                networks: HashMap::from([(
+                    "bridge".to_string(),
+                    ContainerNetwork {
+                        ip_address: "172.17.0.2".to_string(),
+                    },
+                )]),
+            },
+            ports: vec![DockerPort {
+                private_port: 3000,
+                protocol: "tcp".to_string(),
+            }],
+        }];
+
+        let config = containers_to_config(containers, "fluxo", "0.0.0.0:80");
+        let upstream = &config.upstreams["web"];
+        assert_eq!(upstream.targets[0].address(), "172.17.0.2:3000");
     }
 
     // ── Docker API deserialization ──────────────────────────────────
@@ -1432,7 +1378,7 @@ mod tests {
             "State": "running",
             "Labels": {
                 "fluxo.enable": "true",
-                "fluxo.http.routers.web.match_host": "web.example.com"
+                "fluxo.host": "web.example.com"
             },
             "NetworkSettings": {
                 "Networks": {
@@ -1440,7 +1386,10 @@ mod tests {
                         "IPAddress": "172.17.0.2"
                     }
                 }
-            }
+            },
+            "Ports": [
+                {"PrivatePort": 8080, "Type": "tcp"}
+            ]
         }]"#;
 
         let containers: Vec<DockerContainer> = serde_json::from_str(json).unwrap();
@@ -1454,6 +1403,9 @@ mod tests {
 
         let ip = &containers[0].network_settings.networks["bridge"].ip_address;
         assert_eq!(ip, "172.17.0.2");
+
+        assert_eq!(containers[0].ports.len(), 1);
+        assert_eq!(containers[0].ports[0].private_port, 8080);
     }
 
     #[test]
@@ -1469,6 +1421,7 @@ mod tests {
         assert_eq!(containers.len(), 1);
         assert!(containers[0].labels.is_none());
         assert!(containers[0].network_settings.networks.is_empty());
+        assert!(containers[0].ports.is_empty());
     }
 
     #[test]
@@ -1497,7 +1450,7 @@ mod tests {
         assert_eq!(event.action, "die");
     }
 
-    // ── End-to-end label → config pipeline ──────────────────────────
+    // ── End-to-end label -> config pipeline ──────────────────────────
 
     #[test]
     fn full_pipeline_labels_to_config() {
@@ -1508,25 +1461,13 @@ mod tests {
                 labels: Some(HashMap::from([
                     ("fluxo.enable".to_string(), "true".to_string()),
                     (
-                        "fluxo.http.routers.frontend.match_host".to_string(),
+                        "fluxo.host".to_string(),
                         "mysite.com, www.mysite.com".to_string(),
                     ),
-                    (
-                        "fluxo.http.routers.frontend.match_path".to_string(),
-                        "/*".to_string(),
-                    ),
-                    (
-                        "fluxo.http.routers.frontend.upstream".to_string(),
-                        "web-pool".to_string(),
-                    ),
-                    (
-                        "fluxo.http.upstreams.web-pool.load_balancing".to_string(),
-                        "round_robin".to_string(),
-                    ),
-                    (
-                        "fluxo.http.upstreams.web-pool.health_check.path".to_string(),
-                        "/ping".to_string(),
-                    ),
+                    ("fluxo.path".to_string(), "/*".to_string()),
+                    ("fluxo.port".to_string(), "3000".to_string()),
+                    ("fluxo.upstream".to_string(), "web-pool".to_string()),
+                    ("fluxo.service".to_string(), "frontend".to_string()),
                 ])),
                 state: "running".to_string(),
                 network_settings: ContainerNetworkSettings {
@@ -1537,24 +1478,17 @@ mod tests {
                         },
                     )]),
                 },
+                ports: vec![],
             },
             DockerContainer {
                 id: "web2".to_string(),
                 names: vec!["/web-2".to_string()],
                 labels: Some(HashMap::from([
                     ("fluxo.enable".to_string(), "true".to_string()),
-                    (
-                        "fluxo.http.routers.frontend.match_host".to_string(),
-                        "mysite.com".to_string(),
-                    ),
-                    (
-                        "fluxo.http.routers.frontend.upstream".to_string(),
-                        "web-pool".to_string(),
-                    ),
-                    (
-                        "fluxo.http.upstreams.web-pool.load_balancing".to_string(),
-                        "round_robin".to_string(),
-                    ),
+                    ("fluxo.host".to_string(), "mysite.com".to_string()),
+                    ("fluxo.port".to_string(), "3000".to_string()),
+                    ("fluxo.upstream".to_string(), "web-pool".to_string()),
+                    ("fluxo.service".to_string(), "frontend".to_string()),
                 ])),
                 state: "running".to_string(),
                 network_settings: ContainerNetworkSettings {
@@ -1565,6 +1499,7 @@ mod tests {
                         },
                     )]),
                 },
+                ports: vec![],
             },
             DockerContainer {
                 id: "redis".to_string(),
@@ -1575,30 +1510,70 @@ mod tests {
                 )])),
                 state: "running".to_string(),
                 network_settings: ContainerNetworkSettings::default(),
+                ports: vec![],
             },
         ];
 
         let config = containers_to_config(containers, "fluxo", "0.0.0.0:80");
 
-        // Only the two web containers should contribute.
+        // Only the two web containers should contribute, both to the "frontend" service.
         assert_eq!(config.services.len(), 1);
-        assert!(config.services.contains_key("docker-frontend"));
+        assert!(config.services.contains_key("frontend"));
 
         // The upstream should have two targets (one per container).
         let upstream = &config.upstreams["web-pool"];
         assert_eq!(upstream.targets.len(), 2);
-        assert_eq!(upstream.load_balancing, "round_robin");
-        assert!(upstream.health_check.is_some());
-        assert_eq!(upstream.health_check.as_ref().unwrap().path, "/ping");
 
         let addrs: Vec<&str> = upstream.targets.iter().map(|t| t.address()).collect();
-        assert!(addrs.contains(&"10.0.1.10:80"));
-        assert!(addrs.contains(&"10.0.1.11:80"));
+        assert!(addrs.contains(&"10.0.1.10:3000"));
+        assert!(addrs.contains(&"10.0.1.11:3000"));
 
-        // The route should have the merged hosts.
-        let service = &config.services["docker-frontend"];
-        assert!(!service.routes.is_empty());
-        assert_eq!(service.routes[0].upstream, "web-pool");
+        // The service should have routes from both containers.
+        let service = &config.services["frontend"];
+        assert_eq!(service.routes.len(), 2);
+        assert!(service.routes.iter().all(|r| r.upstream == "web-pool"));
+    }
+
+    #[test]
+    fn full_pipeline_defaults_only() {
+        // Container with only fluxo.enable=true — everything else is defaulted.
+        let containers = vec![DockerContainer {
+            id: "minimal".to_string(),
+            names: vec!["/my-app".to_string()],
+            labels: Some(HashMap::from([(
+                "fluxo.enable".to_string(),
+                "true".to_string(),
+            )])),
+            state: "running".to_string(),
+            network_settings: ContainerNetworkSettings {
+                networks: HashMap::from([(
+                    "bridge".to_string(),
+                    ContainerNetwork {
+                        ip_address: "172.17.0.5".to_string(),
+                    },
+                )]),
+            },
+            ports: vec![DockerPort {
+                private_port: 8080,
+                protocol: "tcp".to_string(),
+            }],
+        }];
+
+        let config = containers_to_config(containers, "fluxo", "0.0.0.0:80");
+
+        // Service and upstream named after container ("my-app").
+        assert!(config.services.contains_key("my-app"));
+        assert!(config.upstreams.contains_key("my-app"));
+
+        let service = &config.services["my-app"];
+        assert_eq!(service.routes.len(), 1);
+        assert_eq!(service.routes[0].match_path, vec!["/*"]);
+        assert!(service.routes[0].match_host.is_empty());
+
+        // Should auto-detect exposed port 8080.
+        let upstream = &config.upstreams["my-app"];
+        assert_eq!(upstream.targets.len(), 1);
+        assert_eq!(upstream.targets[0].address(), "172.17.0.5:8080");
     }
 
     // ── Config has default global ──────────────────────────────────

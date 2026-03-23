@@ -937,7 +937,7 @@ pub(crate) fn convert_ingress_path(path: Option<&str>, path_type: Option<&str>) 
 
     match path_type {
         Some("Exact") => path.to_string(),
-        Some("Prefix") | Some("ImplementationSpecific") | None => {
+        Some("Prefix" | "ImplementationSpecific") | None => {
             if path == "/" {
                 "/*".to_string()
             } else {
@@ -966,10 +966,10 @@ fn apply_upstream_annotations(
     connect_timeout: &Option<String>,
     read_timeout: &Option<String>,
 ) {
-    if let Some(ref lb) = lb_strategy {
+    if let Some(lb) = lb_strategy {
         upstream.load_balancing = lb.clone();
     }
-    if let Some(ref path) = health_check_path {
+    if let Some(path) = health_check_path {
         upstream.health_check = Some(HealthCheckConfig {
             path: path.clone(),
             interval: defaults::health_check_interval(),
@@ -984,10 +984,10 @@ fn apply_upstream_annotations(
             follow_redirects: defaults::health_check_follow_redirects(),
         });
     }
-    if let Some(ref timeout) = connect_timeout {
+    if let Some(timeout) = connect_timeout {
         upstream.connect_timeout = timeout.clone();
     }
-    if let Some(ref timeout) = read_timeout {
+    if let Some(timeout) = read_timeout {
         upstream.read_timeout = timeout.clone();
     }
 }

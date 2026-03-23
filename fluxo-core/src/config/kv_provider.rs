@@ -63,12 +63,14 @@ impl KvRuntimeConfig {
     }
 
     /// Set the services to discover from Consul catalog.
+    #[must_use]
     pub fn with_discovery_services(mut self, services: Vec<String>) -> Self {
         self.discovery_services = services;
         self
     }
 
     /// Set the listener address for catalog-discovered services.
+    #[must_use]
     pub fn with_discovery_listener(mut self, listener: String) -> Self {
         self.discovery_listener = listener;
         self
@@ -140,7 +142,7 @@ impl KvProvider {
         }
 
         let mut req = self.client.get(&url);
-        if let Some(token) = &self.config.token {
+        if let Some(token) = &self.config.inner.token {
             req = req.header("X-Consul-Token", token);
         }
 
@@ -223,7 +225,6 @@ impl KvProvider {
                         "consul KV request failed — retrying"
                     );
                     tokio::time::sleep(delay).await;
-                    continue;
                 }
             }
         }
@@ -251,7 +252,7 @@ impl KvProvider {
         }
 
         let mut req = self.client.get(&url);
-        if let Some(token) = &self.config.token {
+        if let Some(token) = &self.config.inner.token {
             req = req.header("X-Consul-Token", token);
         }
 
@@ -478,7 +479,7 @@ impl KvProvider {
         }
 
         let mut req = self.client.get(&url);
-        if let Some(token) = &self.config.token {
+        if let Some(token) = &self.config.inner.token {
             req = req.header("X-Consul-Token", token);
         }
 
@@ -516,7 +517,7 @@ impl KvProvider {
         });
 
         let mut req = self.client.post(&url).json(&body);
-        if let Some(token) = &self.config.token {
+        if let Some(token) = &self.config.inner.token {
             req = req.header("Authorization", format!("Bearer {token}"));
         }
 
@@ -528,16 +529,14 @@ impl KvProvider {
 
         let range_resp: EtcdRangeResponse = resp.json().await?;
 
-        if let Some(kv) = range_resp.kvs.first() {
+        Ok(range_resp.kvs.first().map_or((0, None), |kv| {
             let revision = kv.mod_revision;
             let value = base64::engine::general_purpose::STANDARD
                 .decode(&kv.value)
                 .ok()
                 .and_then(|bytes| String::from_utf8(bytes).ok());
-            Ok((revision, value))
-        } else {
-            Ok((0, None))
-        }
+            (revision, value)
+        }))
     }
 
     /// Watch etcd for changes via the v3 watch API.
@@ -668,7 +667,7 @@ impl KvProvider {
         });
 
         let mut req = self.client.post(&url).json(&body);
-        if let Some(token) = &self.config.token {
+        if let Some(token) = &self.config.inner.token {
             req = req.header("Authorization", format!("Bearer {token}"));
         }
 
@@ -713,7 +712,7 @@ impl KvProvider {
 #[async_trait]
 impl ConfigProvider for KvProvider {
     fn name(&self) -> &str {
-        match self.config.backend {
+        match self.config.inner.backend {
             KvBackend::Consul => "consul",
             KvBackend::Etcd => "etcd",
         }
@@ -724,16 +723,16 @@ impl ConfigProvider for KvProvider {
         tx: mpsc::Sender<(String, FluxoConfig)>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(
-            backend = ?self.config.backend,
-            endpoints = ?self.config.endpoints,
+            backend = ?self.config.inner.backend,
+            endpoints = ?self.config.inner.endpoints,
             prefix = %self.config.inner.prefix,
-            service_discovery = self.config.service_discovery,
+            service_discovery = self.config.inner.service_discovery,
             "starting KV config provider"
         );
 
-        match self.config.backend {
+        match self.config.inner.backend {
             KvBackend::Consul => {
-                if self.config.service_discovery {
+                if self.config.inner.service_discovery {
                     // Run both KV watch and catalog watch concurrently.
                     // The KV watch provides the base config, catalog provides upstreams.
                     let tx_kv = tx.clone();
@@ -801,8 +800,9 @@ struct ConsulKvEntry {
     /// Base64-encoded value.
     #[serde(default)]
     value: String,
-    /// Consul modification index.
+    /// Consul modification index (used in tests for assertions).
     #[serde(default)]
+    #[allow(dead_code)]
     modify_index: u64,
 }
 
@@ -843,6 +843,7 @@ struct ConsulNode {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ConsulService {
     #[serde(default)]
+    #[allow(dead_code)]
     service: String,
     #[serde(default)]
     address: String,
@@ -867,6 +868,7 @@ struct EtcdRangeResponse {
 #[derive(Debug, Deserialize)]
 struct EtcdKeyValue {
     #[serde(default)]
+    #[allow(dead_code)]
     key: String,
     #[serde(default)]
     value: String,
@@ -904,76 +906,86 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // --- KvProviderConfig defaults ---
+    /// Helper: build a default Consul `KvProviderConfig` for tests.
+    fn consul_toml_config() -> KvProviderConfig {
+        KvProviderConfig {
+            backend: KvBackend::Consul,
+            endpoints: vec!["http://127.0.0.1:8500".to_string()],
+            prefix: "fluxo".to_string(),
+            token: None,
+            poll_interval: "10s".to_string(),
+            consul_datacenter: None,
+            consul_namespace: None,
+            service_discovery: false,
+            tls_skip_verify: false,
+        }
+    }
+
+    /// Helper: build a default etcd `KvProviderConfig` for tests.
+    fn etcd_toml_config() -> KvProviderConfig {
+        KvProviderConfig {
+            backend: KvBackend::Etcd,
+            endpoints: vec!["http://127.0.0.1:2379".to_string()],
+            prefix: "fluxo".to_string(),
+            token: None,
+            poll_interval: "10s".to_string(),
+            consul_datacenter: None,
+            consul_namespace: None,
+            service_discovery: false,
+            tls_skip_verify: false,
+        }
+    }
+
+    /// Helper: build a `KvRuntimeConfig` from a TOML config.
+    fn runtime(toml_cfg: KvProviderConfig) -> KvRuntimeConfig {
+        KvRuntimeConfig::from_toml(toml_cfg)
+    }
+
+    // --- KvRuntimeConfig defaults ---
 
     #[test]
-    fn default_config_has_consul_backend() {
-        let cfg = KvProviderConfig::default();
-        assert_eq!(cfg.backend, KvBackend::Consul);
+    fn runtime_config_parses_poll_interval() {
+        let rt = runtime(consul_toml_config());
+        assert_eq!(rt.poll_interval, Duration::from_secs(10));
     }
 
     #[test]
-    fn default_config_endpoint_is_localhost() {
-        let cfg = KvProviderConfig::default();
-        assert_eq!(cfg.endpoints, vec!["http://127.0.0.1:8500"]);
+    fn runtime_config_default_discovery_listener() {
+        let rt = runtime(consul_toml_config());
+        assert_eq!(rt.discovery_listener, "0.0.0.0:80");
     }
 
     #[test]
-    fn default_config_prefix_is_fluxo() {
-        let cfg = KvProviderConfig::default();
-        assert_eq!(cfg.prefix, "fluxo");
+    fn runtime_config_default_discovery_services_empty() {
+        let rt = runtime(consul_toml_config());
+        assert!(rt.discovery_services.is_empty());
     }
 
     #[test]
-    fn default_config_no_token() {
-        let cfg = KvProviderConfig::default();
-        assert!(cfg.token.is_none());
+    fn runtime_config_with_discovery_services() {
+        let rt = runtime(consul_toml_config())
+            .with_discovery_services(vec!["web".to_string(), "api".to_string()]);
+        assert_eq!(rt.discovery_services.len(), 2);
     }
 
     #[test]
-    fn default_config_poll_interval_30s() {
-        let cfg = KvProviderConfig::default();
-        assert_eq!(cfg.poll_interval, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn default_config_tls_skip_verify_false() {
-        let cfg = KvProviderConfig::default();
-        assert!(!cfg.tls_skip_verify);
-    }
-
-    #[test]
-    fn default_config_service_discovery_false() {
-        let cfg = KvProviderConfig::default();
-        assert!(!cfg.service_discovery);
-    }
-
-    #[test]
-    fn default_config_discovery_listener() {
-        let cfg = KvProviderConfig::default();
-        assert_eq!(cfg.discovery_listener, "0.0.0.0:80");
+    fn runtime_config_with_discovery_listener() {
+        let rt = runtime(consul_toml_config())
+            .with_discovery_listener("0.0.0.0:443".to_string());
+        assert_eq!(rt.discovery_listener, "0.0.0.0:443");
     }
 
     // --- Provider name ---
 
     #[test]
     fn consul_provider_name() {
-        let cfg = KvProviderConfig {
-            backend: KvBackend::Consul,
-            ..Default::default()
-        };
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
         assert_eq!(provider.name(), "consul");
     }
 
     #[test]
     fn etcd_provider_name() {
-        let cfg = KvProviderConfig {
-            backend: KvBackend::Etcd,
-            endpoints: vec!["http://127.0.0.1:2379".to_string()],
-            ..Default::default()
-        };
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(etcd_toml_config())).unwrap();
         assert_eq!(provider.name(), "etcd");
     }
 
@@ -981,15 +993,13 @@ mod tests {
 
     #[test]
     fn endpoint_cycles_through_list() {
-        let cfg = KvProviderConfig {
-            endpoints: vec![
-                "http://consul-1:8500".to_string(),
-                "http://consul-2:8500".to_string(),
-                "http://consul-3:8500".to_string(),
-            ],
-            ..Default::default()
-        };
-        let provider = KvProvider::new(cfg).unwrap();
+        let mut cfg = consul_toml_config();
+        cfg.endpoints = vec![
+            "http://consul-1:8500".to_string(),
+            "http://consul-2:8500".to_string(),
+            "http://consul-3:8500".to_string(),
+        ];
+        let provider = KvProvider::new(runtime(cfg)).unwrap();
         assert_eq!(provider.endpoint(0), "http://consul-1:8500");
         assert_eq!(provider.endpoint(1), "http://consul-2:8500");
         assert_eq!(provider.endpoint(2), "http://consul-3:8500");
@@ -999,8 +1009,7 @@ mod tests {
 
     #[test]
     fn single_endpoint_always_returns_same() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
         assert_eq!(provider.endpoint(0), "http://127.0.0.1:8500");
         assert_eq!(provider.endpoint(5), "http://127.0.0.1:8500");
         assert_eq!(provider.endpoint(100), "http://127.0.0.1:8500");
@@ -1121,7 +1130,7 @@ mod tests {
         assert_eq!(entries.len(), 3);
     }
 
-    // --- Consul catalog → config mapping ---
+    // --- Consul catalog -> config mapping ---
 
     #[test]
     fn merged_tags_extracts_fluxo_tags() {
@@ -1215,8 +1224,7 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_single_service() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert(
@@ -1270,8 +1278,7 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_multiple_services() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert(
@@ -1321,8 +1328,7 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_empty_services_skipped() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert("empty-svc".to_string(), vec![]);
@@ -1349,8 +1355,7 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_all_empty_produces_no_service() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert("empty".to_string(), vec![]);
@@ -1362,8 +1367,7 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_default_lb_is_round_robin() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert(
@@ -1388,11 +1392,9 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_custom_listener() {
-        let cfg = KvProviderConfig {
-            discovery_listener: "0.0.0.0:443".to_string(),
-            ..Default::default()
-        };
-        let provider = KvProvider::new(cfg).unwrap();
+        let rt = runtime(consul_toml_config())
+            .with_discovery_listener("0.0.0.0:443".to_string());
+        let provider = KvProvider::new(rt).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert(
@@ -1417,8 +1419,7 @@ mod tests {
 
     #[test]
     fn build_config_from_catalog_multi_host_tag() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert(
@@ -1630,12 +1631,19 @@ mod tests {
         assert_eq!(format!("{:?}", KvBackend::Etcd), "Etcd");
     }
 
-    // --- Config construction ---
+    // --- Provider construction ---
 
     #[test]
     fn kv_provider_new_succeeds() {
-        let provider = KvProvider::new(KvProviderConfig::default());
+        let provider = KvProvider::new(runtime(consul_toml_config()));
         assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn kv_provider_from_toml_succeeds() {
+        let provider = KvProvider::from_toml(consul_toml_config());
+        assert!(provider.is_ok());
+        assert_eq!(provider.unwrap().name(), "consul");
     }
 
     #[test]
@@ -1648,19 +1656,17 @@ mod tests {
             ],
             prefix: "myapp".to_string(),
             token: Some("secret-token".to_string()),
-            poll_interval: Duration::from_secs(10),
+            poll_interval: "5s".to_string(),
             tls_skip_verify: true,
             consul_datacenter: None,
             consul_namespace: None,
             service_discovery: false,
-            discovery_services: vec!["svc-a".to_string()],
-            discovery_listener: "0.0.0.0:8443".to_string(),
         };
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(cfg)).unwrap();
         assert_eq!(provider.name(), "etcd");
-        assert_eq!(provider.config.prefix, "myapp");
-        assert_eq!(provider.config.endpoints.len(), 2);
-        assert!(provider.config.token.is_some());
+        assert_eq!(provider.config.inner.prefix, "myapp");
+        assert_eq!(provider.config.inner.endpoints.len(), 2);
+        assert!(provider.config.inner.token.is_some());
     }
 
     // --- Consul service catalog JSON ---
@@ -1690,8 +1696,7 @@ mod tests {
 
     #[test]
     fn catalog_route_names_have_consul_prefix() {
-        let cfg = KvProviderConfig::default();
-        let provider = KvProvider::new(cfg).unwrap();
+        let provider = KvProvider::new(runtime(consul_toml_config())).unwrap();
 
         let mut catalog = HashMap::new();
         catalog.insert(
@@ -1783,24 +1788,53 @@ targets = ["127.0.0.1:3000"]
         let cfg = KvProviderConfig {
             consul_datacenter: Some("dc1".to_string()),
             consul_namespace: Some("production".to_string()),
-            ..Default::default()
+            ..consul_toml_config()
         };
         assert_eq!(cfg.consul_datacenter.as_deref(), Some("dc1"));
         assert_eq!(cfg.consul_namespace.as_deref(), Some("production"));
     }
 
     #[test]
-    fn config_with_multiple_discovery_services() {
-        let cfg = KvProviderConfig {
-            service_discovery: true,
-            discovery_services: vec![
+    fn config_with_service_discovery_enabled() {
+        let mut cfg = consul_toml_config();
+        cfg.service_discovery = true;
+        let rt = runtime(cfg)
+            .with_discovery_services(vec![
                 "web".to_string(),
                 "api".to_string(),
                 "grpc-backend".to_string(),
-            ],
-            ..Default::default()
-        };
-        assert_eq!(cfg.discovery_services.len(), 3);
+            ]);
+        assert_eq!(rt.discovery_services.len(), 3);
+        assert!(rt.inner.service_discovery);
+    }
+
+    // --- KvProviderConfig serde ---
+
+    #[test]
+    fn kv_backend_deserializes_from_lowercase() {
+        let json = r#""consul""#;
+        let backend: KvBackend = serde_json::from_str(json).unwrap();
+        assert_eq!(backend, KvBackend::Consul);
+
+        let json = r#""etcd""#;
+        let backend: KvBackend = serde_json::from_str(json).unwrap();
+        assert_eq!(backend, KvBackend::Etcd);
+    }
+
+    #[test]
+    fn kv_provider_config_deserializes_from_toml() {
+        let toml_str = r#"
+backend = "consul"
+endpoints = ["http://consul:8500"]
+prefix = "myapp"
+poll_interval = "30s"
+service_discovery = true
+"#;
+        let cfg: KvProviderConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.backend, KvBackend::Consul);
+        assert_eq!(cfg.endpoints, vec!["http://consul:8500"]);
+        assert_eq!(cfg.prefix, "myapp");
+        assert_eq!(cfg.poll_interval, "30s");
         assert!(cfg.service_discovery);
     }
 }
