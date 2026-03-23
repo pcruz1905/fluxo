@@ -1,6 +1,6 @@
 //! Static file serving plugin — serves files from a directory on disk.
 //!
-//! Features: content-type detection, ETag, byte-range, directory listing, index files.
+//! Features: content-type detection, `ETag`, byte-range, directory listing, index files.
 
 use serde::Deserialize;
 
@@ -66,12 +66,11 @@ impl StaticFilesPlugin {
         let path = req.uri.path();
 
         // Resolve the file path, preventing directory traversal
-        let resolved = match self.resolve_path(path) {
-            Some(p) => p,
-            None => {
-                ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 403 });
-                return PluginAction::Handled(403);
-            }
+        let resolved = if let Some(p) = self.resolve_path(path) {
+            p
+        } else {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 403 });
+            return PluginAction::Handled(403);
         };
 
         // Check if it's a directory
@@ -155,7 +154,7 @@ impl StaticFilesPlugin {
                 .unwrap_or_default();
             format!("\"{:x}-{:x}\"", dur.as_secs(), size)
         } else {
-            format!("\"{:x}\"", size)
+            format!("\"{size:x}\"")
         };
 
         // Check If-None-Match for 304
@@ -175,12 +174,11 @@ impl StaticFilesPlugin {
         }
 
         // Read the file
-        let body = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(_) => {
-                ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 500 });
-                return PluginAction::Handled(500);
-            }
+        let body = if let Ok(b) = std::fs::read(path) {
+            b
+        } else {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 500 });
+            return PluginAction::Handled(500);
         };
 
         // Content-Type detection
@@ -222,12 +220,11 @@ impl StaticFilesPlugin {
         ctx: &mut RequestContext,
     ) -> PluginAction {
         let mut entries = Vec::new();
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(_) => {
-                ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 500 });
-                return PluginAction::Handled(500);
-            }
+        let read_dir = if let Ok(rd) = std::fs::read_dir(dir) {
+            rd
+        } else {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 500 });
+            return PluginAction::Handled(500);
         };
 
         for entry in read_dir.flatten() {

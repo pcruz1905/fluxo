@@ -410,7 +410,7 @@ fn build_tls_settings(
 
 /// Apply cipher list, TLS 1.3 ciphersuites, and version bounds to TLS settings.
 ///
-/// On BoringSSL, `TlsSettings` derefs to `SslAcceptorBuilder` which exposes the full
+/// On `BoringSSL`, `TlsSettings` derefs to `SslAcceptorBuilder` which exposes the full
 /// OpenSSL configuration API. On rustls, these settings are not configurable via Pingora's
 /// API, so this is a no-op (a warning is logged if the user specified custom settings).
 #[allow(unused_variables)]

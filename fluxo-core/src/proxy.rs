@@ -1469,7 +1469,7 @@ impl ProxyHttp for FluxoProxy {
         // If the traffic_split plugin assigned an alternate upstream, use it.
         let split_upstream = ctx
             .get_extension("traffic_split_upstream")
-            .and_then(|v| v.as_str().map(|s| UpstreamName::from(s)));
+            .and_then(|v| v.as_str().map(UpstreamName::from));
         let base_upstream = split_upstream.as_ref().unwrap_or(&route.upstream);
 
         // --- Resolve composite upstreams (Traefik-inspired service composition) ---
@@ -1523,7 +1523,7 @@ impl ProxyHttp for FluxoProxy {
         // --- Hash key extraction for consistent/FNV hashing ---
         let hash_key_bytes: Vec<u8> = {
             let upstream_cfg = state.config.upstreams.get(&upstream_name_str);
-            let hash_key_type = upstream_cfg.map(|c| c.hash_key.as_str()).unwrap_or("url");
+            let hash_key_type = upstream_cfg.map_or("url", |c| c.hash_key.as_str());
             let hash_key_name = upstream_cfg.and_then(|c| c.hash_key_name.as_deref());
             let req = session.req_header();
             extract_hash_key(req, ctx, hash_key_type, hash_key_name)

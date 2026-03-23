@@ -20,7 +20,7 @@ pub struct KeyAuthConfig {
     #[serde(default = "default_header_name")]
     pub header_name: String,
 
-    /// Query parameter name when `key_source = "query"`. Default: "api_key".
+    /// Query parameter name when `key_source = "query"`. Default: "`api_key`".
     #[serde(default = "default_query_param")]
     pub query_param: String,
 
@@ -83,12 +83,11 @@ impl KeyAuthPlugin {
         req: &pingora_http::RequestHeader,
         ctx: &mut RequestContext,
     ) -> PluginAction {
-        let key = match self.extract_key(req) {
-            Some(k) => k,
-            None => {
-                ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
-                return PluginAction::Handled(401);
-            }
+        let key = if let Some(k) = self.extract_key(req) {
+            k
+        } else {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
+            return PluginAction::Handled(401);
         };
 
         if self.keys.contains(&key) {
@@ -119,7 +118,7 @@ impl KeyAuthPlugin {
                         .split('&')
                         .filter(|pair| {
                             pair.split_once('=')
-                                .map_or(true, |(k, _)| k != self.query_param)
+                                .is_none_or(|(k, _)| k != self.query_param)
                         })
                         .collect();
                     let new_query = if filtered.is_empty() {

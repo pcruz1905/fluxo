@@ -6,7 +6,7 @@ use std::sync::Arc;
 /// Prometheus push configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrometheusPushConfig {
-    /// Pushgateway URL (e.g., "http://pushgateway:9091").
+    /// Pushgateway URL (e.g., "<http://pushgateway:9091>").
     /// When set, enables push mode.
     pub url: Option<String>,
 
@@ -50,7 +50,7 @@ pub fn start_prometheus_push(
         .instance
         .clone()
         .unwrap_or_else(|| hostname().unwrap_or_else(|| "unknown".to_string()));
-    let labels = config.labels.clone();
+    let labels = config.labels;
     let log_url = url.clone();
 
     tokio::spawn(async move {

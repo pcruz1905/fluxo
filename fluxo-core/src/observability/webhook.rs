@@ -10,7 +10,7 @@ pub struct WebhookConfig {
     pub url: String,
 
     /// Events that trigger notifications.
-    /// Valid: "health_change", "config_reload", "circuit_breaker".
+    /// Valid: "`health_change`", "`config_reload`", "`circuit_breaker`".
     #[serde(default = "default_events")]
     pub events: Vec<String>,
 
@@ -34,7 +34,7 @@ fn default_timeout() -> String {
 /// A webhook notification payload.
 #[derive(Debug, Serialize)]
 pub struct WebhookPayload {
-    /// Event type (e.g., "health_change", "config_reload").
+    /// Event type (e.g., "`health_change`", "`config_reload`").
     pub event: String,
     /// Timestamp (RFC 3339).
     pub timestamp: String,

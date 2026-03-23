@@ -113,7 +113,7 @@ impl RefererRestrictPlugin {
     }
 }
 
-/// Extract the domain from a URL string (e.g., "https://example.com/path" → "example.com").
+/// Extract the domain from a URL string (e.g., "<https://example.com/path>" → "example.com").
 fn extract_domain(url: &str) -> Option<String> {
     // Strip scheme
     let without_scheme = url

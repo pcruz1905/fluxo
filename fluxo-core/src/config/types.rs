@@ -403,7 +403,7 @@ pub struct TlsConfig {
     pub cipher_list: Option<String>,
 
     /// TLS 1.3 ciphersuites.
-    /// Example: "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384".
+    /// Example: "`TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384`".
     pub tls13_ciphersuites: Option<String>,
 
     /// Minimum TLS version: "1.0", "1.1", "1.2" (default), "1.3".

@@ -121,20 +121,18 @@ impl JwtAuthPlugin {
         req: &pingora_http::RequestHeader,
         ctx: &mut RequestContext,
     ) -> PluginAction {
-        let token = match self.extract_token(req) {
-            Some(t) => t,
-            None => {
-                ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
-                return PluginAction::Handled(401);
-            }
+        let token = if let Some(t) = self.extract_token(req) {
+            t
+        } else {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
+            return PluginAction::Handled(401);
         };
 
-        match self.validate_token(&token) {
-            Ok(()) => PluginAction::Continue,
-            Err(_) => {
-                ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
-                PluginAction::Handled(401)
-            }
+        if let Ok(()) = self.validate_token(&token) {
+            PluginAction::Continue
+        } else {
+            ctx.plugin_response = Some(crate::context::PluginResponse::Error { status: 401 });
+            PluginAction::Handled(401)
         }
     }
 
@@ -206,7 +204,7 @@ impl JwtAuthPlugin {
             serde_json::from_str(payload_str).map_err(|_| "invalid payload JSON")?;
 
         // Check expiration
-        if let Some(exp) = claims.get("exp").and_then(|v| v.as_u64()) {
+        if let Some(exp) = claims.get("exp").and_then(serde_json::Value::as_u64) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
