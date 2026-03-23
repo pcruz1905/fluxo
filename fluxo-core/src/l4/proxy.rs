@@ -165,31 +165,31 @@ impl TcpProxy {
             buf.truncate(n);
 
             #[allow(clippy::option_if_let_else)]
-            let (real_client, app_data_start) =
-                if let Some(hlen) = crate::proxy_protocol::proxy_header_len(&buf) {
-                    if hlen <= n {
-                        if let Ok(Some(info)) =
-                            crate::proxy_protocol::parse_proxy_header(&buf[..hlen])
-                        {
-                            debug!(
-                                client = %client_addr,
-                                real_client = %info.source_addr,
-                                version = ?info.version,
-                                "PROXY protocol header parsed"
-                            );
-                            (info.source_addr, hlen)
-                        } else {
-                            warn!(client = %client_addr, "PROXY protocol header parse failed, passing through");
-                            (client_addr, 0)
-                        }
+            let (real_client, app_data_start) = if let Some(hlen) =
+                crate::proxy_protocol::proxy_header_len(&buf)
+            {
+                if hlen <= n {
+                    if let Ok(Some(info)) = crate::proxy_protocol::parse_proxy_header(&buf[..hlen])
+                    {
+                        debug!(
+                            client = %client_addr,
+                            real_client = %info.source_addr,
+                            version = ?info.version,
+                            "PROXY protocol header parsed"
+                        );
+                        (info.source_addr, hlen)
                     } else {
-                        warn!(client = %client_addr, "incomplete PROXY protocol header");
+                        warn!(client = %client_addr, "PROXY protocol header parse failed, passing through");
                         (client_addr, 0)
                     }
                 } else {
-                    warn!(client = %client_addr, "expected PROXY protocol header not found");
+                    warn!(client = %client_addr, "incomplete PROXY protocol header");
                     (client_addr, 0)
-                };
+                }
+            } else {
+                warn!(client = %client_addr, "expected PROXY protocol header not found");
+                (client_addr, 0)
+            };
 
             let app_data = buf[app_data_start..].to_vec();
             let sni = Self::extract_sni(&app_data);

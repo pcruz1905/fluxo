@@ -212,7 +212,7 @@ mod tests {
     fn header_len_v1() {
         let input = b"PROXY TCP4 192.168.1.100 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
         let len = proxy_header_len(input).unwrap();
-        assert_eq!(len, 47); // Up to and including \r\n
+        assert_eq!(len, 45); // Up to and including \r\n
         // Verify the remaining bytes are the HTTP request
         assert_eq!(&input[len..], b"GET / HTTP/1.1\r\n");
     }

@@ -109,8 +109,8 @@ fn check_public_listeners_without_tls(config: &FluxoConfig, warnings: &mut Vec<L
 
 /// Admin API on 0.0.0.0 without auth token.
 fn check_admin_security(config: &FluxoConfig, warnings: &mut Vec<LintWarning>) {
-    let is_public = config.global.admin.starts_with("0.0.0.0:")
-        || config.global.admin.starts_with("[::]:");
+    let is_public =
+        config.global.admin.starts_with("0.0.0.0:") || config.global.admin.starts_with("[::]:");
 
     if is_public && config.global.admin_auth_token.is_none() {
         warnings.push(LintWarning {
@@ -170,9 +170,7 @@ fn check_empty_services(config: &FluxoConfig, warnings: &mut Vec<LintWarning>) {
         if service.routes.is_empty() {
             warnings.push(LintWarning {
                 level: LintLevel::Warn,
-                message: format!(
-                    "service '{name}' has no routes — all requests will return 502"
-                ),
+                message: format!("service '{name}' has no routes — all requests will return 502"),
             });
         }
     }
@@ -217,8 +215,7 @@ fn check_catchall_routes(config: &FluxoConfig, warnings: &mut Vec<LintWarning>) 
 /// Duplicate route patterns (same host + path) in same service.
 fn check_duplicate_routes(config: &FluxoConfig, warnings: &mut Vec<LintWarning>) {
     for (name, service) in &config.services {
-        let mut seen: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         for (i, route) in service.routes.iter().enumerate() {
             // Build a fingerprint from host + path matchers
@@ -280,8 +277,11 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(warnings.iter().any(|w| w.message.contains("orphan")
-            && w.message.contains("never referenced")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("orphan") && w.message.contains("never referenced"))
+        );
     }
 
     #[test]
@@ -306,8 +306,11 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(!warnings.iter().any(|w| w.message.contains("backend")
-            && w.message.contains("never referenced")));
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("backend") && w.message.contains("never referenced"))
+        );
     }
 
     #[test]
@@ -326,9 +329,11 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(warnings
-            .iter()
-            .any(|w| w.message.contains("public without TLS")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("public without TLS"))
+        );
     }
 
     #[test]
@@ -337,9 +342,9 @@ mod tests {
         config.global.admin = "0.0.0.0:2019".to_string();
 
         let warnings = lint(&config);
-        assert!(warnings
-            .iter()
-            .any(|w| w.message.contains("admin API") && w.message.contains("without authentication")));
+        assert!(warnings.iter().any(
+            |w| w.message.contains("admin API") && w.message.contains("without authentication")
+        ));
     }
 
     #[test]
@@ -349,9 +354,7 @@ mod tests {
         config.global.admin_auth_token = Some("secret".to_string());
 
         let warnings = lint(&config);
-        assert!(!warnings
-            .iter()
-            .any(|w| w.message.contains("admin API")));
+        assert!(!warnings.iter().any(|w| w.message.contains("admin API")));
     }
 
     #[test]
@@ -369,18 +372,19 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(warnings
-            .iter()
-            .any(|w| w.message.contains("pool") && w.message.contains("no health_check")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("pool") && w.message.contains("no health_check"))
+        );
     }
 
     #[test]
     fn warns_duplicate_routes() {
         let mut config = minimal_config();
-        config.upstreams.insert(
-            "backend".to_string(),
-            UpstreamConfig::default(),
-        );
+        config
+            .upstreams
+            .insert("backend".to_string(), UpstreamConfig::default());
         config.services.insert(
             "web".to_string(),
             ServiceConfig {
@@ -403,22 +407,25 @@ mod tests {
         );
 
         let warnings = lint(&config);
-        assert!(warnings
-            .iter()
-            .any(|w| w.message.contains("duplicate match pattern")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("duplicate match pattern"))
+        );
     }
 
     #[test]
     fn warns_empty_service() {
         let mut config = minimal_config();
-        config.services.insert(
-            "empty".to_string(),
-            ServiceConfig::default(),
-        );
+        config
+            .services
+            .insert("empty".to_string(), ServiceConfig::default());
 
         let warnings = lint(&config);
-        assert!(warnings
-            .iter()
-            .any(|w| w.message.contains("empty") && w.message.contains("no routes")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("empty") && w.message.contains("no routes"))
+        );
     }
 }
