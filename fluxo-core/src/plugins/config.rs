@@ -8,7 +8,7 @@ use super::BuiltinPlugin;
 #[derive(Debug, thiserror::Error)]
 pub enum PluginConfigError {
     #[error(
-        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer)"
+        "unknown plugin: '{0}' (valid: headers, rate_limit, cors, ip_restrict, security_headers, request_id, redirect, static_response, compression, basic_auth, strip_prefix, add_prefix, path_rewrite, concurrency_limit, bandwidth_limit, request_buffer, jwt_auth, key_auth, csrf, referer_restrict, ua_restrict, static_files, traffic_split)"
     )]
     UnknownPlugin(String),
 
@@ -35,12 +35,19 @@ pub fn compile_plugins(
 
     // Build plugins in phase order
     let ordered_names = [
-        "basic_auth", // Auth first — reject unauthorized before doing any work
+        "jwt_auth",     // Auth first — reject unauthorized before doing any work
+        "key_auth",
+        "basic_auth",
+        "csrf",
         "ip_restrict",
+        "referer_restrict",
+        "ua_restrict",
         "rate_limit",
         "concurrency_limit",
+        "traffic_split", // Routing decisions before forwarding
         "redirect",
         "static_response",
+        "static_files",
         "request_id",
         "strip_prefix", // Path manipulation before forwarding
         "add_prefix",
