@@ -31,7 +31,7 @@ pub struct RenewalConfig {
     pub domains: Vec<String>,
     /// Challenge type: "http-01" (default) or "dns-01".
     pub challenge_type: String,
-    /// DNS provider configuration (required when challenge_type is "dns-01").
+    /// DNS provider configuration (required when `challenge_type` is "dns-01").
     pub dns_config: Option<AcmeDnsConfig>,
 }
 
