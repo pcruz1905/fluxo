@@ -222,8 +222,11 @@ impl WafPlugin {
             return PluginAction::Continue;
         }
 
-        // Build the inspection target: URI + query string
-        let uri_str = req.uri.to_string();
+        // Build the inspection target: URI + query string, URL-decoded to catch encoded attacks.
+        let uri_raw = req.uri.to_string();
+        let uri_str = percent_encoding::percent_decode_str(&uri_raw)
+            .decode_utf8_lossy()
+            .into_owned();
 
         // Check URI against all rules
         if let Some(violation) = self.check_input(&uri_str) {
@@ -495,7 +498,7 @@ mod tests {
         let plugin = make_plugin();
         let req = pingora_http::RequestHeader::build(
             "GET",
-            b"/page?name=<script>alert(1)</script>",
+            b"/page?name=%3Cscript%3Ealert(1)%3C/script%3E",
             None,
         )
         .unwrap();
@@ -534,8 +537,12 @@ mod tests {
     #[test]
     fn command_injection_blocked() {
         let plugin = make_plugin();
-        let req = pingora_http::RequestHeader::build("GET", b"/api?cmd=test;cat /etc/passwd", None)
-            .unwrap();
+        let req = pingora_http::RequestHeader::build(
+            "GET",
+            b"/api?cmd=test%3Bcat%20/etc/passwd",
+            None,
+        )
+        .unwrap();
         let mut ctx = RequestContext::new();
         assert_eq!(
             plugin.on_request(&req, &mut ctx),
