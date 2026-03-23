@@ -228,7 +228,6 @@ impl JwtAuthPlugin {
     }
 
     fn compute_hmac(&self, data: &[u8]) -> Vec<u8> {
-        use sha2::Digest;
         match self.algorithm {
             Algorithm::Hs256 => hmac_sha2::<sha2::Sha256>(&self.secret, data),
             Algorithm::Hs384 => hmac_sha2::<sha2::Sha384>(&self.secret, data),
@@ -240,7 +239,7 @@ impl JwtAuthPlugin {
 /// HMAC implementation using SHA-2 (RFC 2104) — avoids pulling in the `hmac` crate.
 fn hmac_sha2<D: sha2::Digest + Clone>(key: &[u8], data: &[u8]) -> Vec<u8> {
     let block_size = 64usize; // SHA-256/384/512 block size for HMAC
-    let actual_block = if D::output_size() > 32 {
+    let actual_block = if <D as sha2::Digest>::output_size() > 32 {
         128
     } else {
         block_size

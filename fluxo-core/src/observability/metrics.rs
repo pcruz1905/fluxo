@@ -243,6 +243,11 @@ impl MetricsRegistry {
         let _ = encoder.encode(&metric_families, &mut buffer);
         String::from_utf8(buffer).unwrap_or_default()
     }
+
+    /// Alias for `encode()` — used by Prometheus push mode.
+    pub fn export_text(&self) -> String {
+        self.encode()
+    }
 }
 
 #[cfg(test)]

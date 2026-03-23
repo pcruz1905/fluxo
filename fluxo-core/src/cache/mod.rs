@@ -10,5 +10,7 @@
 //! ```
 
 mod disk;
+pub mod lock;
 
 pub use disk::DiskCache;
+pub use lock::CacheLockManager;

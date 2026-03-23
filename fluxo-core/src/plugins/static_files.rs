@@ -36,6 +36,8 @@ pub struct StaticFilesPlugin {
     root: std::path::PathBuf,
     index: String,
     directory_listing: bool,
+    /// Custom headers added to all responses (reserved for future use in response phase).
+    #[allow(dead_code)]
     headers: Vec<(String, String)>,
 }
 

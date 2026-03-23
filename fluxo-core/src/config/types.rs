@@ -255,6 +255,34 @@ pub struct GlobalConfig {
     /// Default: `"1gb"`.
     #[serde(default = "defaults::cache_max_disk_size")]
     pub cache_max_disk_size: String,
+
+    /// Webhook notification configurations.
+    /// Sends alerts for health changes, config reloads, circuit breaker events.
+    #[serde(default)]
+    pub webhooks: Vec<crate::observability::WebhookConfig>,
+
+    /// Prometheus push mode — periodically push metrics to a Pushgateway.
+    #[serde(default)]
+    pub prometheus_push: crate::observability::PrometheusPushConfig,
+
+    /// Access log format template — custom format string with variable interpolation.
+    /// Variables: `{method}`, `{host}`, `{path}`, `{status}`, `{latency}`, `{size}`,
+    /// `{client_ip}`, `{user_agent}`, `{request_id}`, `{upstream}`, `{tls_version}`,
+    /// `{>Header-Name}` (request header), `{<Header-Name}` (response header),
+    /// `{~cookie_name}` (cookie value).
+    /// When set, overrides `access_log_format` for file/syslog output.
+    pub access_log_template: Option<String>,
+
+    /// Enable gzip compression of rotated log files. Default: false.
+    #[serde(default)]
+    pub access_log_compress: bool,
+
+    /// Cache stampede lock timeout — max time to wait for a concurrent cache fetch.
+    /// When multiple requests hit the same expired cache key simultaneously,
+    /// only the first fetches from upstream while others wait (or are served stale).
+    /// Default: "3s". Set to "0s" to disable.
+    #[serde(default = "defaults::cache_lock_timeout")]
+    pub cache_lock_timeout: String,
 }
 
 impl Default for GlobalConfig {
@@ -287,6 +315,11 @@ impl Default for GlobalConfig {
             admin_auth_token: None,
             cache_dir: None,
             cache_max_disk_size: defaults::cache_max_disk_size(),
+            webhooks: Vec::new(),
+            prometheus_push: crate::observability::PrometheusPushConfig::default(),
+            access_log_template: None,
+            access_log_compress: false,
+            cache_lock_timeout: defaults::cache_lock_timeout(),
         }
     }
 }
@@ -364,6 +397,20 @@ pub struct TlsConfig {
     /// Nginx equivalent: multiple `ssl_certificate` + `ssl_certificate_key` blocks.
     #[serde(default)]
     pub sni_certs: Vec<crate::tls::SniCertConfig>,
+
+    /// OpenSSL cipher list for TLS 1.2 and below.
+    /// Nginx equivalent: `ssl_ciphers`. Example: "ECDHE-ECDSA-AES128-GCM-SHA256:...".
+    pub cipher_list: Option<String>,
+
+    /// TLS 1.3 ciphersuites.
+    /// Example: "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384".
+    pub tls13_ciphersuites: Option<String>,
+
+    /// Minimum TLS version: "1.0", "1.1", "1.2" (default), "1.3".
+    pub min_version: Option<String>,
+
+    /// Maximum TLS version: "1.0", "1.1", "1.2", "1.3".
+    pub max_version: Option<String>,
 }
 
 /// A single route definition.
@@ -448,6 +495,12 @@ pub struct RouteConfig {
     /// Response body rewriting — search and replace text in response bodies.
     /// Nginx equivalent: `sub_filter`. Only applies to text content types.
     pub sub_filter: Option<SubFilterConfig>,
+
+    /// Enable gRPC-web protocol translation for this route.
+    /// When true, gRPC-web requests (Content-Type: application/grpc-web) are
+    /// translated to standard gRPC before forwarding to upstream.
+    #[serde(default)]
+    pub grpc_web: bool,
 }
 
 /// Configuration for traffic mirroring to a shadow upstream.
@@ -576,6 +629,16 @@ pub struct UpstreamConfig {
     #[serde(default = "defaults::load_balancing")]
     pub load_balancing: String,
 
+    /// Hash key source for consistent hashing / FNV hashing.
+    /// Valid: "url" (default), "ip", "header", "cookie", "query", "path".
+    /// When "header"/"cookie"/"query", set `hash_key_name` to specify which one.
+    #[serde(default = "defaults::hash_key")]
+    pub hash_key: String,
+
+    /// Name of the header/cookie/query parameter to use as hash key.
+    /// Required when `hash_key` is "header", "cookie", or "query".
+    pub hash_key_name: Option<String>,
+
     /// Health check configuration.
     pub health_check: Option<HealthCheckConfig>,
 
@@ -667,6 +730,8 @@ impl Default for UpstreamConfig {
             dns_port: defaults::dns_default_port(),
             dns_refresh_interval: defaults::dns_refresh_interval(),
             load_balancing: defaults::load_balancing(),
+            hash_key: defaults::hash_key(),
+            hash_key_name: None,
             health_check: None,
             connect_timeout: defaults::connect_timeout(),
             read_timeout: defaults::read_timeout(),

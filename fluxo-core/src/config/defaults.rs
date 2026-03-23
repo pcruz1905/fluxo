@@ -218,6 +218,16 @@ pub fn syslog_app_name() -> String {
     "fluxo".to_string()
 }
 
+/// Default hash key source for consistent/FNV hashing.
+pub fn hash_key() -> String {
+    "url".to_string()
+}
+
+/// Default cache stampede lock timeout.
+pub fn cache_lock_timeout() -> String {
+    "3s".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
