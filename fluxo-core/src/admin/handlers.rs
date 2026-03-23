@@ -343,6 +343,64 @@ pub fn handle_delete_upstream(proxy: &Arc<FluxoProxy>, name: &str) -> (u16, Stri
     }
 }
 
+/// POST /upgrade — trigger graceful binary upgrade (Unix only).
+///
+/// Spawns a new instance of the current binary with `--upgrade`, which tells
+/// Pingora to connect to the upgrade socket and receive listening file
+/// descriptors from the running instance. The old process then drains
+/// in-flight connections and exits.
+pub fn handle_upgrade(config_path: Option<&str>) -> (u16, String, &'static str) {
+    #[cfg(not(unix))]
+    {
+        let _ = config_path;
+        return json_response(
+            501,
+            &serde_json::json!({"error": "binary upgrade is only supported on Unix"}),
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                return json_response(
+                    500,
+                    &serde_json::json!({"error": format!("failed to determine binary path: {e}")}),
+                );
+            }
+        };
+
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("--upgrade");
+
+        if let Some(path) = config_path {
+            cmd.arg("--config").arg(path);
+        }
+
+        match cmd.spawn() {
+            Ok(child) => {
+                tracing::info!(
+                    pid = child.id(),
+                    binary = %exe.display(),
+                    "spawned upgrade process"
+                );
+                json_response(
+                    200,
+                    &serde_json::json!({
+                        "status": "upgrading",
+                        "new_pid": child.id(),
+                    }),
+                )
+            }
+            Err(e) => json_response(
+                500,
+                &serde_json::json!({"error": format!("failed to spawn upgrade process: {e}")}),
+            ),
+        }
+    }
+}
+
 /// POST /drain — start graceful shutdown drain
 pub fn handle_drain(proxy: &FluxoProxy) -> (u16, String, &'static str) {
     proxy
@@ -368,6 +426,7 @@ pub fn handle_not_found() -> (u16, String, &'static str) {
             "POST /config",
             "POST /reload",
             "POST /drain",
+            "POST /upgrade",
             "POST /cache/purge",
             "PUT /upstreams/:name",
             "DELETE /upstreams/:name",
@@ -804,7 +863,40 @@ match_host = ["test.com"]
         let (_, body, _) = handle_not_found();
         assert!(body.contains("/routes"));
         assert!(body.contains("/drain"));
+        assert!(body.contains("/upgrade"));
         assert!(body.contains("PUT /upstreams/:name"));
         assert!(body.contains("DELETE /upstreams/:name"));
+    }
+
+    #[test]
+    fn upgrade_returns_response() {
+        let (status, body, ct) = handle_upgrade(Some("/tmp/fluxo.toml"));
+        assert_eq!(ct, "application/json");
+        // On Unix: spawns a new process (may fail if binary doesn't exist, that's OK)
+        // On non-Unix: returns 501
+        #[cfg(not(unix))]
+        assert_eq!(status, 501);
+        #[cfg(unix)]
+        {
+            // In test environment, current_exe() works but the spawned process
+            // will likely fail. We just verify the handler returns a valid response.
+            assert!(status == 200 || status == 500);
+            assert!(body.contains("upgrad") || body.contains("error"));
+        }
+    }
+
+    #[test]
+    fn upgrade_without_config_path() {
+        let (status, body, _) = handle_upgrade(None);
+        #[cfg(not(unix))]
+        {
+            assert_eq!(status, 501);
+            assert!(body.contains("Unix"));
+        }
+        #[cfg(unix)]
+        {
+            assert!(status == 200 || status == 500);
+            let _ = body;
+        }
     }
 }

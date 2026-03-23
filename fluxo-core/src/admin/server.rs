@@ -110,6 +110,9 @@ impl AdminService {
                 handlers::handle_post_config(&proxy, &body_bytes)
             }
             ("POST", "/reload") => handlers::handle_reload(&proxy, config_path.as_deref()),
+            ("POST", "/drain") => handlers::handle_drain(&proxy),
+            ("POST", "/upgrade") => handlers::handle_upgrade(config_path.as_deref()),
+            ("GET", "/routes") => handlers::handle_routes(&proxy),
             ("POST", "/cache/purge") => {
                 let body_bytes = match req.into_body().collect().await {
                     Ok(collected) => collected.to_bytes(),
@@ -128,6 +131,38 @@ impl AdminService {
                     }
                 };
                 handlers::handle_cache_purge(&body_bytes).await
+            }
+            ("PUT", p) if p.starts_with("/upstreams/") => {
+                let name = &p["/upstreams/".len()..];
+                if name.is_empty() {
+                    handlers::handle_not_found()
+                } else {
+                    let body_bytes = match req.into_body().collect().await {
+                        Ok(collected) => collected.to_bytes(),
+                        Err(e) => {
+                            let err_body = match serde_json::to_string(&serde_json::json!({
+                                "error": format!("failed to read body: {e}")
+                            })) {
+                                Ok(b) => b,
+                                Err(se) => format!(r#"{{"error": "JSON error: {se}"}}"#),
+                            };
+                            return Ok(Response::builder()
+                                .status(400)
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(err_body)))
+                                .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
+                        }
+                    };
+                    handlers::handle_put_upstream(&proxy, name, &body_bytes)
+                }
+            }
+            ("DELETE", p) if p.starts_with("/upstreams/") => {
+                let name = &p["/upstreams/".len()..];
+                if name.is_empty() {
+                    handlers::handle_not_found()
+                } else {
+                    handlers::handle_delete_upstream(&proxy, name)
+                }
             }
             _ => handlers::handle_not_found(),
         };

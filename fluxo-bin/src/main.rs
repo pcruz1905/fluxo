@@ -7,6 +7,7 @@ use std::path::Path;
 use clap::Parser;
 use pingora::proxy::http_proxy_service;
 use pingora::server::Server;
+use pingora::server::configuration::Opt;
 use tracing_subscriber::EnvFilter;
 
 use fluxo_core::FluxoApp;
@@ -43,6 +44,16 @@ struct Cli {
     /// Lint config for warnings (unused upstreams, security issues, etc.)
     #[arg(long)]
     lint: bool,
+
+    /// Graceful binary upgrade — new process takes over from old process.
+    /// Start the new binary with this flag to receive listening sockets
+    /// from the running instance via the upgrade socket (Unix only).
+    #[arg(long)]
+    upgrade: bool,
+
+    /// Run as a daemon (background process, Unix only).
+    #[arg(long)]
+    daemon: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -189,8 +200,15 @@ fn main() -> anyhow::Result<()> {
     // Build the app (compiles routes, initializes load balancers)
     let mut app = FluxoApp::from_config_with_path(fluxo_config.clone(), config_file_path.clone())?;
 
-    // Create Pingora server
-    let mut server = Server::new(None)?;
+    // Create Pingora server with upgrade/daemon options
+    let opt = Opt {
+        conf: None,
+        daemon: cli.daemon,
+        upgrade: cli.upgrade,
+        test: false,
+        nocapture: false,
+    };
+    let mut server = Server::new(Some(opt))?;
 
     // Configure graceful shutdown (Traefik-inspired two-phase drain)
     // ServerConf is behind Arc, so we build a new one with the shutdown settings.
