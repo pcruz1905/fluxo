@@ -67,6 +67,7 @@ reqwest = { version = "0.13.2", features = ["json", "rustls", "brotli", "gzip", 
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 tempfile = { workspace = true }
+criterion = { workspace = true }
 
 # All E2E tests use harness = false so std::process::exit(0) runs after tests,
 # preventing Pingora's run_forever() threads from keeping the process alive.
@@ -116,4 +117,8 @@ harness = false
 
 [[test]]
 name = "e2e_websocket"
+harness = false
+
+[[bench]]
+name = "hot_path"
 harness = false

@@ -29,7 +29,7 @@ pub struct DiskCache {
     max_size: u64,
     /// Current total cache size (approximate, updated on write/evict).
     current_size: AtomicU64,
-    /// LRU index: access_time -> hash (for eviction ordering).
+    /// LRU index: `access_time` -> hash (for eviction ordering).
     lru: RwLock<BTreeMap<u64, String>>,
     /// Monotonic counter for LRU ordering.
     lru_counter: AtomicU64,
@@ -186,7 +186,7 @@ fn dir_size(path: &Path) -> u64 {
             entries
                 .flatten()
                 .filter_map(|e| e.metadata().ok())
-                .filter(|m| m.is_file())
+                .filter(std::fs::Metadata::is_file)
                 .map(|m| m.len())
                 .sum()
         })
@@ -194,6 +194,7 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 /// Parse a human-readable size string (e.g., `"1gb"`, `"500mb"`, `"100kb"`) into bytes.
+#[allow(clippy::option_if_let_else)]
 pub fn parse_size(s: &str) -> Option<u64> {
     let s = s.trim().to_lowercase();
     if let Some(val) = s.strip_suffix("gb") {

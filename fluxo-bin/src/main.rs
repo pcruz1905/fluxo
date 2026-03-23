@@ -74,12 +74,12 @@ fn main() -> anyhow::Result<()> {
     // Initialize tracing (structured logging + optional OTLP export)
     // If OTLP is enabled, init_otlp_tracer sets up a combined subscriber (fmt + OTLP).
     // Otherwise fall back to plain fmt subscriber.
-    let _otlp_guard = fluxo_core::observability::init_otlp_tracer(
+    let otlp_guard = fluxo_core::observability::init_otlp_tracer(
         &fluxo_config.global.tracing,
         log_level,
         fluxo_config.global.access_log_format,
     );
-    if _otlp_guard.is_none() {
+    if otlp_guard.is_none() {
         // OTLP not enabled or failed — use plain tracing subscriber
         let env_filter =
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
@@ -322,5 +322,8 @@ fn main() -> anyhow::Result<()> {
         });
     }
 
+    // `otlp_guard` must stay alive until process exit — `run_forever()` never returns,
+    // so the guard is held for the lifetime of the process, flushing spans on shutdown.
+    let _otlp_keep = otlp_guard;
     server.run_forever();
 }

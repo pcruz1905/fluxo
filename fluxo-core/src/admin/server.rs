@@ -36,7 +36,7 @@ impl AdminService {
     /// Check bearer token auth. Returns an error response if auth fails, `None` if OK.
     fn check_auth(
         req: &Request<Incoming>,
-        auth_token: &Option<String>,
+        auth_token: Option<&str>,
     ) -> Option<Response<Full<Bytes>>> {
         let Some(expected) = auth_token else {
             return None; // No auth configured
@@ -52,7 +52,7 @@ impl AdminService {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .is_some_and(|token| token == expected.as_str());
+            .is_some_and(|token| token == expected);
 
         if authorized {
             return None;
@@ -77,7 +77,7 @@ impl AdminService {
         req: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
         // Auth check (exempt: /health)
-        if let Some(resp) = Self::check_auth(&req, &auth_token) {
+        if let Some(resp) = Self::check_auth(&req, auth_token.as_deref()) {
             return Ok(resp);
         }
 
