@@ -2520,6 +2520,8 @@ mod tests {
             tls13_ciphersuites: None,
             min_version: None,
             max_version: None,
+            ocsp_stapling: false,
+            ocsp_responder: None,
         }
     }
 

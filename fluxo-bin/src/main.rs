@@ -425,8 +425,8 @@ fn main() -> anyhow::Result<()> {
     server.run_forever();
 }
 
-/// Build `TlsSettings` from cert/key paths, applying cipher and version configuration
-/// from the service's TLS config block.
+/// Build `TlsSettings` from cert/key paths, applying cipher and version configuration,
+/// mTLS client verification, and OCSP stapling from the service's TLS config block.
 fn build_tls_settings(
     cert_path: &str,
     key_path: &str,
@@ -436,19 +436,24 @@ fn build_tls_settings(
         .map_err(|e| anyhow::anyhow!("failed to create TLS settings: {e}"))?;
 
     if let Some(tls) = tls_config {
-        apply_tls_options(&mut settings, tls);
+        apply_tls_options(&mut settings, tls, cert_path);
     }
 
     Ok(settings)
 }
 
-/// Apply cipher list, TLS 1.3 ciphersuites, and version bounds to TLS settings.
+/// Apply cipher list, TLS 1.3 ciphersuites, version bounds, and mTLS client
+/// certificate verification to TLS settings.
 ///
 /// On `BoringSSL`, `TlsSettings` derefs to `SslAcceptorBuilder` which exposes the full
-/// OpenSSL configuration API. On rustls, these settings are not configurable via Pingora's
-/// API, so this is a no-op (a warning is logged if the user specified custom settings).
+/// OpenSSL configuration API. On rustls, mTLS uses `WebPkiClientVerifier` but cipher/version
+/// options are not configurable via Pingora's API.
 #[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
-fn apply_tls_options(settings: &mut pingora::listeners::tls::TlsSettings, tls: &config::TlsConfig) {
+fn apply_tls_options(
+    settings: &mut pingora::listeners::tls::TlsSettings,
+    tls: &config::TlsConfig,
+    cert_path: &str,
+) {
     let has_custom = tls.cipher_list.is_some()
         || tls.tls13_ciphersuites.is_some()
         || tls.min_version.is_some()
@@ -480,6 +485,14 @@ fn apply_tls_options(settings: &mut pingora::listeners::tls::TlsSettings, tls: &
                 }
             }
         }
+
+        // mTLS: configure client certificate verification
+        apply_mtls_boringssl(settings, tls);
+
+        // OCSP stapling
+        if tls.ocsp_stapling {
+            apply_ocsp_stapling_boringssl(settings, tls, cert_path);
+        }
     }
 
     #[cfg(not(feature = "boringssl"))]
@@ -489,7 +502,202 @@ fn apply_tls_options(settings: &mut pingora::listeners::tls::TlsSettings, tls: &
                 "cipher_list, tls13_ciphersuites, min_version, max_version are only supported with the boringssl feature"
             );
         }
+
+        // mTLS: configure client certificate verification
+        apply_mtls_rustls(settings, tls);
+
+        // OCSP stapling not supported on rustls (Pingora doesn't expose the callback)
+        if tls.ocsp_stapling {
+            tracing::warn!(
+                "OCSP stapling is only supported with the boringssl feature — \
+                 Pingora's rustls TlsSettings does not expose OCSP response injection"
+            );
+        }
     }
+}
+
+/// Apply mTLS client certificate verification on BoringSSL.
+///
+/// Uses OpenSSL API: `set_verify()` to control verification mode and `set_ca_file()` to
+/// load the trusted CA pool.
+#[cfg(feature = "boringssl")]
+fn apply_mtls_boringssl(
+    settings: &mut pingora::listeners::tls::TlsSettings,
+    tls: &config::TlsConfig,
+) {
+    use fluxo_core::tls::ClientAuthType;
+    use pingora::tls::ssl::SslVerifyMode;
+
+    let auth_type: ClientAuthType = match tls.client_auth_type.parse() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid client_auth_type, skipping mTLS");
+            return;
+        }
+    };
+
+    match auth_type {
+        ClientAuthType::None => {}
+        ClientAuthType::Request => {
+            // Request client cert but don't require it
+            settings.set_verify(SslVerifyMode::PEER);
+            if let Some(ref ca_path) = tls.client_ca_path {
+                if let Err(e) = settings.set_ca_file(ca_path) {
+                    tracing::warn!(error = %e, path = ca_path, "failed to load client CA file");
+                }
+            }
+            tracing::info!(auth_type = "request", "mTLS client cert verification enabled");
+        }
+        ClientAuthType::Require => {
+            // Require client cert but don't validate against CA
+            settings.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+            tracing::info!(
+                auth_type = "require",
+                "mTLS client cert required (no CA validation)"
+            );
+        }
+        ClientAuthType::Verify => {
+            // Require client cert and validate against CA
+            settings.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+            if let Some(ref ca_path) = tls.client_ca_path {
+                if let Err(e) = settings.set_ca_file(ca_path) {
+                    tracing::warn!(error = %e, path = ca_path, "failed to load client CA file");
+                }
+            } else {
+                tracing::warn!(
+                    "client_auth_type is 'verify' but no client_ca_path provided — clients will fail verification"
+                );
+            }
+            tracing::info!(
+                auth_type = "verify",
+                "mTLS client cert verification enabled (CA-validated)"
+            );
+        }
+    }
+}
+
+/// Configure OCSP stapling on BoringSSL.
+///
+/// Creates an `OcspCache`, spawns a background task to periodically fetch OCSP
+/// responses, and registers a TLS status callback that provides the cached
+/// response during handshakes.
+#[cfg(feature = "boringssl")]
+fn apply_ocsp_stapling_boringssl(
+    settings: &mut pingora::listeners::tls::TlsSettings,
+    tls: &config::TlsConfig,
+    cert_path: &str,
+) {
+    use fluxo_core::tls::ocsp;
+
+    let cache = ocsp::OcspCache::new();
+    let cert_path_owned = cert_path.to_string();
+    let responder_override = tls.ocsp_responder.clone();
+
+    // Spawn background OCSP fetcher — runs once the tokio runtime starts.
+    // The fetcher populates the shared cache with periodic refreshes.
+    let cache_bg = cache.clone();
+    tokio::spawn(async move {
+        if let Some(fetched_cache) =
+            ocsp::start_ocsp_stapling(cert_path_owned, responder_override, None).await
+        {
+            // Transfer the initial response to our shared cache
+            if let Some(response) = fetched_cache.get() {
+                cache_bg.set(response);
+            }
+        }
+    });
+
+    // Register the TLS status callback to provide OCSP responses during handshakes
+    if let Err(e) = settings.set_status_callback(move |ssl| {
+        if let Some(response) = cache.get() {
+            ssl.set_ocsp_status(&response)?;
+            Ok(true) // send the OCSP response
+        } else {
+            Ok(false) // no OCSP response available yet
+        }
+    }) {
+        tracing::warn!(error = %e, "failed to set OCSP status callback");
+    } else {
+        tracing::info!(cert = cert_path, "OCSP stapling enabled");
+    }
+}
+
+/// Apply mTLS client certificate verification on rustls.
+///
+/// Uses `WebPkiClientVerifier` to build a client cert verifier from the CA file.
+#[cfg(not(feature = "boringssl"))]
+fn apply_mtls_rustls(
+    settings: &mut pingora::listeners::tls::TlsSettings,
+    tls: &config::TlsConfig,
+) {
+    use fluxo_core::tls::ClientAuthType;
+
+    let auth_type: ClientAuthType = match tls.client_auth_type.parse() {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "invalid client_auth_type, skipping mTLS");
+            return;
+        }
+    };
+
+    if auth_type == ClientAuthType::None {
+        return;
+    }
+
+    let Some(ref ca_path) = tls.client_ca_path else {
+        if auth_type == ClientAuthType::Require {
+            tracing::warn!(
+                "client_auth_type 'require' on rustls needs client_ca_path — \
+                 rustls always validates client certs against a CA"
+            );
+        } else {
+            tracing::warn!(
+                "mTLS enabled but no client_ca_path provided — cannot configure client verification"
+            );
+        }
+        return;
+    };
+
+    // Load CA certificates into a root store
+    let mut root_store = pingora::tls::RootCertStore::empty();
+    if let Err(e) = pingora::tls::load_ca_file_into_store(ca_path, &mut root_store) {
+        tracing::warn!(error = %e, path = ca_path, "failed to load client CA file");
+        return;
+    }
+
+    let root_store = std::sync::Arc::new(root_store);
+
+    // Build the verifier — allow_unauthenticated for Request mode, strict for Verify/Require
+    let verifier = match auth_type {
+        ClientAuthType::Request => {
+            match pingora::tls::WebPkiClientVerifier::builder(root_store)
+                .allow_unauthenticated()
+                .build()
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to build client cert verifier");
+                    return;
+                }
+            }
+        }
+        ClientAuthType::Require | ClientAuthType::Verify => {
+            match pingora::tls::WebPkiClientVerifier::builder(root_store).build() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to build client cert verifier");
+                    return;
+                }
+            }
+        }
+        ClientAuthType::None => unreachable!(),
+    };
+
+    settings.set_client_cert_verifier(verifier);
+    tracing::info!(
+        auth_type = ?auth_type,
+        "mTLS client cert verification enabled"
+    );
 }
 
 /// Parse a TLS version string ("1.0", "1.1", "1.2", "1.3") to an OpenSSL `SslVersion`.

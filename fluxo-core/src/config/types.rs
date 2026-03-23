@@ -427,6 +427,16 @@ pub struct TlsConfig {
 
     /// Maximum TLS version: "1.0", "1.1", "1.2", "1.3".
     pub max_version: Option<String>,
+
+    /// Enable OCSP stapling. When true, the proxy fetches and caches OCSP responses
+    /// for this certificate and staples them during TLS handshakes.
+    /// Nginx equivalent: `ssl_stapling on`.
+    #[serde(default)]
+    pub ocsp_stapling: bool,
+
+    /// Override URL for the OCSP responder. If not set, the URL is extracted
+    /// from the certificate's Authority Information Access extension.
+    pub ocsp_responder: Option<String>,
 }
 
 /// A single route definition.
