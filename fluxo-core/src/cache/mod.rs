@@ -2,7 +2,7 @@
 //!
 //! Provides two storage implementations:
 //! - **`DiskCache`** — Filesystem-backed with LRU eviction. Entries survive restarts.
-//! - **`TinyUfoCache`** — In-memory with TinyLFU + S3-FIFO eviction. Better hit rates
+//! - **`TinyUfoCache`** — In-memory with `TinyLFU` + S3-FIFO eviction. Better hit rates
 //!   for frequency-skewed workloads.
 //!
 //! Directory layout (disk):

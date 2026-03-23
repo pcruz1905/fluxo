@@ -84,7 +84,7 @@ pub fn init_cache_zones(zones: HashMap<String, (std::path::PathBuf, u64)>) {
     });
 }
 
-/// Get the appropriate cache storage: TinyUFO if configured, then disk, then in-memory.
+/// Get the appropriate cache storage: `TinyUFO` if configured, then disk, then in-memory.
 pub(crate) fn global_cache_storage() -> &'static (dyn pingora_cache::storage::Storage + Sync) {
     if let Some(tinyufo) = TINYUFO_CACHE.get() {
         tinyufo
