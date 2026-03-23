@@ -348,7 +348,7 @@ mod tests {
 
         let mut list = Vec::new();
         // Outer list length: 2 (sct_len prefix) + sct_len
-        let outer_len = (2 + sct_len) as u16;
+        let outer_len = 2 + sct_len;
         list.extend_from_slice(&outer_len.to_be_bytes());
         list.extend_from_slice(&sct_len.to_be_bytes());
         list.extend_from_slice(&sct_data);
