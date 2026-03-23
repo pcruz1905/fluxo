@@ -101,9 +101,8 @@ fn main() -> anyhow::Result<()> {
 
     // Initialize disk cache storage (if configured)
     if let Some(ref cache_dir) = fluxo_config.global.cache_dir {
-        let max_size = fluxo_core::cache::DiskCache::parse_max_size(
-            &fluxo_config.global.cache_max_disk_size,
-        );
+        let max_size =
+            fluxo_core::cache::DiskCache::parse_max_size(&fluxo_config.global.cache_max_disk_size);
         let cache_path = std::path::PathBuf::from(cache_dir);
         if let Err(e) = std::fs::create_dir_all(&cache_path) {
             tracing::warn!(path = %cache_dir, error = %e, "failed to create cache directory");

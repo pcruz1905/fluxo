@@ -158,8 +158,7 @@ routes = [
 
     c.bench_function("config_parse_toml", |b| {
         b.iter(|| {
-            let _config: FluxoConfig =
-                toml::from_str(black_box(toml_str)).expect("parse");
+            let _config: FluxoConfig = toml::from_str(black_box(toml_str)).expect("parse");
         });
     });
 }

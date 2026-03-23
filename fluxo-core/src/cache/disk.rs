@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::RwLock;
+use pingora_cache::CacheKey;
 use pingora_cache::key::{CacheHashKey, CompactCacheKey};
 use pingora_cache::meta::CacheMeta;
 use pingora_cache::storage::{
     HandleHit, HandleMiss, HitHandler, MissFinishType, MissHandler, PurgeType, Storage,
 };
-use pingora_cache::CacheKey;
 use pingora_cache::trace::SpanHandle;
 use pingora_core::{Error, ErrorType, Result};
 use sha2::{Digest, Sha256};
@@ -104,12 +104,8 @@ impl DiskCache {
                 let body_path = path.join("body.bin");
                 let meta_path = path.join("meta.bin");
                 if body_path.exists() && meta_path.exists() {
-                    let body_size = std::fs::metadata(&body_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let meta_size = std::fs::metadata(&meta_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let body_size = std::fs::metadata(&body_path).map(|m| m.len()).unwrap_or(0);
+                    let meta_size = std::fs::metadata(&meta_path).map(|m| m.len()).unwrap_or(0);
                     total_size += body_size + meta_size;
 
                     if let Some(hash) = path.file_name().and_then(|n| n.to_str()) {
@@ -136,9 +132,8 @@ impl DiskCache {
 
     /// Read meta from disk.
     fn read_meta(path: &Path) -> Result<CacheMeta> {
-        let data = std::fs::read(path).map_err(|e| {
-            Error::explain(ErrorType::ReadError, format!("cache meta read: {e}"))
-        })?;
+        let data = std::fs::read(path)
+            .map_err(|e| Error::explain(ErrorType::ReadError, format!("cache meta read: {e}")))?;
         if data.len() < 8 {
             return Error::e_explain(ErrorType::ReadError, "cache meta too short");
         }
@@ -162,9 +157,8 @@ impl DiskCache {
         buf.extend_from_slice(&meta1_len);
         buf.extend_from_slice(&meta0);
         buf.extend_from_slice(&meta1);
-        std::fs::write(path, &buf).map_err(|e| {
-            Error::explain(ErrorType::WriteError, format!("cache meta write: {e}"))
-        })?;
+        std::fs::write(path, &buf)
+            .map_err(|e| Error::explain(ErrorType::WriteError, format!("cache meta write: {e}")))?;
         Ok(())
     }
 }
@@ -198,7 +192,10 @@ fn dir_size(path: &Path) -> u64 {
 pub fn parse_size(s: &str) -> Option<u64> {
     let s = s.trim().to_lowercase();
     if let Some(val) = s.strip_suffix("gb") {
-        val.trim().parse::<u64>().ok().map(|v| v * 1024 * 1024 * 1024)
+        val.trim()
+            .parse::<u64>()
+            .ok()
+            .map(|v| v * 1024 * 1024 * 1024)
     } else if let Some(val) = s.strip_suffix("mb") {
         val.trim().parse::<u64>().ok().map(|v| v * 1024 * 1024)
     } else if let Some(val) = s.strip_suffix("kb") {
@@ -298,21 +295,18 @@ impl HandleMiss for DiskMissHandler {
     async fn finish(self: Box<Self>) -> Result<MissFinishType> {
         let prefix = &self.hash[..2];
         let dir = self.root.join(prefix).join(&self.hash);
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            Error::explain(ErrorType::WriteError, format!("cache dir create: {e}"))
-        })?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| Error::explain(ErrorType::WriteError, format!("cache dir create: {e}")))?;
 
         // Write body
         let body_path = dir.join("body.bin");
-        std::fs::write(&body_path, &self.body).map_err(|e| {
-            Error::explain(ErrorType::WriteError, format!("cache body write: {e}"))
-        })?;
+        std::fs::write(&body_path, &self.body)
+            .map_err(|e| Error::explain(ErrorType::WriteError, format!("cache body write: {e}")))?;
 
         // Write meta (pre-serialized)
         let meta_path = dir.join("meta.bin");
-        std::fs::write(&meta_path, &self.meta_bytes).map_err(|e| {
-            Error::explain(ErrorType::WriteError, format!("cache meta write: {e}"))
-        })?;
+        std::fs::write(&meta_path, &self.meta_bytes)
+            .map_err(|e| Error::explain(ErrorType::WriteError, format!("cache meta write: {e}")))?;
 
         let body_size = self.body.len();
         let meta_size = std::fs::metadata(&meta_path).map(|m| m.len()).unwrap_or(0);
@@ -374,9 +368,8 @@ impl Storage for DiskCache {
         }
 
         let meta = Self::read_meta(&meta_path)?;
-        let body = std::fs::read(&body_path).map_err(|e| {
-            Error::explain(ErrorType::ReadError, format!("cache body read: {e}"))
-        })?;
+        let body = std::fs::read(&body_path)
+            .map_err(|e| Error::explain(ErrorType::ReadError, format!("cache body read: {e}")))?;
 
         self.touch_lru(&hash);
 
@@ -510,8 +503,7 @@ mod tests {
         let meta_path = dir.path().join("meta.bin");
 
         // Build a CacheMeta via the public constructor
-        let header =
-            pingora_http::ResponseHeader::build(200, None).unwrap();
+        let header = pingora_http::ResponseHeader::build(200, None).unwrap();
         let now = SystemTime::now();
         let meta = CacheMeta::new(now, now, 0, 0, header);
 
