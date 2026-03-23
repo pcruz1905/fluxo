@@ -1,20 +1,20 @@
-//! FastCGI proxy — forwards HTTP requests to FastCGI backends (e.g., PHP-FPM).
+//! `FastCGI` proxy — forwards HTTP requests to `FastCGI` backends (e.g., PHP-FPM).
 //!
 //! Nginx equivalent: `fastcgi_pass`. Translates incoming HTTP requests into the
-//! FastCGI binary protocol (records with type, request ID, content).
+//! `FastCGI` binary protocol (records with type, request ID, content).
 //!
-//! Supports FCGI_PARAMS (environment variables), FCGI_STDIN (request body),
-//! and reads FCGI_STDOUT/FCGI_STDERR from the backend.
+//! Supports `FCGI_PARAMS` (environment variables), `FCGI_STDIN` (request body),
+//! and reads `FCGI_STDOUT/FCGI_STDERR` from the backend.
 
 use std::collections::HashMap;
 use std::io;
 
 use bytes::{BufMut, BytesMut};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// FastCGI record types.
+/// `FastCGI` record types.
 const FCGI_BEGIN_REQUEST: u8 = 1;
 const FCGI_ABORT_REQUEST: u8 = 2;
 const FCGI_END_REQUEST: u8 = 3;
@@ -23,29 +23,29 @@ const FCGI_STDIN: u8 = 5;
 const FCGI_STDOUT: u8 = 6;
 const FCGI_STDERR: u8 = 7;
 
-/// FastCGI roles.
+/// `FastCGI` roles.
 const FCGI_RESPONDER: u16 = 1;
 
-/// FastCGI protocol version.
+/// `FastCGI` protocol version.
 const FCGI_VERSION_1: u8 = 1;
 
 /// Maximum record content length.
 const FCGI_MAX_CONTENT_LEN: usize = 65535;
 
-/// Configuration for FastCGI upstream.
-#[derive(Debug, Clone, Deserialize)]
+/// Configuration for `FastCGI` upstream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FastCgiConfig {
-    /// FastCGI backend address (e.g., "127.0.0.1:9000" or "/var/run/php-fpm.sock").
+    /// `FastCGI` backend address (e.g., "127.0.0.1:9000" or "/var/run/php-fpm.sock").
     pub address: String,
 
-    /// Document root for SCRIPT_FILENAME. Example: "/var/www/html".
+    /// Document root for `SCRIPT_FILENAME`. Example: "/var/www/html".
     pub document_root: String,
 
     /// Default index file. Default: "index.php".
     #[serde(default = "default_index")]
     pub index: String,
 
-    /// Extra FastCGI params to pass to the backend.
+    /// Extra `FastCGI` params to pass to the backend.
     #[serde(default)]
     pub params: HashMap<String, String>,
 
@@ -62,7 +62,7 @@ fn default_fcgi_timeout() -> String {
     "5s".to_string()
 }
 
-/// A parsed FastCGI record header (8 bytes).
+/// A parsed `FastCGI` record header (8 bytes).
 #[derive(Debug)]
 struct FcgiRecord {
     record_type: u8,
@@ -72,7 +72,7 @@ struct FcgiRecord {
     padding_length: u8,
 }
 
-/// Build a FastCGI record header.
+/// Build a `FastCGI` record header.
 fn build_record_header(record_type: u8, request_id: u16, content_length: u16) -> [u8; 8] {
     let padding = (8 - (content_length as usize % 8)) % 8;
     [
@@ -87,7 +87,7 @@ fn build_record_header(record_type: u8, request_id: u16, content_length: u16) ->
     ]
 }
 
-/// Encode a single FastCGI name-value pair.
+/// Encode a single `FastCGI` name-value pair.
 fn encode_param(buf: &mut BytesMut, name: &str, value: &str) {
     let name_len = name.len();
     let val_len = value.len();
@@ -110,7 +110,7 @@ fn encode_param(buf: &mut BytesMut, name: &str, value: &str) {
     buf.extend_from_slice(value.as_bytes());
 }
 
-/// Read a single FastCGI record header from the stream.
+/// Read a single `FastCGI` record header from the stream.
 async fn read_record_header(stream: &mut TcpStream) -> io::Result<FcgiRecord> {
     let mut header = [0u8; 8];
     stream.read_exact(&mut header).await?;
@@ -130,7 +130,7 @@ async fn read_record_header(stream: &mut TcpStream) -> io::Result<FcgiRecord> {
     })
 }
 
-/// Send a FastCGI request and read the response.
+/// Send a `FastCGI` request and read the response.
 ///
 /// Returns `(status_code, response_headers, response_body)`.
 pub async fn send_fastcgi_request(
@@ -184,11 +184,7 @@ pub async fn send_fastcgi_request(
     encode_param(&mut params_buf, "SERVER_SOFTWARE", "fluxo");
     encode_param(&mut params_buf, "GATEWAY_INTERFACE", "CGI/1.1");
     encode_param(&mut params_buf, "SERVER_NAME", host);
-    encode_param(
-        &mut params_buf,
-        "CONTENT_LENGTH",
-        &body.len().to_string(),
-    );
+    encode_param(&mut params_buf, "CONTENT_LENGTH", &body.len().to_string());
 
     // Map HTTP headers to CGI env vars
     for (name, value) in headers {
@@ -212,7 +208,9 @@ pub async fn send_fastcgi_request(
         let chunk_len = (params_bytes.len() - offset).min(FCGI_MAX_CONTENT_LEN);
         let header = build_record_header(FCGI_PARAMS, request_id, chunk_len as u16);
         stream.write_all(&header).await?;
-        stream.write_all(&params_bytes[offset..offset + chunk_len]).await?;
+        stream
+            .write_all(&params_bytes[offset..offset + chunk_len])
+            .await?;
         // Write padding
         let padding = (8 - (chunk_len % 8)) % 8;
         if padding > 0 {
@@ -249,7 +247,6 @@ pub async fn send_fastcgi_request(
 
     // --- Read response ---
     let mut stdout_data = Vec::new();
-    let mut stderr_data = Vec::new();
 
     loop {
         let record = read_record_header(&mut stream).await?;
@@ -276,7 +273,6 @@ pub async fn send_fastcgi_request(
             }
             FCGI_STDERR => {
                 if content_len > 0 {
-                    stderr_data.extend_from_slice(&content);
                     if let Ok(msg) = std::str::from_utf8(&content) {
                         tracing::warn!(fastcgi_stderr = msg, "FastCGI stderr output");
                     }
@@ -302,8 +298,8 @@ pub async fn send_fastcgi_request(
     parse_cgi_response(&stdout_data)
 }
 
-/// Parse CGI-style response from FastCGI stdout.
-/// Returns (status_code, headers, body).
+/// Parse CGI-style response from `FastCGI` stdout.
+/// Returns (`status_code`, headers, body).
 fn parse_cgi_response(data: &[u8]) -> io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     // Find the header/body boundary (\r\n\r\n or \n\n)
     let header_end = find_header_end(data).ok_or_else(|| {
@@ -347,7 +343,7 @@ fn parse_cgi_response(data: &[u8]) -> io::Result<(u16, Vec<(String, String)>, Ve
 }
 
 /// Find the end of HTTP headers in a byte slice.
-/// Returns (end_of_headers, start_of_body).
+/// Returns (`end_of_headers`, `start_of_body`).
 fn find_header_end(data: &[u8]) -> Option<(usize, usize)> {
     // Look for \r\n\r\n
     if let Some(pos) = memchr::memmem::find(data, b"\r\n\r\n") {

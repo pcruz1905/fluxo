@@ -14,13 +14,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
 /// Mail protocol type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MailProtocol {
     /// SMTP (Simple Mail Transfer Protocol).
@@ -33,7 +33,7 @@ pub enum MailProtocol {
 
 impl MailProtocol {
     /// Default greeting banner for this protocol.
-    fn default_greeting(&self, hostname: &str) -> String {
+    fn default_greeting(self, hostname: &str) -> String {
         match self {
             Self::Smtp => format!("220 {hostname} ESMTP fluxo mail proxy\r\n"),
             Self::Imap => format!("* OK [{hostname}] fluxo IMAP proxy ready\r\n"),
@@ -43,7 +43,7 @@ impl MailProtocol {
 }
 
 /// Configuration for a mail proxy service.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailProxyConfig {
     /// Listen address (e.g., "0.0.0.0:25" for SMTP).
     pub listen: String,
@@ -192,11 +192,8 @@ impl MailProxy {
 
             // Read and discard the upstream greeting
             let mut greeting_buf = vec![0u8; 4096];
-            let _ = tokio::time::timeout(
-                Duration::from_secs(5),
-                upstream.read(&mut greeting_buf),
-            )
-            .await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), upstream.read(&mut greeting_buf))
+                .await;
         }
 
         // After greeting, just do bidirectional byte copy (protocol-transparent)

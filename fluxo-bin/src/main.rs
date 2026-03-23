@@ -339,8 +339,7 @@ fn main() -> anyhow::Result<()> {
 
     // Register L4 mail proxy services
     for (name, mail_config) in &fluxo_config.l4.mail_services {
-        let mail_proxy =
-            std::sync::Arc::new(fluxo_core::l4::MailProxy::new(mail_config.clone()));
+        let mail_proxy = std::sync::Arc::new(fluxo_core::l4::MailProxy::new(mail_config.clone()));
         let listen_addr = mail_config.listen.clone();
         let svc_name = name.clone();
         tokio::spawn(async move {

@@ -1,7 +1,7 @@
 //! Layer 4 (TCP/UDP) proxy module.
 //!
 //! Provides transparent TCP and UDP proxying with optional SNI-based routing,
-//! FastCGI proxying, and mail protocol proxying (SMTP/IMAP/POP3).
+//! `FastCGI` proxying, and mail protocol proxying (SMTP/IMAP/POP3).
 //! Nginx equivalent: `stream {}` + `mail {}` blocks.
 //! Traefik equivalent: TCP/UDP routers.
 

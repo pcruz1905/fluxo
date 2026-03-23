@@ -518,8 +518,8 @@ pub struct RouteConfig {
     #[serde(default)]
     pub grpc_web: bool,
 
-    /// FastCGI backend configuration for this route.
-    /// When set, requests matching this route are forwarded via FastCGI protocol
+    /// `FastCGI` backend configuration for this route.
+    /// When set, requests matching this route are forwarded via `FastCGI` protocol
     /// instead of HTTP. Nginx equivalent: `fastcgi_pass`.
     pub fastcgi: Option<crate::l4::FastCgiConfig>,
 }

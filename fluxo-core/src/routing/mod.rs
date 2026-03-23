@@ -105,7 +105,7 @@ pub struct CompiledRoute {
     pub sub_filter: Option<crate::plugins::sub_filter::CompiledSubFilter>,
     /// Enable gRPC-web protocol translation and HTTP/2 upstream forcing.
     pub grpc_web: bool,
-    /// FastCGI backend configuration (replaces HTTP upstream proxying).
+    /// `FastCGI` backend configuration (replaces HTTP upstream proxying).
     pub fastcgi: Option<crate::l4::FastCgiConfig>,
 }
 

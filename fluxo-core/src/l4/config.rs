@@ -94,7 +94,9 @@ pub struct CompiledTcpRoute {
 impl L4Config {
     /// Whether any L4 services are configured.
     pub fn is_empty(&self) -> bool {
-        self.tcp_services.is_empty() && self.udp_services.is_empty() && self.mail_services.is_empty()
+        self.tcp_services.is_empty()
+            && self.udp_services.is_empty()
+            && self.mail_services.is_empty()
     }
 }
 

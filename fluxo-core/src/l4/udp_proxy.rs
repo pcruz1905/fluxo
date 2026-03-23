@@ -27,7 +27,7 @@ struct UdpSession {
 /// A running UDP proxy service.
 pub struct UdpProxy {
     config: UdpServiceConfig,
-    /// Pre-parsed connect timeout.
+    /// Pre-parsed idle timeout.
     idle_timeout: Duration,
     /// Round-robin index for target selection.
     next_target: std::sync::atomic::AtomicUsize,
@@ -35,8 +35,8 @@ pub struct UdpProxy {
 
 impl UdpProxy {
     pub fn new(config: UdpServiceConfig) -> Self {
-        let idle_timeout = crate::config::parse_duration(&config.idle_timeout)
-            .unwrap_or(Duration::from_secs(30));
+        let idle_timeout =
+            crate::config::parse_duration(&config.idle_timeout).unwrap_or(Duration::from_secs(30));
         Self {
             config,
             idle_timeout,
@@ -89,41 +89,44 @@ impl UdpProxy {
                 Ok((len, client_addr)) => {
                     let data = buf[..len].to_vec();
 
-                    // Check for existing session or create new one
-                    let upstream_socket = {
+                    // Check for existing session (lock scoped tightly — no await)
+                    let existing = {
                         let mut table = sessions.lock();
-                        if let Some(session) = table.get_mut(&client_addr) {
+                        table.get_mut(&client_addr).map(|session| {
                             session.last_active = std::time::Instant::now();
                             Arc::clone(&session.upstream)
-                        } else {
-                            // Create new session
-                            let Some(target) = self.select_target() else {
-                                warn!(client = %client_addr, "no UDP upstream target available");
-                                continue;
-                            };
+                        })
+                    };
 
-                            // Bind a new socket for this session (ephemeral port)
-                            let upstream = match UdpSocket::bind("0.0.0.0:0").await {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!(error = %e, "failed to bind UDP upstream socket");
-                                    continue;
-                                }
-                            };
+                    let upstream_socket = if let Some(sock) = existing {
+                        sock
+                    } else {
+                        // Create new session (async work outside the lock)
+                        let Some(target) = self.select_target() else {
+                            warn!(client = %client_addr, "no UDP upstream target available");
+                            continue;
+                        };
+                        let target = target.to_string();
 
-                            if let Err(e) = upstream.connect(target).await {
-                                warn!(target, error = %e, "UDP upstream connect failed");
+                        let upstream = match UdpSocket::bind("0.0.0.0:0").await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                error!(error = %e, "failed to bind UDP upstream socket");
                                 continue;
                             }
+                        };
 
-                            let upstream = Arc::new(upstream);
+                        if let Err(e) = upstream.connect(&target).await {
+                            warn!(target, error = %e, "UDP upstream connect failed");
+                            continue;
+                        }
 
-                            debug!(
-                                client = %client_addr,
-                                target,
-                                "new UDP session"
-                            );
+                        let upstream = Arc::new(upstream);
+                        debug!(client = %client_addr, target, "new UDP session");
 
+                        // Insert into session table (re-acquire lock, no await)
+                        {
+                            let mut table = sessions.lock();
                             table.insert(
                                 client_addr,
                                 UdpSession {
@@ -131,46 +134,42 @@ impl UdpProxy {
                                     last_active: std::time::Instant::now(),
                                 },
                             );
+                        }
 
-                            // Spawn response relay: upstream -> client
-                            let upstream_rx = Arc::clone(&upstream);
-                            let listener_tx = Arc::clone(&listener);
-                            let sessions_ref = Arc::clone(&sessions);
-                            let idle = self.idle_timeout;
-                            let max_pkt = self.config.max_packet_size as usize;
-                            tokio::spawn(async move {
-                                let mut resp_buf = vec![0u8; max_pkt];
-                                loop {
-                                    match tokio::time::timeout(
-                                        idle,
-                                        upstream_rx.recv(&mut resp_buf),
-                                    )
+                        // Spawn response relay: upstream -> client
+                        let upstream_rx = Arc::clone(&upstream);
+                        let listener_tx = Arc::clone(&listener);
+                        let sessions_ref = Arc::clone(&sessions);
+                        let idle = self.idle_timeout;
+                        let max_pkt = self.config.max_packet_size as usize;
+                        tokio::spawn(async move {
+                            let mut resp_buf = vec![0u8; max_pkt];
+                            loop {
+                                match tokio::time::timeout(idle, upstream_rx.recv(&mut resp_buf))
                                     .await
-                                    {
-                                        Ok(Ok(n)) => {
-                                            if let Err(e) =
-                                                listener_tx.send_to(&resp_buf[..n], client_addr).await
-                                            {
-                                                debug!(error = %e, "UDP relay to client failed");
-                                                break;
-                                            }
-                                        }
-                                        Ok(Err(e)) => {
-                                            debug!(error = %e, "UDP upstream recv error");
-                                            break;
-                                        }
-                                        Err(_) => {
-                                            // Idle timeout — clean up session
-                                            debug!(client = %client_addr, "UDP session idle timeout");
+                                {
+                                    Ok(Ok(n)) => {
+                                        if let Err(e) =
+                                            listener_tx.send_to(&resp_buf[..n], client_addr).await
+                                        {
+                                            debug!(error = %e, "UDP relay to client failed");
                                             break;
                                         }
                                     }
+                                    Ok(Err(e)) => {
+                                        debug!(error = %e, "UDP upstream recv error");
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        debug!(client = %client_addr, "UDP session idle timeout");
+                                        break;
+                                    }
                                 }
-                                sessions_ref.lock().remove(&client_addr);
-                            });
+                            }
+                            sessions_ref.lock().remove(&client_addr);
+                        });
 
-                            upstream
-                        }
+                        upstream
                     };
 
                     // Forward client data to upstream
